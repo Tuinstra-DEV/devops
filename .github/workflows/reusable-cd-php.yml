@@ -289,7 +289,7 @@ jobs:
           sleep 5
 
           # Run migrations
-          docker compose exec -T ${{ inputs.service-name }} \
+          docker compose -f docker-compose.yml exec -T ${{ inputs.service-name }} \
             php bin/console doctrine:migrations:migrate --no-interaction --allow-no-migration
           EOF
 
@@ -299,7 +299,7 @@ jobs:
           ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" <<'EOF'
           set -euo pipefail
           cd "${{ inputs.remote-path }}"
-          docker compose restart ${{ inputs.worker-service }}
+          docker compose -f docker-compose.yml restart ${{ inputs.worker-service }}
           EOF
 
       - name: Health check
@@ -310,7 +310,7 @@ jobs:
 
           # Resolve the host port from the running container
           mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-            "cd '${{ inputs.remote-path }}' && docker compose port '${{ inputs.nginx-service-name }}' ${{ inputs.port }}")
+            "cd '${{ inputs.remote-path }}' && docker compose -f docker-compose.yml port '${{ inputs.nginx-service-name }}' ${{ inputs.port }}")
           host_port=$(echo "$mapped" | cut -d: -f2)
           echo "Container mapped to localhost:${host_port}"
 
