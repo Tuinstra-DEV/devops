@@ -125,10 +125,9 @@ jobs:
         if: ${{ !inputs.coverage }}
         run: |
           if [ -n "${{ inputs.test-suites }}" ]; then
-            IFS=',' read -ra SUITES <<< "${{ inputs.test-suites }}"
-            for suite in "${SUITES[@]}"; do
-              vendor/bin/phpunit --testsuite "$(echo $suite | xargs)"
-            done
+            # PHPUnit 12+ requires comma-separated suites in a single --testsuite argument
+            SUITES=$(echo "${{ inputs.test-suites }}" | tr -d ' ')
+            vendor/bin/phpunit --testsuite "$SUITES"
           else
             vendor/bin/phpunit
           fi
@@ -138,12 +137,9 @@ jobs:
         run: |
           PHPUNIT_ARGS="--coverage-cobertura var/coverage/cobertura.xml --coverage-text"
           if [ -n "${{ inputs.test-suites }}" ]; then
-            IFS=',' read -ra SUITES <<< "${{ inputs.test-suites }}"
-            SUITE_ARGS=""
-            for suite in "${SUITES[@]}"; do
-              SUITE_ARGS="$SUITE_ARGS --testsuite $(echo $suite | xargs)"
-            done
-            vendor/bin/phpunit $SUITE_ARGS $PHPUNIT_ARGS
+            # PHPUnit 12+ requires comma-separated suites in a single --testsuite argument
+            SUITES=$(echo "${{ inputs.test-suites }}" | tr -d ' ')
+            vendor/bin/phpunit --testsuite "$SUITES" $PHPUNIT_ARGS
           else
             vendor/bin/phpunit $PHPUNIT_ARGS
           fi
@@ -233,10 +229,9 @@ jobs:
         if: ${{ !inputs.coverage }}
         run: |
           if [ -n "${{ inputs.test-suites }}" ]; then
-            IFS=',' read -ra SUITES <<< "${{ inputs.test-suites }}"
-            for suite in "${SUITES[@]}"; do
-              vendor/bin/phpunit --testsuite "$(echo $suite | xargs)"
-            done
+            # PHPUnit 12+ requires comma-separated suites in a single --testsuite argument
+            SUITES=$(echo "${{ inputs.test-suites }}" | tr -d ' ')
+            vendor/bin/phpunit --testsuite "$SUITES"
           else
             vendor/bin/phpunit
           fi
@@ -246,12 +241,9 @@ jobs:
         run: |
           PHPUNIT_ARGS="--coverage-cobertura var/coverage/cobertura.xml --coverage-text"
           if [ -n "${{ inputs.test-suites }}" ]; then
-            IFS=',' read -ra SUITES <<< "${{ inputs.test-suites }}"
-            SUITE_ARGS=""
-            for suite in "${SUITES[@]}"; do
-              SUITE_ARGS="$SUITE_ARGS --testsuite $(echo $suite | xargs)"
-            done
-            vendor/bin/phpunit $SUITE_ARGS $PHPUNIT_ARGS
+            # PHPUnit 12+ requires comma-separated suites in a single --testsuite argument
+            SUITES=$(echo "${{ inputs.test-suites }}" | tr -d ' ')
+            vendor/bin/phpunit --testsuite "$SUITES" $PHPUNIT_ARGS
           else
             vendor/bin/phpunit $PHPUNIT_ARGS
           fi
