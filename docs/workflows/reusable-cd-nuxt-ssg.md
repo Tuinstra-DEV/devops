@@ -67,8 +67,9 @@ jobs:
 jobs:
   deploy:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-nuxt-ssg.yml@v1
-    # No ssh-host input, no ssh-private-key secret
-    # These are read automatically from the environment
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    # No ssh-host input. SSH_HOST is read from environment variables.
 ```
 
 Rename your environment variables/secrets:

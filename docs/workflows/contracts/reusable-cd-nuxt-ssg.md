@@ -139,11 +139,12 @@ on:
 jobs:
   deploy:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-nuxt-ssg.yml@v1
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     with:
       service-name: my-site
       image-name: ghcr.io/my-org/my-site
       environment: production
       remote-path: /opt/my-site
       ssh-user: deploy
-    secrets: inherit
 ```

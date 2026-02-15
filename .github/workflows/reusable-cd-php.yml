@@ -229,6 +229,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
+      - name: Ensure SSH key is present
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "Missing SSH_PRIVATE_KEY. Configure it as an environment secret in the caller repo, or pass it explicitly when calling this workflow." >&2
+            exit 1
+          fi
+
       - name: Configure SSH
         run: |
           install -m 700 -d ~/.ssh

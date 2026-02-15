@@ -190,6 +190,8 @@ on:
 jobs:
   deploy:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-php.yml@v1
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     with:
       service-name: php
       nginx-service-name: nginx
@@ -200,7 +202,6 @@ jobs:
       compose-file: docker-compose.production.yml
       run-migrations: true
       restart-worker: true
-    secrets: inherit
 ```
 
 ## Example Compose File
