@@ -173,7 +173,7 @@ Typical flow: work on feature branches, merge to `develop` for staging verificat
 
 See `docs/workflows/branching-strategy.md` for the full branching model.
 
-## 9. Release Workflow
+## 9. Release Workflows
 
 Copy the release PR template into your consumer repo:
 
@@ -181,9 +181,17 @@ Copy the release PR template into your consumer repo:
 cp <devops-repo>/templates/workflows/caller-release-pr.yml .github/workflows/release.yml
 ```
 
-This adds a **Create Release PR** workflow triggered via `workflow_dispatch` (manual "Run workflow" button in GitHub Actions). It creates a PR from `develop` → `main` with an auto-generated changelog. Merging that PR triggers Deploy Production.
+Copy the release tag template into your consumer repo:
 
-No git tags or GitHub Releases are needed — the release PR is the audit trail and the Docker image digest is the rollback unit.
+```bash
+cp <devops-repo>/templates/workflows/caller-release-tag.yml .github/workflows/release-tag.yml
+```
+
+`release.yml` adds a **Create Release PR** workflow triggered via `workflow_dispatch` (manual "Run workflow" button in GitHub Actions). It creates a PR from `develop` → `main` with a version title (`release: vX.Y.Z`) and an auto-generated PR-based changelog. In `auto` mode, `feat` PR titles produce a minor bump, otherwise patch; use workflow input `major` for breaking releases.
+
+`release-tag.yml` triggers on push to `main` and creates the same `vX.Y.Z` git tag when the merged PR title matches `release: vX.Y.Z`.
+
+Git tags are used for release traceability. GitHub Releases are optional. The release PR remains the audit trail and the Docker image digest remains the rollback unit.
 
 ## 10. DNS and Reverse Proxy
 

@@ -2,13 +2,24 @@
 # Copy this file to your consumer repo at .github/workflows/release.yml.
 #
 # Trigger manually via "Run workflow" in GitHub Actions.
-# Creates a PR from develop → main with a changelog of commits.
+# Creates a PR from develop → main with a versioned title and PR-based changelog.
 # Merging the PR triggers Deploy Production.
 
 name: Create Release PR
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Release bump type (auto detects from PR titles)
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: read
@@ -22,6 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Create release PR
         env:
@@ -29,37 +41,107 @@ jobs:
         run: |
           set -euo pipefail
 
-          date=$(date +%Y-%m-%d)
-          base_title="release: ${date}"
-
-          # Check if a release PR already exists for today
-          existing=$(gh pr list --base main --head develop --search "${base_title}" --json number --jq 'length')
-          if [[ "$existing" -gt 0 ]]; then
-            # Append counter
-            count=$((existing + 1))
-            title="${base_title}.${count}"
-          else
-            title="${base_title}"
-          fi
-
-          # Generate changelog: commits on develop not yet in main
-          changelog=$(git log origin/main..origin/develop --oneline --no-merges --format="- %s" || echo "- No new commits")
+          git fetch origin main develop --tags
 
           # Check if there are actually changes to release
           if [[ -z "$(git log origin/main..origin/develop --oneline)" ]]; then
-            echo "No changes to release — develop and main are in sync."
+            echo "No changes to release - develop and main are in sync."
             exit 0
           fi
+
+          # Only one open PR can exist for the same base/head pair.
+          open_release_pr_count=$(gh pr list --base main --head develop --state open --json number --jq 'length')
+          if [[ "$open_release_pr_count" -gt 0 ]]; then
+            echo "An open release PR already exists for develop -> main."
+            exit 0
+          fi
+
+          latest_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          if [[ -z "$latest_tag" ]]; then
+            current_major=1
+            current_minor=0
+            current_patch=0
+          else
+            raw_version="${latest_tag#v}"
+            IFS='.' read -r current_major current_minor current_patch <<< "$raw_version"
+          fi
+
+          bump_input="${{ inputs.bump }}"
+          detected_bump="patch"
+
+          pr_numbers=$(git log origin/main..origin/develop --merges --format='%s' \
+            | sed -n 's/^Merge pull request #\([0-9]\+\).*/\1/p' \
+            | awk '!seen[$0]++')
+
+          changelog_lines=""
+          if [[ -n "$pr_numbers" ]]; then
+            for pr_number in $pr_numbers; do
+              pr_title=$(gh pr view "$pr_number" --json title --jq '.title')
+              changelog_lines+="- #${pr_number} ${pr_title}"$'\n'
+
+              pr_title_lc=$(printf '%s' "$pr_title" | tr '[:upper:]' '[:lower:]')
+              if [[ "$pr_title_lc" == feat:* ]] || [[ "$pr_title_lc" == feat\[* ]] || [[ "$pr_title_lc" == feat\(* ]]; then
+                detected_bump="minor"
+              fi
+            done
+          else
+            # Fallback for direct pushes or squash merges where PR numbers are not in merge commit subjects.
+            changelog_lines=$(git log origin/main..origin/develop --oneline --no-merges --format='- %s')
+          fi
+
+          bump="$bump_input"
+          if [[ "$bump" == "auto" ]]; then
+            bump="$detected_bump"
+          fi
+
+          if [[ -z "$latest_tag" ]]; then
+            next_major=1
+            next_minor=0
+            next_patch=0
+          else
+            next_major=$current_major
+            next_minor=$current_minor
+            next_patch=$current_patch
+
+            case "$bump" in
+              major)
+                next_major=$((current_major + 1))
+                next_minor=0
+                next_patch=0
+                ;;
+              minor)
+                next_minor=$((current_minor + 1))
+                next_patch=0
+                ;;
+              patch)
+                next_patch=$((current_patch + 1))
+                ;;
+              *)
+                echo "Unsupported bump type: $bump"
+                exit 1
+                ;;
+            esac
+          fi
+
+          version="${next_major}.${next_minor}.${next_patch}"
+          title="release: v${version}"
+
+          body=$(cat <<EOF
+          ## ${title}
+
+          - Bump: ${bump}
+          - Previous version: ${latest_tag:-none}
+
+          ### Changes
+
+          ${changelog_lines}
+          EOF
+          )
 
           gh pr create \
             --base main \
             --head develop \
             --title "${title}" \
-            --body "## ${title}
-
-          ### Changes
-
-          ${changelog}
-          "
+            --body "${body}"
 
           echo "Release PR created: ${title}"

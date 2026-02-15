@@ -78,24 +78,25 @@ make release-tag TAG=v1
 
 ## Consumer Repo Releases
 
-Consumer repos (site-marcel, site-tuinstra, etc.) use a different release model. They do NOT use version tags or GitHub Releases.
+Consumer repos (site-marcel, site-tuinstra, etc.) use a different release model from this repository.
 
 ### How it works
 
 1. Code flows through feature branches → `develop` (staging) → `main` (production).
 2. To promote `develop` to production, run the **Create Release PR** workflow via `workflow_dispatch`.
-3. This creates a PR from `develop` → `main` with an auto-generated changelog.
-4. Merging the PR pushes to `main` and triggers Deploy Production.
+3. This creates a PR from `develop` → `main` with title `release: vX.Y.Z` and an auto-generated PR-based changelog.
+4. Merging the PR pushes to `main`, triggers Deploy Production, and triggers the release tag workflow.
+5. The release tag workflow creates tag `vX.Y.Z` from the merged release PR title.
 
-### Why no version tags?
+### Why lightweight version tags?
 
-- The Docker image digest (pinned during CD) is the deployment artifact and rollback unit.
-- The release PR serves as the audit trail for what went to production and when.
-- Version tags add overhead without improving the recovery path.
+- The release PR title is already a semantic release unit (`release: vX.Y.Z`).
+- The matching git tag gives a stable reference for diffs, rollbacks, and audit history.
+- The Docker image digest (pinned during CD) remains the deployment artifact and rollback unit.
 
 ### Template
 
-See `templates/workflows/caller-release-pr.yml` for the workflow template.
+See `templates/workflows/caller-release-pr.yml` and `templates/workflows/caller-release-tag.yml` for the workflow templates.
 
 ### Future: product repos
 
