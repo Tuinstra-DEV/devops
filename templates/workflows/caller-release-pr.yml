@@ -142,6 +142,15 @@ jobs:
             --base main \
             --head develop \
             --title "${title}" \
-            --body "${body}"
+            --body "${body}" || {
+            # gh pr create may fail with GraphQL errors even when the PR was created successfully.
+            # Verify by checking if a release PR now exists.
+            if [[ "$(gh pr list --base main --head develop --state open --json number --jq 'length')" -gt 0 ]]; then
+              echo "PR created successfully (ignoring GraphQL warning)"
+            else
+              echo "Failed to create release PR"
+              exit 1
+            fi
+          }
 
           echo "Release PR created: ${title}"
