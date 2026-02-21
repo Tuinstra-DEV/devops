@@ -92,6 +92,11 @@ on:
         required: false
         default: ""
         type: string
+      pre-deploy-cleanup:
+        description: "Optional cleanup command before deployment (none or down-remove-orphans)"
+        required: false
+        default: "none"
+        type: string
 
 jobs:
   build-scan-push:
@@ -285,9 +290,25 @@ jobs:
             done
           fi
 
-          # Pull and deploy
-          docker compose -f docker-compose.yml -f .deploy-override.yml pull
-          docker compose -f docker-compose.yml -f .deploy-override.yml up -d
+          if [ "${{ inputs.pre-deploy-cleanup }}" = "down-remove-orphans" ]; then
+            docker compose -f docker-compose.yml -f .deploy-override.yml down --remove-orphans || true
+          fi
+
+          deploy_services=("${{ inputs.service-name }}" "${{ inputs.nginx-service-name }}")
+
+          if [ -n "$WORKER_SERVICES" ]; then
+            IFS=',' read -ra WORKERS <<< "$WORKER_SERVICES"
+            for worker in "${WORKERS[@]}"; do
+              worker=$(echo "$worker" | xargs)
+              if [ -n "$worker" ]; then
+                deploy_services+=("$worker")
+              fi
+            done
+          fi
+
+          # Pull and deploy only relevant services.
+          docker compose -f docker-compose.yml -f .deploy-override.yml pull "${deploy_services[@]}"
+          docker compose -f docker-compose.yml -f .deploy-override.yml up -d "${deploy_services[@]}"
 
           # Cleanup override
           rm -f .deploy-override.yml
