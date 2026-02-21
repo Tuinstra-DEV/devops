@@ -195,7 +195,7 @@ jobs:
 
       - name: Deploy image digest over SSH
         run: |
-          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" <<EOF
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" "bash -s" <<'EOF'
           set -euo pipefail
           cd "${{ inputs.remote-path }}"
           override_file=".deploy-override-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.service-name }}.yml"

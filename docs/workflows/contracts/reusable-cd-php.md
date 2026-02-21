@@ -24,6 +24,7 @@ on:
 | `image-name` | string | Yes | - | Full GHCR image name without tag (used for both php and nginx images) |
 | `health-url` | string | No | `""` | Public health URL (informational only) |
 | `health-path` | string | No | `"/health"` | Path checked on localhost during health check |
+| `health-timeout-seconds` | number | No | `180` | Maximum seconds to wait for a healthy response |
 | `port` | number | No | `80` | Exposed nginx service port (internal container port) |
 | `environment` | string | Yes | - | GitHub Environment name (staging/production) |
 | `workdir` | string | No | `.` | Project working directory |
@@ -151,7 +152,7 @@ with:
 
 The deployed container must:
 - Expose a health endpoint on the nginx service (default `/health`, configurable via `health-path`)
-- Return HTTP 200 within 180 seconds of container start
+- Return HTTP 200 within configured timeout (default 180 seconds)
 - Health check runs via SSH on localhost, not public URL
 
 ## Doctrine Migrations
