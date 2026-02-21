@@ -30,6 +30,11 @@ on:
         required: false
         default: "/health"
         type: string
+      health-timeout-seconds:
+        description: "Maximum seconds to wait for health check"
+        required: false
+        default: 180
+        type: number
       port:
         description: Exposed nginx service port (internal container port)
         required: false
@@ -349,7 +354,7 @@ jobs:
 
       - name: Health check
         run: |
-          timeout=180
+          timeout=${{ inputs.health-timeout-seconds }}
           interval=5
           deadline=$(( $(date +%s) + timeout ))
 
@@ -372,4 +377,7 @@ jobs:
           done
 
           echo "Health check failed on localhost:${host_port}${{ inputs.health-path }}" >&2
+          echo "Last response (headers + first body bytes):" >&2
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "curl -iS --connect-timeout 2 --max-time 10 http://localhost:${host_port}${{ inputs.health-path }} || true" >&2
           exit 1
