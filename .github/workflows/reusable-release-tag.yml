@@ -1,0 +1,56 @@
+name: Reusable Release Tag
+
+on:
+  workflow_call:
+    inputs:
+      release-title-regex:
+        description: "Regex used to extract semver from release PR title"
+        required: false
+        type: string
+        default: '^release:[[:space:]]v([0-9]+\.[0-9]+\.[0-9]+)$'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create tag from release PR title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RELEASE_TITLE_REGEX: ${{ inputs.release-title-regex }}
+        run: |
+          set -euo pipefail
+
+          pr_title=$(gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --jq '.[0].title // ""')
+          if [[ -z "${pr_title}" ]]; then
+            echo "No PR associated with commit ${SHA}. Skipping tag creation."
+            exit 0
+          fi
+
+          if [[ ! "${pr_title}" =~ ${RELEASE_TITLE_REGEX} ]]; then
+            echo "PR title does not match release title pattern: ${pr_title}"
+            exit 0
+          fi
+
+          tag="v${BASH_REMATCH[1]}"
+
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists. Skipping."
+            exit 0
+          fi
+
+          git tag "${tag}" "${SHA}"
+          git push origin "${tag}"
+
+          echo "Created tag ${tag} at ${SHA}."
