@@ -20,6 +20,11 @@ on:
         required: false
         default: ""
         type: string
+      health-path:
+        description: "Path checked on localhost during health check"
+        required: false
+        default: "/health"
+        type: string
       port:
         description: Exposed service port
         required: false
@@ -215,11 +220,11 @@ jobs:
           echo "Container mapped to localhost:${host_port}"
           while [[ $(date +%s) -lt $deadline ]]; do
             if ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-              "curl -fsS http://localhost:${host_port}/health" >/dev/null 2>&1; then
-              echo "Health check passed on localhost:${host_port}/health"
+              "curl -fsS http://localhost:${host_port}${{ inputs.health-path }}" >/dev/null 2>&1; then
+              echo "Health check passed on localhost:${host_port}${{ inputs.health-path }}"
               exit 0
             fi
             sleep "$interval"
           done
-          echo "Health check failed on localhost:${host_port}/health" >&2
+          echo "Health check failed on localhost:${host_port}${{ inputs.health-path }}" >&2
           exit 1
