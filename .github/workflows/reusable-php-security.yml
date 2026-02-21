@@ -54,7 +54,7 @@ jobs:
       - name: Check for vulnerabilities
         run: |
           if [ "${{ inputs.fail-on-vulnerabilities }}" == "true" ]; then
-            composer audit
+            composer audit --ignore-unreachable
           else
-            composer audit || true
+            composer audit --ignore-unreachable || true
           fi

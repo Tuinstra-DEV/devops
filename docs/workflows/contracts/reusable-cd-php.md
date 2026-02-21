@@ -36,7 +36,8 @@ on:
 | `trivy-exit-code` | string | No | `"1"` | Exit code on findings (1 = fail, 0 = warn) |
 | `run-migrations` | boolean | No | `false` | Run Doctrine migrations after deploy |
 | `restart-worker` | boolean | No | `false` | Restart messenger worker service after deploy |
-| `worker-service` | string | No | `"worker"` | Name of worker service in compose file |
+| `worker-services` | string | No | `""` | Comma-separated worker services to pin to PHP image |
+| `pre-deploy-cleanup` | string | No | `"none"` | Optional cleanup before deploy (`none` or `down-remove-orphans`) |
 
 ## Outputs
 

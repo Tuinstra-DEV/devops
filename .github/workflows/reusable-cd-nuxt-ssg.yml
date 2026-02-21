@@ -144,6 +144,7 @@ jobs:
           push: true
           tags: |
             ${{ inputs.image-name }}:${{ github.sha }}
+            ${{ inputs.image-name }}:latest
           build-args: ${{ inputs.build-args }}
 
       - name: Prepare immutable image reference
