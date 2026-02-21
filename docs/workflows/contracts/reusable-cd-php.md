@@ -121,6 +121,64 @@ COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=php_prod /app/public /app/public
 ```
 
+### Symfony Best Practices
+
+For Symfony applications, the `php_prod` target must:
+
+1. **Upgrade Alpine packages** for security patches:
+   ```dockerfile
+   RUN apk add --no-cache <packages> \
+       && apk upgrade --no-cache
+   ```
+
+2. **Set correct permissions** on the `var` directory:
+   ```dockerfile
+   RUN mkdir -p var/cache var/log \
+       && chown -R www-data:www-data var \
+       && chmod -R 775 var
+   ```
+
+3. **Install assets** if using API Platform or AssetMapper:
+   ```dockerfile
+   RUN php bin/console assets:install public \
+       && php bin/console importmap:install \
+       && php bin/console cache:warmup
+   ```
+
+**Complete example:**
+
+```dockerfile
+FROM php:8.4-fpm-alpine AS php_base
+
+RUN apk add --no-cache \
+    libpq postgresql-dev icu-dev libzip-dev \
+    && apk upgrade --no-cache
+
+RUN docker-php-ext-install pdo pdo_pgsql intl opcache zip
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+WORKDIR /app
+
+FROM php_base AS php_prod
+
+ENV APP_ENV=prod
+
+COPY composer.* symfony.* ./
+RUN composer install --no-cache --prefer-dist --no-dev --no-autoloader --no-scripts
+
+COPY . .
+
+RUN composer dump-autoload --classmap-authoritative --no-dev \
+    && php bin/console assets:install public \
+    && php bin/console cache:warmup \
+    && mkdir -p var/cache var/log \
+    && chown -R www-data:www-data var \
+    && chmod -R 775 var
+
+CMD ["php-fpm"]
+```
+
 ## Image Tagging
 
 | Image | Tags |
