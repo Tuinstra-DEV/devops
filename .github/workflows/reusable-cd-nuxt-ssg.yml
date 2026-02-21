@@ -198,14 +198,15 @@ jobs:
           ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" <<EOF
           set -euo pipefail
           cd "${{ inputs.remote-path }}"
-          cat > .deploy-override.yml <<OVERRIDE
+          override_file=".deploy-override-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.service-name }}.yml"
+          trap 'rm -f "$override_file"' EXIT
+          cat > "$override_file" <<OVERRIDE
           services:
             ${{ inputs.service-name }}:
               image: ${{ needs.build-scan-push.outputs.image-ref }}
           OVERRIDE
-          docker compose -f "${{ inputs.compose-file }}" -f .deploy-override.yml pull "${{ inputs.service-name }}"
-          docker compose -f "${{ inputs.compose-file }}" -f .deploy-override.yml up -d --no-deps "${{ inputs.service-name }}"
-          rm -f .deploy-override.yml
+          docker compose -f "${{ inputs.compose-file }}" -f "$override_file" pull "${{ inputs.service-name }}"
+          docker compose -f "${{ inputs.compose-file }}" -f "$override_file" up -d --no-deps "${{ inputs.service-name }}"
           EOF
 
       - name: Health check
@@ -214,13 +215,16 @@ jobs:
           interval=5
           deadline=$(( $(date +%s) + timeout ))
           # Resolve the host port from the running container
-          mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-            "cd '${{ inputs.remote-path }}' && docker compose -f '${{ inputs.compose-file }}' port '${{ inputs.service-name }}' ${{ inputs.port }}")
+          if ! mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "cd '${{ inputs.remote-path }}' && docker compose -f '${{ inputs.compose-file }}' port '${{ inputs.service-name }}' ${{ inputs.port }}"); then
+            echo "Unable to resolve mapped port for service '${{ inputs.service-name }}' on internal port '${{ inputs.port }}'" >&2
+            exit 1
+          fi
           host_port=$(echo "$mapped" | cut -d: -f2)
           echo "Container mapped to localhost:${host_port}"
           while [[ $(date +%s) -lt $deadline ]]; do
             if ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-              "curl -fsS http://localhost:${host_port}${{ inputs.health-path }}" >/dev/null 2>&1; then
+              "curl -fsS --connect-timeout 2 --max-time 5 http://localhost:${host_port}${{ inputs.health-path }}" >/dev/null 2>&1; then
               echo "Health check passed on localhost:${host_port}${{ inputs.health-path }}"
               exit 0
             fi

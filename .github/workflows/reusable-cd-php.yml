@@ -268,9 +268,11 @@ jobs:
             "WORKER_SERVICES='${WORKER_SERVICES}' PHP_IMAGE_REF='${PHP_IMAGE_REF}' NGINX_IMAGE_REF='${NGINX_IMAGE_REF}' bash -s" <<'EOF'
           set -euo pipefail
           cd "${{ inputs.remote-path }}"
+          override_file=".deploy-override-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.service-name }}.yml"
+          trap 'rm -f "$override_file"' EXIT
 
           # Create override file with pinned image digests
-          cat > .deploy-override.yml <<OVERRIDE
+          cat > "$override_file" <<OVERRIDE
           services:
             ${{ inputs.service-name }}:
               image: ${PHP_IMAGE_REF}
@@ -283,7 +285,7 @@ jobs:
             IFS=',' read -ra WORKERS <<< "$WORKER_SERVICES"
             for worker in "${WORKERS[@]}"; do
               worker=$(echo "$worker" | xargs)  # trim whitespace
-              cat >> .deploy-override.yml <<WORKER
+              cat >> "$override_file" <<WORKER
             ${worker}:
               image: ${PHP_IMAGE_REF}
           WORKER
@@ -291,7 +293,7 @@ jobs:
           fi
 
           if [ "${{ inputs.pre-deploy-cleanup }}" = "down-remove-orphans" ]; then
-            docker compose -f docker-compose.yml -f .deploy-override.yml down --remove-orphans || true
+            docker compose -f docker-compose.yml -f "$override_file" down --remove-orphans || true
           fi
 
           deploy_services=("${{ inputs.service-name }}" "${{ inputs.nginx-service-name }}")
@@ -307,11 +309,8 @@ jobs:
           fi
 
           # Pull and deploy only relevant services.
-          docker compose -f docker-compose.yml -f .deploy-override.yml pull "${deploy_services[@]}"
-          docker compose -f docker-compose.yml -f .deploy-override.yml up -d "${deploy_services[@]}"
-
-          # Cleanup override
-          rm -f .deploy-override.yml
+          docker compose -f docker-compose.yml -f "$override_file" pull "${deploy_services[@]}"
+          docker compose -f docker-compose.yml -f "$override_file" up -d "${deploy_services[@]}"
           EOF
 
       - name: Run database migrations
@@ -350,14 +349,17 @@ jobs:
           deadline=$(( $(date +%s) + timeout ))
 
           # Resolve the host port from the running container
-          mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-            "cd '${{ inputs.remote-path }}' && docker compose -f docker-compose.yml port '${{ inputs.nginx-service-name }}' ${{ inputs.port }}")
+          if ! mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "cd '${{ inputs.remote-path }}' && docker compose -f docker-compose.yml port '${{ inputs.nginx-service-name }}' ${{ inputs.port }}"); then
+            echo "Unable to resolve mapped port for service '${{ inputs.nginx-service-name }}' on internal port '${{ inputs.port }}'" >&2
+            exit 1
+          fi
           host_port=$(echo "$mapped" | cut -d: -f2)
           echo "Container mapped to localhost:${host_port}"
 
           while [[ $(date +%s) -lt $deadline ]]; do
             if ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
-              "curl -fsS http://localhost:${host_port}/health" >/dev/null 2>&1; then
+              "curl -fsS --connect-timeout 2 --max-time 5 http://localhost:${host_port}/health" >/dev/null 2>&1; then
               echo "Health check passed on localhost:${host_port}/health"
               exit 0
             fi
