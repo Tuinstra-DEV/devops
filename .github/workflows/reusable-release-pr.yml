@@ -1,0 +1,184 @@
+name: Reusable Release PR
+
+on:
+  workflow_call:
+    inputs:
+      release-mode:
+        description: "Release title strategy: semver or date"
+        required: false
+        type: string
+        default: "semver"
+      bump:
+        description: "Semver bump type (used when release-mode=semver)"
+        required: false
+        type: string
+        default: "auto"
+      base-branch:
+        description: "Base branch for the release PR"
+        required: false
+        type: string
+        default: "main"
+      head-branch:
+        description: "Head branch for the release PR"
+        required: false
+        type: string
+        default: "develop"
+      date-format:
+        description: "Date format for release-mode=date"
+        required: false
+        type: string
+        default: "%Y-%m-%d"
+      timezone:
+        description: "Timezone for release-mode=date"
+        required: false
+        type: string
+        default: "UTC"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ inputs.release-mode }}
+          BUMP_INPUT: ${{ inputs.bump }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          HEAD_BRANCH: ${{ inputs.head-branch }}
+          DATE_FORMAT: ${{ inputs.date-format }}
+          TZ_NAME: ${{ inputs.timezone }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin "${BASE_BRANCH}" "${HEAD_BRANCH}" --tags
+
+          if [[ -z "$(git log "origin/${BASE_BRANCH}..origin/${HEAD_BRANCH}" --oneline)" ]]; then
+            echo "No changes to release - ${HEAD_BRANCH} and ${BASE_BRANCH} are in sync."
+            exit 0
+          fi
+
+          open_release_pr_count=$(gh pr list --base "${BASE_BRANCH}" --head "${HEAD_BRANCH}" --state open --json number --jq 'length')
+          if [[ "${open_release_pr_count}" -gt 0 ]]; then
+            echo "An open release PR already exists for ${HEAD_BRANCH} -> ${BASE_BRANCH}."
+            exit 0
+          fi
+
+          detected_bump="patch"
+          pr_numbers=$(git log "origin/${BASE_BRANCH}..origin/${HEAD_BRANCH}" --merges --format='%s' \
+            | sed -n 's/^Merge pull request #\([0-9]\+\).*/\1/p' \
+            | awk '!seen[$0]++')
+
+          changelog_lines=""
+          if [[ -n "${pr_numbers}" ]]; then
+            for pr_number in ${pr_numbers}; do
+              pr_title=$(gh pr view "${pr_number}" --json title --jq '.title')
+              changelog_lines+="- #${pr_number} ${pr_title}"$'\n'
+
+              pr_title_lc=$(printf '%s' "${pr_title}" | tr '[:upper:]' '[:lower:]')
+              if [[ "${pr_title_lc}" == feat:* ]] || [[ "${pr_title_lc}" == feat\[* ]] || [[ "${pr_title_lc}" == feat\(* ]]; then
+                detected_bump="minor"
+              fi
+            done
+          else
+            changelog_lines=$(git log "origin/${BASE_BRANCH}..origin/${HEAD_BRANCH}" --oneline --no-merges --format='- %s')
+          fi
+
+          if [[ "${RELEASE_MODE}" == "date" ]]; then
+            release_value=$(TZ="${TZ_NAME}" date +"${DATE_FORMAT}")
+            title="release: ${release_value}"
+            metadata=$(cat <<EOF
+          - Mode: date
+          - Date format: ${DATE_FORMAT}
+          - Timezone: ${TZ_NAME}
+          EOF
+          )
+          else
+            latest_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+            if [[ -z "${latest_tag}" ]]; then
+              current_major=1
+              current_minor=0
+              current_patch=0
+            else
+              raw_version="${latest_tag#v}"
+              IFS='.' read -r current_major current_minor current_patch <<< "${raw_version}"
+            fi
+
+            bump="${BUMP_INPUT}"
+            if [[ "${bump}" == "auto" ]]; then
+              bump="${detected_bump}"
+            fi
+
+            if [[ -z "${latest_tag}" ]]; then
+              next_major=1
+              next_minor=0
+              next_patch=0
+            else
+              next_major=${current_major}
+              next_minor=${current_minor}
+              next_patch=${current_patch}
+
+              case "${bump}" in
+                major)
+                  next_major=$((current_major + 1))
+                  next_minor=0
+                  next_patch=0
+                  ;;
+                minor)
+                  next_minor=$((current_minor + 1))
+                  next_patch=0
+                  ;;
+                patch)
+                  next_patch=$((current_patch + 1))
+                  ;;
+                *)
+                  echo "Unsupported bump type: ${bump}"
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            version="${next_major}.${next_minor}.${next_patch}"
+            title="release: v${version}"
+            metadata=$(cat <<EOF
+          - Mode: semver
+          - Bump: ${bump}
+          - Previous version: ${latest_tag:-none}
+          EOF
+          )
+          fi
+
+          body=$(cat <<EOF
+          ## ${title}
+
+          ${metadata}
+
+          ### Changes
+
+          ${changelog_lines}
+          EOF
+          )
+
+          gh pr create \
+            --base "${BASE_BRANCH}" \
+            --head "${HEAD_BRANCH}" \
+            --title "${title}" \
+            --body "${body}" || {
+            if [[ "$(gh pr list --base "${BASE_BRANCH}" --head "${HEAD_BRANCH}" --state open --json number --jq 'length')" -gt 0 ]]; then
+              echo "PR created successfully (ignoring GraphQL warning)"
+            else
+              echo "Failed to create release PR"
+              exit 1
+            fi
+          }
+
+          echo "Release PR created: ${title}"

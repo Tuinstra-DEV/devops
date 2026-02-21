@@ -5,55 +5,14 @@
 # Creates a git tag when the merge commit belongs to a release PR with title:
 #   release: vX.Y.Z
 
-name: Tag Release Version
+name: release-tag
 
 on:
   push:
     branches:
       - main
 
-permissions:
-  contents: write
-  pull-requests: read
-
 jobs:
   tag-release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Create tag from release PR title
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          pr_title=$(gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --jq '.[0].title // ""')
-          if [[ -z "$pr_title" ]]; then
-            echo "No PR associated with commit ${SHA}. Skipping tag creation."
-            exit 0
-          fi
-
-          if [[ ! "$pr_title" =~ ^release:[[:space:]]v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "PR title is not a versioned release title: ${pr_title}"
-            echo "Expected format: release: vX.Y.Z"
-            exit 0
-          fi
-
-          tag="v${BASH_REMATCH[1]}"
-
-          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Tag ${tag} already exists. Skipping."
-            exit 0
-          fi
-
-          git tag "${tag}" "${SHA}"
-          git push origin "${tag}"
-
-          echo "Created tag ${tag} at ${SHA}."
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-release-tag.yml@v1
+    secrets: inherit
