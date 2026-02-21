@@ -23,6 +23,7 @@ on:
 | `nginx-service-name` | string | No | `"nginx"` | Docker Compose nginx service name on target host |
 | `image-name` | string | Yes | - | Full GHCR image name without tag (used for both php and nginx images) |
 | `health-url` | string | No | `""` | Public health URL (informational only) |
+| `health-path` | string | No | `"/health"` | Path checked on localhost during health check |
 | `port` | number | No | `80` | Exposed nginx service port (internal container port) |
 | `environment` | string | Yes | - | GitHub Environment name (staging/production) |
 | `workdir` | string | No | `.` | Project working directory |
@@ -149,7 +150,7 @@ with:
 ## Health Check Contract
 
 The deployed container must:
-- Expose a `/health` endpoint on the nginx service
+- Expose a health endpoint on the nginx service (default `/health`, configurable via `health-path`)
 - Return HTTP 200 within 180 seconds of container start
 - Health check runs via SSH on localhost, not public URL
 
