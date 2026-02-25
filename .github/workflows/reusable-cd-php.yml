@@ -107,6 +107,21 @@ on:
         required: false
         default: "none"
         type: string
+      immutable-runtime:
+        description: "Enforce immutable runtime guardrails (no /var/www/html bind mounts on deployed services)"
+        required: false
+        default: false
+        type: boolean
+      verify-runtime-command:
+        description: "Optional command executed inside deployed PHP service (for runtime verification)"
+        required: false
+        default: ""
+        type: string
+      verify-runtime-command-contains:
+        description: "Optional substring expected in verify-runtime-command output"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   build-scan-push:
@@ -323,6 +338,59 @@ jobs:
           docker compose -f docker-compose.yml -f "$override_file" up -d "${deploy_services[@]}"
           EOF
 
+      - name: Verify deployed runtime image and mount guardrails
+        env:
+          WORKER_SERVICES: ${{ inputs.worker-services }}
+          PHP_IMAGE_REF: ${{ needs.build-scan-push.outputs.php-image-ref }}
+          NGINX_IMAGE_REF: ${{ needs.build-scan-push.outputs.nginx-image-ref }}
+        run: |
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "WORKER_SERVICES='${WORKER_SERVICES}' PHP_IMAGE_REF='${PHP_IMAGE_REF}' NGINX_IMAGE_REF='${NGINX_IMAGE_REF}' IMMUTABLE_RUNTIME='${{ inputs.immutable-runtime }}' bash -s" <<'EOF'
+          set -euo pipefail
+          cd "${{ inputs.remote-path }}"
+
+          check_service() {
+            local service="$1"
+            local expected_image="$2"
+
+            local container_id
+            container_id=$(docker compose -f docker-compose.yml ps -q "$service")
+            if [ -z "$container_id" ]; then
+              echo "Service '$service' has no running container" >&2
+              exit 1
+            fi
+
+            local actual_image
+            actual_image=$(docker inspect "$container_id" --format '{{.Config.Image}}')
+            if [ "$actual_image" != "$expected_image" ]; then
+              echo "Service '$service' image mismatch. Expected '$expected_image' got '$actual_image'" >&2
+              exit 1
+            fi
+
+            if [ "$IMMUTABLE_RUNTIME" = "true" ]; then
+              local has_code_bind
+              has_code_bind=$(docker inspect "$container_id" --format '{{range .Mounts}}{{if and (eq .Type "bind") (eq .Destination "/var/www/html")}}yes{{end}}{{end}}')
+              if [ "$has_code_bind" = "yes" ]; then
+                echo "Service '$service' has forbidden bind mount on /var/www/html" >&2
+                exit 1
+              fi
+            fi
+          }
+
+          check_service "${{ inputs.service-name }}" "$PHP_IMAGE_REF"
+          check_service "${{ inputs.nginx-service-name }}" "$NGINX_IMAGE_REF"
+
+          if [ -n "$WORKER_SERVICES" ]; then
+            IFS=',' read -ra WORKERS <<< "$WORKER_SERVICES"
+            for worker in "${WORKERS[@]}"; do
+              worker=$(echo "$worker" | xargs)
+              if [ -n "$worker" ]; then
+                check_service "$worker" "$PHP_IMAGE_REF"
+              fi
+            done
+          fi
+          EOF
+
       - name: Run database migrations
         if: ${{ inputs.run-migrations }}
         run: |
@@ -350,6 +418,31 @@ jobs:
           # Convert comma-separated to space-separated for docker compose
           services="${WORKER_SERVICES//,/ }"
           docker compose -f docker-compose.yml restart $services
+          EOF
+
+      - name: Verify runtime command
+        if: ${{ inputs.verify-runtime-command != '' }}
+        env:
+          VERIFY_RUNTIME_COMMAND: ${{ inputs.verify-runtime-command }}
+          VERIFY_RUNTIME_COMMAND_CONTAINS: ${{ inputs.verify-runtime-command-contains }}
+        run: |
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "VERIFY_RUNTIME_COMMAND='${VERIFY_RUNTIME_COMMAND}' VERIFY_RUNTIME_COMMAND_CONTAINS='${VERIFY_RUNTIME_COMMAND_CONTAINS}' bash -s" <<'EOF'
+          set -euo pipefail
+          cd "${{ inputs.remote-path }}"
+
+          output=$(docker compose -f docker-compose.yml exec -T "${{ inputs.service-name }}" sh -lc "$VERIFY_RUNTIME_COMMAND")
+          printf '%s\n' "$output"
+
+          if [ -n "$VERIFY_RUNTIME_COMMAND_CONTAINS" ]; then
+            case "$output" in
+              *"$VERIFY_RUNTIME_COMMAND_CONTAINS"*) ;;
+              *)
+                echo "Runtime verification output did not contain expected token: $VERIFY_RUNTIME_COMMAND_CONTAINS" >&2
+                exit 1
+                ;;
+            esac
+          fi
           EOF
 
       - name: Health check
