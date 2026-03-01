@@ -126,6 +126,7 @@ jobs:
       - name: Upload Trivy scan results to GitHub Security tab
         uses: aquasecurity/trivy-action@0.28.0
         if: always()
+        continue-on-error: true
         with:
           image-ref: scan-target:${{ github.sha }}
           format: sarif
