@@ -20,6 +20,12 @@ Workflow contracts document the stable API surface of each reusable workflow:
 | [reusable-ci-docker.yml](reusable-ci-docker.md) | v1 | Stable |
 | [reusable-cd-nuxt-ssg.yml](reusable-cd-nuxt-ssg.md) | v1 | Stable |
 
+### Vite / SPA
+
+| Workflow | Version | Status |
+|----------|---------|--------|
+| [reusable-cd-vite-spa.yml](reusable-cd-vite-spa.md) | v1 | Stable |
+
 ### PHP / Symfony
 
 | Workflow | Version | Status |
