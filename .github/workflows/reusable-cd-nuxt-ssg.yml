@@ -81,6 +81,7 @@ on:
 jobs:
   build-scan-push:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       packages: write
@@ -93,6 +94,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Resolve build args from environment
+        id: resolve-args
+        run: |
+          args=""
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            args="${args}${line}"$'\n'
+          done <<< "$CALLER_BUILD_ARGS"
+          for key in $(echo "$ALL_VARS" | jq -r 'keys[]'); do
+            if ! echo "$args" | grep -q "^${key}="; then
+              value=$(echo "$ALL_VARS" | jq -r --arg k "$key" '.[$k]')
+              args="${args}${key}=${value}"$'\n'
+            fi
+          done
+          {
+            echo "args<<ARGS_EOF"
+            printf '%s' "$args"
+            echo "ARGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+        working-directory: .
+        env:
+          CALLER_BUILD_ARGS: ${{ inputs.build-args }}
+          ALL_VARS: ${{ toJSON(vars) }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -112,7 +137,7 @@ jobs:
           push: false
           load: true
           tags: scan-target:${{ github.sha }}
-          build-args: ${{ inputs.build-args }}
+          build-args: ${{ steps.resolve-args.outputs.args }}
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.35.0
@@ -151,7 +176,7 @@ jobs:
           tags: |
             ${{ inputs.image-name }}:${{ github.sha }}
             ${{ inputs.image-name }}:latest
-          build-args: ${{ inputs.build-args }}
+          build-args: ${{ steps.resolve-args.outputs.args }}
 
       - name: Prepare immutable image reference
         id: image
