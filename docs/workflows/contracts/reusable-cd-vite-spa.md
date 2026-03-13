@@ -49,6 +49,7 @@ These must be configured in the GitHub Environment:
 | Secret | Description |
 |--------|-------------|
 | `SSH_PRIVATE_KEY` | Ed25519 private key for deploy host access |
+| `SECRET_BUILD_ARGS` | Newline-separated Docker build args containing secrets (optional). Merged with `build-args` and environment variables. Precedence: `build-args` > `SECRET_BUILD_ARGS` > env vars. |
 
 ## Required Environment Variables
 
@@ -127,6 +128,16 @@ Changes that require a major version bump:
 - Changing image tagging strategy
 - Changing default security scan behavior
 
+## Build Args Precedence
+
+Docker build-args are resolved from three sources in this order:
+
+1. **`build-args` input** — explicit args passed by the caller
+2. **`SECRET_BUILD_ARGS` secret** — sensitive values passed as a multiline secret
+3. **Environment variables** — all `vars.*` from the GitHub Environment (auto-resolved)
+
+If the same key appears in multiple sources, the higher-precedence source wins.
+
 ## Example Caller
 
 ```yaml
@@ -141,6 +152,9 @@ jobs:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-vite-spa.yml@v1
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SECRET_BUILD_ARGS: |
+        VITE_API_KEY=${{ secrets.VITE_API_KEY }}
+        VITE_AUTH_URL=${{ secrets.VITE_AUTH_URL }}
     with:
       service-name: my-site
       image-name: ghcr.io/my-org/my-site

@@ -6,6 +6,9 @@ on:
       SSH_PRIVATE_KEY:
         description: SSH private key for deployment host authentication
         required: false
+      SECRET_BUILD_ARGS:
+        description: "Newline-separated Docker build args containing secrets (e.g. VITE_API_KEY=secret-value). These are merged with build-args and environment variables."
+        required: false
     inputs:
       service-name:
         description: Docker Compose service name on target host
@@ -98,17 +101,24 @@ jobs:
       - name: Resolve build args from environment
         id: resolve-args
         run: |
-          # Merge caller build-args with environment variables.
-          # All variables from the GitHub environment are available via
-          # the ALL_VARS JSON object. We extract every key/value pair and
-          # add it as a build arg, unless the caller already provided it.
+          # Merge caller build-args, secret build-args, and environment
+          # variables into a single set of Docker build-args.
+          # Precedence: explicit build-args > secret-build-args > env vars.
           args=""
           # 1. Collect caller-provided build-args
           while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             args="${args}${line}"$'\n'
           done <<< "$CALLER_BUILD_ARGS"
-          # 2. Append environment variables (skip duplicates)
+          # 2. Merge secret build-args (skip duplicates)
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            key="${line%%=*}"
+            if ! echo "$args" | grep -q "^${key}="; then
+              args="${args}${line}"$'\n'
+            fi
+          done <<< "$SECRET_ARGS"
+          # 3. Append environment variables (skip duplicates)
           for key in $(echo "$ALL_VARS" | jq -r 'keys[]'); do
             if ! echo "$args" | grep -q "^${key}="; then
               value=$(echo "$ALL_VARS" | jq -r --arg k "$key" '.[$k]')
@@ -124,6 +134,7 @@ jobs:
         working-directory: .
         env:
           CALLER_BUILD_ARGS: ${{ inputs.build-args }}
+          SECRET_ARGS: ${{ secrets.SECRET_BUILD_ARGS }}
           ALL_VARS: ${{ toJSON(vars) }}
 
       - name: Set up Docker Buildx
