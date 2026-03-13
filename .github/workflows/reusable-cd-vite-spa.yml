@@ -115,7 +115,7 @@ jobs:
           build-args: ${{ inputs.build-args }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: scan-target:${{ github.sha }}
           format: table
@@ -124,7 +124,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.35.0
         if: always()
         with:
           image-ref: scan-target:${{ github.sha }}
