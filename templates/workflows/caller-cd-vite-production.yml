@@ -1,0 +1,33 @@
+# Template: Production CD caller workflow for Vite SPA sites.
+# Copy this file to your consumer repo at .github/workflows/deploy-production.yml
+# and replace <YOUR-...> placeholders with actual values.
+#
+# Required GitHub configuration in the consumer repo:
+#   Environment: production
+#   Secrets:     SSH_PRIVATE_KEY (environment-level)
+#   Variables:   SSH_HOST (environment-level)
+
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-vite-spa.yml@v1
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    with:
+      service-name: <YOUR-SERVICE-NAME>           # e.g. site-marcel
+      image-name: ghcr.io/<YOUR-ORG>/<YOUR-REPO>  # e.g. ghcr.io/marcel-tuinstra/site-marcel
+      environment: production
+      remote-path: <YOUR-REMOTE-PATH>/production   # e.g. /mnt/ssd1000-01/projects/site-marcel/production
+      ssh-user: <YOUR-SSH-USER>                    # e.g. mtuinstra
+      dockerfile: Dockerfile
+      compose-file: docker-compose.production.yml  # production compose file in consumer repo root

@@ -1,0 +1,234 @@
+name: Reusable CD Vite SPA
+
+on:
+  workflow_call:
+    secrets:
+      SSH_PRIVATE_KEY:
+        description: SSH private key for deployment host authentication
+        required: false
+    inputs:
+      service-name:
+        description: Docker Compose service name on target host
+        required: true
+        type: string
+      image-name:
+        description: Full GHCR image name without tag
+        required: true
+        type: string
+      health-url:
+        description: "Public health URL (optional, informational only — health check runs via SSH on localhost)"
+        required: false
+        default: ""
+        type: string
+      health-path:
+        description: "Path checked on localhost during health check"
+        required: false
+        default: "/health"
+        type: string
+      port:
+        description: Exposed service port
+        required: false
+        default: 80
+        type: number
+      environment:
+        description: GitHub Environment name (staging or production)
+        required: true
+        type: string
+      workdir:
+        description: Project working directory
+        required: false
+        default: .
+        type: string
+      dockerfile:
+        description: Dockerfile path relative to consumer repo root
+        required: false
+        default: Dockerfile
+        type: string
+      remote-path:
+        description: Deploy path on target host containing compose file
+        required: true
+        type: string
+      ssh-user:
+        description: SSH user for deploy host
+        required: true
+        type: string
+      ssh-port:
+        description: SSH port
+        required: false
+        default: 22
+        type: number
+      compose-file:
+        description: Compose file path relative to consumer repo root
+        required: false
+        default: docker-compose.yml
+        type: string
+      build-args:
+        description: "Newline-separated Docker build args (e.g. ARG_NAME=value)"
+        required: false
+        default: ""
+        type: string
+      trivy-severity:
+        description: "Comma-separated severity levels to scan for"
+        required: false
+        default: "CRITICAL,HIGH"
+        type: string
+      trivy-exit-code:
+        description: "Exit code when vulnerabilities are found (1 = fail, 0 = warn only)"
+        required: false
+        default: "1"
+        type: string
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.workdir }}
+    outputs:
+      image-ref: ${{ steps.image.outputs.image_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.workdir }}
+          file: ${{ inputs.dockerfile }}
+          push: false
+          load: true
+          tags: scan-target:${{ github.sha }}
+          build-args: ${{ inputs.build-args }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: scan-target:${{ github.sha }}
+          format: table
+          exit-code: ${{ inputs.trivy-exit-code }}
+          severity: ${{ inputs.trivy-severity }}
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: aquasecurity/trivy-action@0.28.0
+        if: always()
+        with:
+          image-ref: scan-target:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: ${{ inputs.trivy-severity }}
+          ignore-unfixed: true
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Push image to GHCR
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.workdir }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ inputs.image-name }}:${{ github.sha }}
+            ${{ inputs.image-name }}:latest
+          build-args: ${{ inputs.build-args }}
+
+      - name: Prepare immutable image reference
+        id: image
+        run: |
+          digest="${{ steps.push.outputs.digest }}"
+          image_ref="${{ inputs.image-name }}@${digest}"
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Ensure SSH key is present
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "Missing SSH_PRIVATE_KEY. Configure it as an environment secret in the caller repo, or pass it explicitly when calling this workflow." >&2
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ inputs.ssh-port }}" "${{ vars.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload compose file
+        run: |
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "mkdir -p '${{ inputs.remote-path }}'"
+          scp -P "${{ inputs.ssh-port }}" \
+            "${{ inputs.compose-file }}" \
+            "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}:${{ inputs.remote-path }}/${{ inputs.compose-file }}"
+
+      - name: Deploy image digest over SSH
+        run: |
+          ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" "bash -s" <<'EOF'
+          set -euo pipefail
+          cd "${{ inputs.remote-path }}"
+          override_file=".deploy-override-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.service-name }}.yml"
+          trap 'rm -f "$override_file"' EXIT
+          cat > "$override_file" <<OVERRIDE
+          services:
+            ${{ inputs.service-name }}:
+              image: ${{ needs.build-scan-push.outputs.image-ref }}
+          OVERRIDE
+          docker compose -f "${{ inputs.compose-file }}" -f "$override_file" pull "${{ inputs.service-name }}"
+          docker compose -f "${{ inputs.compose-file }}" -f "$override_file" up -d --no-deps "${{ inputs.service-name }}"
+          EOF
+
+      - name: Health check
+        run: |
+          timeout=180
+          interval=5
+          deadline=$(( $(date +%s) + timeout ))
+          # Resolve the host port from the running container
+          if ! mapped=$(ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+            "cd '${{ inputs.remote-path }}' && docker compose -f '${{ inputs.compose-file }}' port '${{ inputs.service-name }}' ${{ inputs.port }}"); then
+            echo "Unable to resolve mapped port for service '${{ inputs.service-name }}' on internal port '${{ inputs.port }}'" >&2
+            exit 1
+          fi
+          host_port=$(echo "$mapped" | cut -d: -f2)
+          echo "Container mapped to localhost:${host_port}"
+          while [[ $(date +%s) -lt $deadline ]]; do
+            if ssh -p "${{ inputs.ssh-port }}" "${{ inputs.ssh-user }}@${{ vars.SSH_HOST }}" \
+              "curl -fsS --connect-timeout 2 --max-time 5 http://localhost:${host_port}${{ inputs.health-path }}" >/dev/null 2>&1; then
+              echo "Health check passed on localhost:${host_port}${{ inputs.health-path }}"
+              exit 0
+            fi
+            sleep "$interval"
+          done
+          echo "Health check failed on localhost:${host_port}${{ inputs.health-path }}" >&2
+          exit 1
