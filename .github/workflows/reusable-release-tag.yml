@@ -7,7 +7,7 @@ on:
         description: "Regex used to extract semver from release PR title"
         required: false
         type: string
-        default: '^release:[[:space:]]v([0-9]+\.[0-9]+\.[0-9]+)$'
+        default: '^[Rr]elease:?[[:space:]]v([0-9]+\.[0-9]+\.[0-9]+)$'
 
 permissions:
   contents: write
