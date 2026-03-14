@@ -163,7 +163,7 @@ jobs:
           build-args: ${{ inputs.build-args }}
 
       - name: Run Trivy on PHP image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: scan-target-php:${{ github.sha }}
           format: table
@@ -172,7 +172,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy PHP scan results
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         if: always()
         with:
           image-ref: scan-target-php:${{ github.sha }}
@@ -221,7 +221,7 @@ jobs:
           tags: scan-target-nginx:${{ github.sha }}
 
       - name: Run Trivy on nginx image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: scan-target-nginx:${{ github.sha }}
           format: table
