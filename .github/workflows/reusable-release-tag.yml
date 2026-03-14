@@ -32,9 +32,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          pr_title=$(gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --jq '.[0].title // ""')
+          # Retry PR lookup up to 3 times with 10s delay — the GitHub API
+          # can take a few seconds to index the commit-to-PR association
+          # after a merge.
+          pr_title=""
+          for attempt in 1 2 3; do
+            pr_title=$(gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --jq '.[0].title // ""')
+            if [[ -n "${pr_title}" ]]; then
+              break
+            fi
+            echo "Attempt ${attempt}: No PR found for ${SHA}. Retrying in 10s..."
+            sleep 10
+          done
+
           if [[ -z "${pr_title}" ]]; then
-            echo "No PR associated with commit ${SHA}. Skipping tag creation."
+            echo "No PR associated with commit ${SHA} after 3 attempts. Skipping tag creation."
             exit 0
           fi
 
