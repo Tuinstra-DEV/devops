@@ -161,31 +161,39 @@ jobs:
           RESOLVED_BUILD_ARGS: ${{ steps.resolve-args.outputs.args }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: scan-target:${{ github.sha }}
-          format: table
-          exit-code: ${{ inputs.trivy-exit-code }}
-          severity: ${{ inputs.trivy-severity }}
-          ignore-unfixed: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.67.2 image \
+            --ignore-unfixed \
+            --severity "${{ inputs.trivy-severity }}" \
+            --exit-code "${{ inputs.trivy-exit-code }}" \
+            --format table \
+            "scan-target:${{ github.sha }}"
+        working-directory: .
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: aquasecurity/trivy-action@0.35.0
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}:/workspace" \
+            -w "/workspace/${{ inputs.workdir }}" \
+            aquasec/trivy:0.67.2 image \
+            --ignore-unfixed \
+            --severity "${{ inputs.trivy-severity }}" \
+            --format sarif \
+            --output trivy-results.sarif \
+            "scan-target:${{ github.sha }}"
         if: always()
         continue-on-error: true
-        with:
-          image-ref: scan-target:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: ${{ inputs.trivy-severity }}
-          ignore-unfixed: true
+        working-directory: .
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         continue-on-error: true
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: ${{ inputs.workdir }}/trivy-results.sarif
 
       - name: Push image to GHCR
         id: push
