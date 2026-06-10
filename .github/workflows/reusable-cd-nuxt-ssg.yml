@@ -140,25 +140,25 @@ jobs:
           SECRET_ARGS: ${{ secrets.SECRET_BUILD_ARGS }}
           ALL_VARS: ${{ toJSON(vars) }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
       - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        working-directory: .
 
       - name: Build image for scanning
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ inputs.workdir }}
-          file: ${{ inputs.dockerfile }}
-          push: false
-          load: true
-          tags: scan-target:${{ github.sha }}
-          build-args: ${{ steps.resolve-args.outputs.args }}
+        run: |
+          build_args=()
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            build_args+=(--build-arg "$line")
+          done <<< "$RESOLVED_BUILD_ARGS"
+          docker build \
+            -f "${{ inputs.dockerfile }}" \
+            -t "scan-target:${{ github.sha }}" \
+            "${build_args[@]}" \
+            "${{ inputs.workdir }}"
+        working-directory: .
+        env:
+          RESOLVED_BUILD_ARGS: ${{ steps.resolve-args.outputs.args }}
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.35.0
@@ -189,15 +189,16 @@ jobs:
 
       - name: Push image to GHCR
         id: push
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ inputs.workdir }}
-          file: ${{ inputs.dockerfile }}
-          push: true
-          tags: |
-            ${{ inputs.image-name }}:${{ github.sha }}
-            ${{ inputs.image-name }}:latest
-          build-args: ${{ steps.resolve-args.outputs.args }}
+        run: |
+          sha_tag="${{ inputs.image-name }}:${{ github.sha }}"
+          latest_tag="${{ inputs.image-name }}:latest"
+          docker tag "scan-target:${{ github.sha }}" "$sha_tag"
+          docker tag "scan-target:${{ github.sha }}" "$latest_tag"
+          docker push "$sha_tag"
+          docker push "$latest_tag"
+          digest=$(docker buildx imagetools inspect "$sha_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        working-directory: .
 
       - name: Prepare immutable image reference
         id: image
