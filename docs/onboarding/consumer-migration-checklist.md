@@ -193,14 +193,29 @@ cp <devops-repo>/templates/workflows/caller-release-tag.yml .github/workflows/re
 
 Git tags are used for release traceability. GitHub Releases are optional. The release PR remains the audit trail and the Docker image digest remains the rollback unit.
 
-## 10. DNS and Reverse Proxy
+## 10. Gate Baseline Evidence
+
+Copy the Gate baseline workflow template into your consumer repo:
+
+```bash
+cp <devops-repo>/templates/workflows/caller-gate-baseline.yml .github/workflows/gate-baseline.yml
+```
+
+Create a repo-owned Gate integration contract at `.gate/baseline.yml`. Use
+`docs/standards/gate-baseline.md` for the required fields and rollout checklist.
+
+Start with `fail-on-missing: false` while onboarding so the workflow produces an
+evidence artifact without blocking unrelated work. After the checklist is green,
+set `fail-on-missing: true` and add the workflow to branch protection.
+
+## 11. DNS and Reverse Proxy
 
 - **DNS**: Add a wildcard A-record `*.<your-domain>` pointing to your server.
 - **Staging URL**: `staging.<your-domain>` (e.g. `staging.marcel.tuinstra.dev`)
 - **Production URL**: `<your-domain>` (e.g. `marcel.tuinstra.dev`)
 - **Reverse proxy**: Configure Nginx Proxy Manager (or similar) to proxy each hostname to the corresponding local port with SSL.
 
-## 11. Validation
+## 12. Validation
 
 After setup, verify end-to-end:
 
@@ -209,8 +224,9 @@ After setup, verify end-to-end:
 3. **Health check**: Verify the staging health URL returns HTTP 200.
 4. **Production CD**: Push to `main` and confirm production deployment succeeds.
 5. **Health check**: Verify the production health URL returns HTTP 200.
+6. **Gate baseline**: Run the Gate baseline workflow and confirm the evidence artifact is uploaded.
 
-## 12. Rollback
+## 13. Rollback
 
 If a deployment fails:
 

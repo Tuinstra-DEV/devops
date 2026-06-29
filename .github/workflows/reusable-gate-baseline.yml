@@ -1,0 +1,77 @@
+name: Reusable Gate Baseline Evidence
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-missing:
+        description: Fail when required baseline checks are missing
+        required: false
+        default: false
+        type: boolean
+      require-deploy:
+        description: Require at least one reusable deploy workflow caller
+        required: false
+        default: true
+        type: boolean
+      require-renovate:
+        description: Require a Renovate config extending this repo's presets
+        required: false
+        default: true
+        type: boolean
+      gate-contract-path:
+        description: Path to the consumer repo Gate integration contract
+        required: false
+        default: .gate/baseline.yml
+        type: string
+      devops-ref:
+        description: Ref used to fetch baseline scan support from this repo
+        required: false
+        default: v1
+        type: string
+      upload-artifact:
+        description: Upload baseline evidence as an artifact
+        required: false
+        default: true
+        type: boolean
+      artifact-retention-days:
+        description: Retention period for baseline evidence artifacts
+        required: false
+        default: 30
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@v6
+        with:
+          path: consumer
+
+      - name: Checkout devops baseline support
+        uses: actions/checkout@v6
+        with:
+          repository: marcel-tuinstra/devops
+          ref: ${{ inputs.devops-ref }}
+          path: devops-platform
+
+      - name: Scan baseline
+        run: |
+          bash devops-platform/scripts/gate-baseline-scan.sh \
+            --repo consumer \
+            --output-dir gate-baseline-evidence \
+            --fail-on-missing "${{ inputs.fail-on-missing }}" \
+            --require-deploy "${{ inputs.require-deploy }}" \
+            --require-renovate "${{ inputs.require-renovate }}" \
+            --gate-contract-path "${{ inputs.gate-contract-path }}"
+
+      - name: Upload baseline evidence
+        if: ${{ always() && inputs.upload-artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-baseline-evidence
+          path: gate-baseline-evidence/
+          retention-days: ${{ inputs.artifact-retention-days }}
