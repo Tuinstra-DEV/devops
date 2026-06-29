@@ -34,6 +34,12 @@ Workflow contracts document the stable API surface of each reusable workflow:
 | [reusable-php-test.yml](reusable-php-test.md) | v1 | Stable |
 | [reusable-php-security.yml](reusable-php-security.md) | v1 | Stable |
 
+### Gate / Baseline Evidence
+
+| Workflow | Version | Status |
+|----------|---------|--------|
+| [reusable-gate-baseline.yml](reusable-gate-baseline.md) | v1 | Stable |
+
 ## Governance
 
 Changes to workflow contracts require:
