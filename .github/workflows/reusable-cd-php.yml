@@ -138,7 +138,7 @@ jobs:
       nginx-image-ref: ${{ steps.nginx-image.outputs.image_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -257,7 +257,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: actions/checkout@v7
 
       - name: Ensure SSH key is present
         env:

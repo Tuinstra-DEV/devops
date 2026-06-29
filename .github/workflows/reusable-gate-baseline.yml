@@ -47,12 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout consumer repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: consumer
 
       - name: Checkout devops baseline support
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: marcel-tuinstra/devops
           ref: ${{ inputs.devops-ref }}
