@@ -19,7 +19,7 @@ on:
 
 | Input | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `node-version` | string | No | `"22"` | Node.js version to use |
+| `node-version` | string | No | `"24"` | Node.js version to use |
 | `workdir` | string | No | `"."` | Working directory for monorepos |
 | `install-command` | string | No | `"npm ci"` | Install command |
 | `test-command` | string | No | `""` | Command to run tests (empty = skip) |
@@ -79,6 +79,6 @@ jobs:
   ci:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
     with:
-      node-version: "22"
+      node-version: "24"
       test-command: "npm test"
 ```
