@@ -80,6 +80,11 @@ on:
         required: false
         default: "1"
         type: string
+      upload-sarif:
+        description: "Upload Trivy SARIF results to GitHub code scanning"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-scan-push:
@@ -169,7 +174,7 @@ jobs:
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: aquasecurity/trivy-action@0.35.0
-        if: always()
+        if: ${{ always() && inputs.upload-sarif }}
         with:
           image-ref: scan-target:${{ github.sha }}
           format: sarif
@@ -179,7 +184,7 @@ jobs:
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: ${{ always() && inputs.upload-sarif }}
         continue-on-error: true
         with:
           sarif_file: trivy-results.sarif

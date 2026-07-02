@@ -80,6 +80,11 @@ on:
         required: false
         default: "1"
         type: string
+      upload-sarif:
+        description: "Upload Trivy SARIF results to GitHub code scanning"
+        required: false
+        default: false
+        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -174,6 +179,7 @@ jobs:
         working-directory: .
 
       - name: Upload Trivy scan results to GitHub Security tab
+        if: ${{ always() && inputs.upload-sarif }}
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -185,13 +191,12 @@ jobs:
             --format sarif \
             --output trivy-results.sarif \
             "scan-target:${{ github.sha }}"
-        if: always()
         continue-on-error: true
         working-directory: .
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: ${{ always() && inputs.upload-sarif }}
         continue-on-error: true
         with:
           sarif_file: ${{ inputs.workdir }}/trivy-results.sarif
