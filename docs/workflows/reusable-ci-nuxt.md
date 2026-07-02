@@ -11,7 +11,7 @@ Nuxt CI pipeline with the following sequence:
 
 ## Inputs
 
-- `node-version`: Node.js version (default `20`).
+- `node-version`: Node.js version (default `24`).
 - `workdir`: working directory for monorepos (default `.`).
 - `test-command`: optional test command (default empty).
 
@@ -27,7 +27,7 @@ jobs:
   ci:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
     with:
-      node-version: "20"
+      node-version: "24"
       workdir: "."
       test-command: npm test
 ```

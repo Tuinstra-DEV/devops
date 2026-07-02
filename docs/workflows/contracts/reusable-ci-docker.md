@@ -107,7 +107,7 @@ jobs:
   ci:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
     with:
-      node-version: "22"
+      node-version: "24"
   
   docker-scan:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci-docker.yml@v1

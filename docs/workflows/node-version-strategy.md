@@ -2,12 +2,12 @@
 
 ## Current Default
 
-The devops platform templates default to **Node.js 22 LTS** (Alpine-based images).
+The devops platform templates default to **Node.js 24 LTS** (Alpine-based images).
 
 This applies to:
 
-- `templates/docker/nuxt-ssg-nginx.Dockerfile` — base image `node:22-alpine`.
-- Reusable CI workflow (`reusable-ci.yml`) — uses `node-version` input, defaulting to `22`.
+- `templates/docker/nuxt-ssg-nginx.Dockerfile` — base image `node:24-alpine`.
+- Reusable CI workflow (`reusable-ci.yml`) — uses `node-version` input, defaulting to `24`.
 
 ## Override Mechanism
 
@@ -22,7 +22,7 @@ jobs:
   ci:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
     with:
-      node-version: '20'
+      node-version: '24'
 ```
 
 ### 2. Custom Dockerfile
@@ -30,7 +30,7 @@ jobs:
 Consumer repos provide their own `Dockerfile` and can use any base image:
 
 ```dockerfile
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 # ...
 ```
 

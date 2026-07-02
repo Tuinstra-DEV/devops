@@ -99,7 +99,7 @@ jobs:
       image-ref: ${{ steps.image.outputs.image_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Resolve build args from environment
         id: resolve-args
@@ -223,7 +223,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Ensure SSH key is present
         env:
