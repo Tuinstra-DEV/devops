@@ -8,6 +8,6 @@ jobs:
   ci:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
     with:
-      node-version: "20"
+      node-version: "24"
       workdir: "."
       test-command: npm test

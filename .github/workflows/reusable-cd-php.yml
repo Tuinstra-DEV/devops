@@ -87,6 +87,11 @@ on:
         required: false
         default: "1"
         type: string
+      upload-sarif:
+        description: "Upload Trivy SARIF results to GitHub code scanning"
+        required: false
+        default: false
+        type: boolean
       run-migrations:
         description: "Run Doctrine migrations after deploy"
         required: false
@@ -127,6 +132,7 @@ jobs:
   build-scan-push:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       packages: write
       security-events: write
@@ -138,13 +144,13 @@ jobs:
       nginx-image-ref: ${{ steps.nginx-image.outputs.image_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -152,7 +158,7 @@ jobs:
 
       # Build PHP image
       - name: Build PHP image for scanning
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.dockerfile }}
@@ -170,20 +176,22 @@ jobs:
           exit-code: ${{ inputs.trivy-exit-code }}
           severity: ${{ inputs.trivy-severity }}
           ignore-unfixed: true
+          cache: false
 
       - name: Upload Trivy PHP scan results
         uses: aquasecurity/trivy-action@0.35.0
-        if: always()
+        if: ${{ always() && inputs.upload-sarif }}
         with:
           image-ref: scan-target-php:${{ github.sha }}
           format: sarif
           output: trivy-php-results.sarif
           severity: ${{ inputs.trivy-severity }}
           ignore-unfixed: true
+          cache: false
 
       - name: Upload PHP SARIF file
-        uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('trivy-php-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        if: ${{ always() && inputs.upload-sarif && hashFiles('trivy-php-results.sarif') != '' }}
         continue-on-error: true
         with:
           sarif_file: trivy-php-results.sarif
@@ -191,7 +199,7 @@ jobs:
 
       - name: Push PHP image to GHCR
         id: php-push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.dockerfile }}
@@ -211,7 +219,7 @@ jobs:
 
       # Build nginx image
       - name: Build nginx image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.dockerfile }}
@@ -228,10 +236,11 @@ jobs:
           exit-code: ${{ inputs.trivy-exit-code }}
           severity: ${{ inputs.trivy-severity }}
           ignore-unfixed: true
+          cache: false
 
       - name: Push nginx image to GHCR
         id: nginx-push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.dockerfile }}
@@ -257,7 +266,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: actions/checkout@v7
 
       - name: Ensure SSH key is present
         env:

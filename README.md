@@ -37,6 +37,7 @@ Auth0 is the accepted central identity provider for the DevOps platform and down
 ## Consumer Onboarding
 
 See `docs/onboarding/consumer-migration-checklist.md` for a step-by-step guide to integrating your project with these reusable workflows.
+Gate rollout readiness is documented in `docs/standards/gate-baseline.md`.
 
 ## Reusable Workflow Example
 
@@ -52,6 +53,13 @@ Pipeline and deployment control requirements are documented in
 
 Reusable workflow release channels, deprecation rules, and migration guidance are
 documented in `docs/workflows/versioning-policy.md`.
+
+## Gate Baseline Evidence
+
+Consumer repositories can add the Gate baseline evidence workflow from
+`templates/workflows/caller-gate-baseline.yml`. The reusable workflow produces
+an artifact with rollout evidence for CI, release, deploy, Renovate, artifact
+retention, branch protection, and the repo-owned Gate integration contract.
 
 ## Deployment Automation
 

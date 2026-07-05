@@ -1,0 +1,23 @@
+# Template: Gate baseline evidence workflow for consumer repos.
+# Copy this file to your consumer repo at .github/workflows/gate-baseline.yml.
+#
+# Start with fail-on-missing: false while onboarding. Switch to true after the
+# repo satisfies docs/standards/gate-baseline.md and make the check required in
+# branch protection.
+
+name: gate-baseline
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+jobs:
+  gate-baseline:
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-gate-baseline.yml@v1
+    with:
+      fail-on-missing: false
+      require-deploy: true
+      require-renovate: true
+      gate-contract-path: .gate/baseline.yml

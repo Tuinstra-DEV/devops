@@ -6,7 +6,7 @@ on:
       node-version:
         description: Node.js version to use
         required: false
-        default: "22"
+        default: "24"
         type: string
       workdir:
         description: Working directory for monorepos
@@ -35,7 +35,7 @@ jobs:
         working-directory: ${{ inputs.workdir }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

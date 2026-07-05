@@ -28,22 +28,28 @@ on:
         required: false
         default: "1"
         type: string
+      upload-sarif:
+        description: "Upload Trivy SARIF results to GitHub code scanning"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build image for scanning
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.workdir }}/${{ inputs.dockerfile }}
@@ -60,20 +66,22 @@ jobs:
           exit-code: ${{ inputs.trivy-exit-code }}
           severity: ${{ inputs.trivy-severity }}
           ignore-unfixed: true
+          cache: false
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: aquasecurity/trivy-action@0.35.0
-        if: always()
+        if: ${{ always() && inputs.upload-sarif }}
         with:
           image-ref: scan-target:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: ${{ inputs.trivy-severity }}
           ignore-unfixed: true
+          cache: false
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: ${{ always() && inputs.upload-sarif }}
         continue-on-error: true
         with:
           sarif_file: trivy-results.sarif
