@@ -10,12 +10,10 @@ the DevOps security governance policy.
 
 ## Active Controls
 
-- `staging` and `production` GitHub Environments are configured.
+- `production` GitHub Environment is configured.
 - `production` has required reviewers enabled.
-- Environment secrets are separated:
-  - `SSH_STAGING_PRIVATE_KEY`
+- Production environment secrets are configured:
   - `SSH_PRODUCTION_PRIVATE_KEY`
-  - `GHCR_STAGING_TOKEN`
   - `GHCR_PRODUCTION_TOKEN`
 - Workflow token permissions are minimal by default.
 - Deploy jobs explicitly request only:

@@ -46,23 +46,15 @@ The CD workflow health check runs **via SSH** on the server, curling `localhost:
 
 ## 3. GitHub Environments
 
-Create two GitHub Environments in your consumer repo settings:
+Create the production GitHub Environment in your consumer repo settings:
 
 | Environment | Purpose |
 |---|---|
-| `staging` | Auto-deploys on push to `develop` |
 | `production` | Auto-deploys on push to `main` |
 
 ## 4. Secrets and Variables (Environment-level)
 
-The reusable CD workflow reads SSH configuration directly from each environment. Configure these **per environment**:
-
-### Staging Environment
-
-| Type | Name | Value |
-|---|---|---|
-| Secret | `SSH_PRIVATE_KEY` | SSH private key for the staging server |
-| Variable | `SSH_HOST` | Hostname or IP of the staging server |
+The reusable CD workflow reads SSH configuration directly from the production environment.
 
 ### Production Environment
 
@@ -71,7 +63,7 @@ The reusable CD workflow reads SSH configuration directly from each environment.
 | Secret | `SSH_PRIVATE_KEY` | SSH private key for the production server |
 | Variable | `SSH_HOST` | Hostname or IP of the production server |
 
-> **Important:** These must be configured at the **environment level**, not repository level. The workflow sets `environment: staging` or `environment: production` on the deploy job, and GitHub resolves the vars/secrets from that specific environment context.
+> **Important:** These must be configured at the **environment level**, not repository level. The workflow sets `environment: production` on the deploy job, and GitHub resolves the vars/secrets from that environment context.
 
 ## 5. Caller Workflows
 
@@ -82,7 +74,6 @@ Copy the caller workflow templates from this repo into your consumer repo:
 mkdir -p .github/workflows
 
 # Copy and customize:
-cp <devops-repo>/templates/workflows/caller-cd-nuxt-staging.yml .github/workflows/deploy-staging.yml
 cp <devops-repo>/templates/workflows/caller-cd-nuxt-production.yml .github/workflows/deploy-production.yml
 ```
 
@@ -105,17 +96,7 @@ jobs:
 
 ## 6. Compose Files
 
-Add **two** compose files to your consumer repo root — one per environment:
-
-**`docker-compose.staging.yml`** (staging port):
-```yaml
-services:
-  <service-name>:
-    image: ghcr.io/<org>/<repo>:latest
-    ports:
-      - "<staging-port>:80"
-    restart: unless-stopped
-```
+Add a production compose file to your consumer repo root:
 
 **`docker-compose.production.yml`** (production port):
 ```yaml
@@ -129,24 +110,22 @@ services:
 
 ### Port Schema
 
-Each project gets a pair of ports. Production ports start at 3000, staging at 3100:
+Each project gets a production host port:
 
-| Project | Production | Staging |
-|---|---|---|
-| site-marcel | 3000 | 3100 |
-| site-subtrack | 3001 | 3101 |
-| airporttoday-nuxt | 3002 | 3102 |
+| Project | Production |
+|---|---|
+| site-marcel | 3000 |
+| site-subtrack | 3002 |
+| airporttoday-nuxt | 3003 |
 
 The CD workflow automatically uploads the appropriate compose file to the server at `remote-path` before deploying. You do **not** need to manually place it on the server.
 
 ### Directory Structure on Server
 
-Each environment deploys to its own subdirectory:
+Production deploys to its own project directory:
 
 ```
 /mnt/ssd1000-01/projects/<project>/
-├── staging/
-│   └── docker-compose.staging.yml
 └── production/
     └── docker-compose.production.yml
 ```
@@ -162,14 +141,13 @@ On each target server:
 
 ## 8. Branching Strategy
 
-Use a two-branch model:
+Use a mainline production model:
 
 | Branch | Deploys to | Trigger |
 |---|---|---|
-| `develop` | Staging | Push |
 | `main` | Production | Push |
 
-Typical flow: work on feature branches, merge to `develop` for staging verification, then create a release PR to promote `develop` → `main` for production.
+Typical flow: work on feature branches, open a PR to `main`, and merge when CI and review pass.
 
 See `docs/workflows/branching-strategy.md` for the full branching model.
 
@@ -211,7 +189,6 @@ set `fail-on-missing: true` and add the workflow to branch protection.
 ## 11. DNS and Reverse Proxy
 
 - **DNS**: Add a wildcard A-record `*.<your-domain>` pointing to your server.
-- **Staging URL**: `staging.<your-domain>` (e.g. `staging.marcel.tuinstra.dev`)
 - **Production URL**: `<your-domain>` (e.g. `marcel.tuinstra.dev`)
 - **Reverse proxy**: Configure Nginx Proxy Manager (or similar) to proxy each hostname to the corresponding local port with SSL.
 
@@ -220,11 +197,9 @@ set `fail-on-missing: true` and add the workflow to branch protection.
 After setup, verify end-to-end:
 
 1. **CI**: Open a PR and confirm the reusable CI workflow runs and passes.
-2. **Staging CD**: Push to `develop` and confirm staging deployment succeeds.
-3. **Health check**: Verify the staging health URL returns HTTP 200.
-4. **Production CD**: Push to `main` and confirm production deployment succeeds.
-5. **Health check**: Verify the production health URL returns HTTP 200.
-6. **Gate baseline**: Run the Gate baseline workflow and confirm the evidence artifact is uploaded.
+2. **Production CD**: Push to `main` and confirm production deployment succeeds.
+3. **Health check**: Verify the production health URL returns HTTP 200.
+4. **Gate baseline**: Run the Gate baseline workflow and confirm the evidence artifact is uploaded.
 
 ## 13. Rollback
 

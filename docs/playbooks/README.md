@@ -1,7 +1,6 @@
 # Incident Playbooks
 
-Step-by-step runbooks for handling deploy incidents across staging and
-production environments.
+Step-by-step runbooks for handling production deploy incidents.
 
 ## Playbook Index
 
@@ -12,7 +11,6 @@ production environments.
 | [Rollback](rollback.md) | Manual rollback procedure |
 | [Secrets Leak](secrets-leak.md) | Credentials exposed in logs/repo |
 | [Auth Outage](auth-outage.md) | Auth0 service disruption |
-| [Game Day Template](game-day-template.md) | Simulation exercise template |
 
 ## DRI Model
 
@@ -37,7 +35,6 @@ assign explicitly.
 | Environment | Acknowledge | Resolve |
 |-------------|-------------|---------|
 | Production | 15 min | 1 hour |
-| Staging | 1 hour | 4 hours |
 
 These are targets, not SLAs. Adjust based on project criticality.
 

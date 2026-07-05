@@ -26,7 +26,7 @@ on:
 | `health-path` | string | No | `"/health"` | Path checked on localhost during health check |
 | `health-timeout-seconds` | number | No | `180` | Maximum seconds to wait for a healthy response |
 | `port` | number | No | `80` | Exposed nginx service port (internal container port) |
-| `environment` | string | Yes | - | GitHub Environment name (staging/production) |
+| `environment` | string | Yes | - | GitHub Environment name (`production`) |
 | `workdir` | string | No | `.` | Project working directory |
 | `dockerfile` | string | No | `Dockerfile` | Dockerfile path relative to repo root |
 | `remote-path` | string | Yes | - | Deploy path on target host containing compose file |
