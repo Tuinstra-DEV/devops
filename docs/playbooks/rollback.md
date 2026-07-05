@@ -98,7 +98,7 @@ After rollback, verify:
 
 1. Do NOT immediately retry the failed deploy
 2. Investigate root cause in a separate branch
-3. Fix and test on staging before retrying production
+3. Fix and validate through CI and local smoke tests before retrying production
 4. Document the incident in Shortcut
 
 ## Nuxt SSG Rollback Example

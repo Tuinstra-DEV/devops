@@ -82,11 +82,9 @@ Consumer repos (site-marcel, site-tuinstra, etc.) use a different release model 
 
 ### How it works
 
-1. Code flows through feature branches → `develop` (staging) → `main` (production).
-2. To promote `develop` to production, run the **Create Release PR** workflow via `workflow_dispatch`.
-3. This creates a PR from `develop` → `main` with title `release: vX.Y.Z` and an auto-generated PR-based changelog.
-4. Merging the PR pushes to `main`, triggers Deploy Production, and triggers the release tag workflow.
-5. The release tag workflow creates tag `vX.Y.Z` from the merged release PR title.
+1. Code flows through feature branches → `main`.
+2. Merging to `main` triggers Deploy Production and, where configured, the release tag workflow.
+3. The release tag workflow creates tag `vX.Y.Z` from the merged release PR title.
 
 ### Why lightweight version tags?
 

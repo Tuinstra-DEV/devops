@@ -14,7 +14,7 @@ Workflow: `.github/workflows/reusable-cd-nuxt-ssg.yml`
 
 - `service-name` — Docker Compose service name on target host
 - `image-name` — Full GHCR image name without tag
-- `environment` — GitHub Environment name (`staging` or `production`)
+- `environment` — GitHub Environment name (`production`)
 - `remote-path` — Deploy path on target host (compose file is uploaded here automatically)
 - `ssh-user` — SSH user for deploy host
 
@@ -36,15 +36,14 @@ The deploy job runs within the specified GitHub Environment and reads SSH config
 | Variable | `SSH_HOST` | Hostname or IP of the deployment target |
 | Secret | `SSH_PRIVATE_KEY` | SSH private key for authentication |
 
-Configure these per environment (staging/production) in your repository settings.
+Configure these on the production environment in your repository settings.
 
 ## Why environment-level?
 
-GitHub Actions resolves `vars` and `secrets` at the workflow level where they're referenced. By setting the `environment` on the deploy job and reading SSH config directly within that job's steps, GitHub correctly resolves the environment-specific values. This ensures proper environment isolation — staging and production can have different hosts and keys without risk of cross-contamination.
+GitHub Actions resolves `vars` and `secrets` at the workflow level where they're referenced. By setting the `environment` on the deploy job and reading SSH config directly within that job's steps, GitHub correctly resolves production-scoped values without relying on repository-level secrets.
 
 ## Example callers
 
-- Staging example: `templates/workflows/caller-cd-nuxt-staging.yml`
 - Production example: `templates/workflows/caller-cd-nuxt-production.yml`
 
 ## Migration from v1.0 (breaking change)
@@ -57,9 +56,9 @@ jobs:
   deploy:
     uses: marcel-tuinstra/devops/.github/workflows/reusable-cd-nuxt-ssg.yml@v1
     with:
-      ssh-host: ${{ vars.SSH_STAGING_HOST }}
+      ssh-host: ${{ vars.SSH_PRODUCTION_HOST }}
     secrets:
-      ssh-private-key: ${{ secrets.SSH_STAGING_PRIVATE_KEY }}
+      ssh-private-key: ${{ secrets.SSH_PRODUCTION_PRIVATE_KEY }}
 ```
 
 **After (v1.1):**
@@ -73,7 +72,5 @@ jobs:
 ```
 
 Rename your environment variables/secrets:
-- `SSH_STAGING_HOST` → `SSH_HOST` (in staging environment)
-- `SSH_STAGING_PRIVATE_KEY` → `SSH_PRIVATE_KEY` (in staging environment)
 - `SSH_PRODUCTION_HOST` → `SSH_HOST` (in production environment)
 - `SSH_PRODUCTION_PRIVATE_KEY` → `SSH_PRIVATE_KEY` (in production environment)

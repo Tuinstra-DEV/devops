@@ -21,14 +21,14 @@ the DevOps platform.
 
 ### 2) GitHub Environments Model
 
-- Every deploy workflow must target `staging` or `production` environment explicitly.
+- Every deploy workflow must target the `production` environment explicitly.
 - `production` requires manual approval from at least one maintainer.
-- Secrets are environment-scoped and may not be shared between staging and production.
+- Secrets are production environment-scoped and may not be stored as broad repository-level deploy secrets.
 
 ### 3) Secrets Naming and Ownership
 
 - Naming format: `<SYSTEM>_<ENV>_<PURPOSE>`.
-- Example: `GHCR_PRODUCTION_TOKEN`, `SSH_STAGING_PRIVATE_KEY`.
+- Example: `GHCR_PRODUCTION_TOKEN`, `SSH_PRODUCTION_PRIVATE_KEY`.
 - Every secret must have an owning team documented in repository docs.
 - Secret rotation minimum: every 90 days for non-OIDC credentials.
 

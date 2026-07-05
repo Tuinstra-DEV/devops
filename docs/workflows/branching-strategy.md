@@ -2,34 +2,29 @@
 
 ## Overview
 
-All consumer repositories use a two-branch model with environment-linked deployments.
+Consumer repositories deploy production from `main`.
 
 ## Branches
 
 | Branch | Purpose | Deploys to | Trigger |
 |---|---|---|---|
-| `develop` | Integration branch | Staging | Push |
 | `main` | Production-ready code | Production | Push |
-| `feat/SC-<id>` | Feature work | — | PR to `develop` |
-| `chore/SC-<id>` | Chores / maintenance | — | PR to `develop` |
-| `bug/SC-<id>` | Bug fixes | — | PR to `develop` |
+| `feat/SC-<id>` | Feature work | — | PR to `main` |
+| `chore/SC-<id>` | Chores / maintenance | — | PR to `main` |
+| `bug/SC-<id>` | Bug fixes | — | PR to `main` |
 
 ## Flow
 
 ```
-feature branch ──PR──> develop ──release PR──> main
-                          │                      │
-                     Deploy Staging         Deploy Production
+feature branch ──PR──> main
+                       │
+                  Deploy Production
 ```
 
-1. Create a feature branch from `develop` (e.g. `feat/SC-123`).
-2. Open a PR targeting `develop`. CI runs automatically.
-3. Merge to `develop` — triggers Deploy Staging.
-4. Verify on staging.
-5. When ready for production: run the **Create Release PR** workflow (`workflow_dispatch`).
-6. This creates a PR from `develop` → `main` with a semver title (`release: vX.Y.Z`) and PR-based changelog.
-7. Merge the release PR — triggers Deploy Production.
-8. Push to `main` triggers the release tag workflow, which creates the same `vX.Y.Z` tag.
+1. Create a feature branch from `main` (e.g. `feat/SC-123`).
+2. Open a PR targeting `main`. CI runs automatically.
+3. Merge to `main` — triggers Deploy Production.
+4. Push to `main` triggers the release tag workflow, when configured.
 
 ## Release PR
 
@@ -49,8 +44,8 @@ See `templates/workflows/caller-release-pr.yml` and `templates/workflows/caller-
 
 | Repo | Develop | Main | Notes |
 |---|---|---|---|
-| site-marcel | Staging (port 3100) | Production (port 3000) | Active |
-| site-tuinstra | Staging (port 3101) | Production (port 3001) | Active |
+| site-marcel | — | Production (port 3000) | Example/reference |
+| site-tuinstra | — | Production (port 3001) | Example/reference |
 
 ## Exceptions
 

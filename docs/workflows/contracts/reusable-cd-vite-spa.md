@@ -23,7 +23,7 @@ on:
 | `image-name` | string | Yes | - | Full GHCR image name without tag |
 | `health-url` | string | No | `""` | Public health URL (informational) |
 | `port` | number | No | `80` | Exposed service port |
-| `environment` | string | Yes | - | GitHub Environment name (staging/production) |
+| `environment` | string | Yes | - | GitHub Environment name (`production`) |
 | `workdir` | string | No | `.` | Project working directory |
 | `dockerfile` | string | No | `Dockerfile` | Dockerfile path relative to repo root |
 | `remote-path` | string | Yes | - | Deploy path on target host |

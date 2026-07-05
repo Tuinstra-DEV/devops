@@ -40,7 +40,6 @@ platform for AirportToday and Subtrack.
 - Single Auth0 tenant per company workspace for centralized policy management.
 - Environment separation by applications and connections:
   - `dev` applications for local and shared development.
-  - `staging` applications for pre-production verification.
   - `production` applications for live traffic.
 - Environment-specific callback URLs, API audiences, and secrets are isolated.
 - Product organization:
