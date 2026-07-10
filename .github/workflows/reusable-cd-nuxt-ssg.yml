@@ -98,11 +98,6 @@ on:
         required: false
         default: false
         type: boolean
-      deploy_host:
-        description: Public host or IP address for the restricted deployment endpoint.
-        required: false
-        default: ""
-        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -337,7 +332,7 @@ jobs:
 
       - name: Deploy Git SHA through restricted endpoint
         env:
-          DEPLOY_HOST: ${{ inputs.deploy_host }}
+          DEPLOY_HOST: ${{ vars.PROD_HOST }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           test -n "$DEPLOY_HOST"
