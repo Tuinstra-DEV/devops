@@ -9,10 +9,10 @@ on:
       SECRET_BUILD_ARGS:
         description: "Newline-separated Docker build args containing secrets (e.g. VITE_API_KEY=secret-value). These are merged with build-args and environment variables."
         required: false
-      TUINSTRA_DEPLOY_SSH_PRIVATE_KEY:
+      DEPLOY_SSH_PRIVATE_KEY:
         description: SSH private key for a restricted deployment endpoint.
         required: false
-      TUINSTRA_DEPLOY_KNOWN_HOSTS:
+      DEPLOY_KNOWN_HOSTS:
         description: Pinned SSH known_hosts entry for a restricted deployment endpoint.
         required: false
     inputs:
@@ -325,8 +325,8 @@ jobs:
     steps:
       - name: Configure pinned restricted SSH endpoint
         env:
-          DEPLOY_KEY: ${{ secrets.TUINSTRA_DEPLOY_SSH_PRIVATE_KEY }}
-          KNOWN_HOSTS: ${{ secrets.TUINSTRA_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           test -n "$DEPLOY_KEY"
           test -n "$KNOWN_HOSTS"
