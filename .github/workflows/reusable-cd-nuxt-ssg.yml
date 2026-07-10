@@ -55,11 +55,13 @@ on:
         type: string
       remote-path:
         description: Deploy path on target host containing compose file
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-user:
         description: SSH user for deploy host
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-port:
         description: SSH port
