@@ -9,6 +9,12 @@ on:
       SECRET_BUILD_ARGS:
         description: "Newline-separated Docker build args containing secrets (e.g. VITE_API_KEY=secret-value). These are merged with build-args and environment variables."
         required: false
+      DEPLOY_SSH_PRIVATE_KEY:
+        description: SSH private key for a restricted deployment endpoint.
+        required: false
+      DEPLOY_KNOWN_HOSTS:
+        description: Pinned SSH known_hosts entry for a restricted deployment endpoint.
+        required: false
     inputs:
       service-name:
         description: Docker Compose service name on target host
@@ -49,11 +55,13 @@ on:
         type: string
       remote-path:
         description: Deploy path on target host containing compose file
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-user:
         description: SSH user for deploy host
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-port:
         description: SSH port
@@ -85,6 +93,16 @@ on:
         required: false
         default: false
         type: boolean
+      restricted_deploy:
+        description: Use a restricted SSH endpoint that only accepts an allowlisted service and Git SHA tag.
+        required: false
+        default: false
+        type: boolean
+      deploy_host:
+        description: Public host or IP address for the restricted deployment endpoint.
+        required: false
+        default: ""
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -222,6 +240,7 @@ jobs:
           echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
 
   deploy:
+    if: ${{ !inputs.restricted_deploy }}
     runs-on: ubuntu-latest
     needs: build-scan-push
     environment: ${{ inputs.environment }}
@@ -294,3 +313,35 @@ jobs:
           done
           echo "Health check failed on localhost:${host_port}${{ inputs.health-path }}" >&2
           exit 1
+
+  deploy-restricted:
+    if: ${{ inputs.restricted_deploy }}
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Configure pinned restricted SSH endpoint
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Deploy Git SHA through restricted endpoint
+        env:
+          DEPLOY_HOST: ${{ inputs.deploy_host }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$DEPLOY_HOST"
+          printf 'deploy %s %s\n%s\n%s\n' \
+            "${{ inputs.service-name }}" "${{ github.sha }}" "$GITHUB_ACTOR" "$GITHUB_TOKEN" | \
+            ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              deploy@"$DEPLOY_HOST"
