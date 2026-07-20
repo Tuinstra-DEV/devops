@@ -1,116 +1,48 @@
 # Workflow Contract: reusable-ci-docker.yml
 
-**Version:** v1  
+**Version:** v10
 **Status:** Stable  
-**Last Updated:** 2026-02-08
+**Last Updated:** 2026-07-20
 
 ## Purpose
 
-Reusable CI workflow for Docker-based projects. Builds the Docker image and scans it with Trivy for security vulnerabilities during pull requests. This enables developers to catch and fix vulnerabilities before merging.
+Builds a local Docker image, enforces a Trivy vulnerability policy, and publishes deterministic table and SARIF reports. SARIF upload is isolated in a second job so `security-events: write` is granted only when requested.
 
-## Trigger
+## Public interface
 
-```yaml
-on:
-  workflow_call:
-```
+| Input | Type | Required | Default |
+|---|---|---:|---|
+| `execution-class` | string | No | `hosted` |
+| `workdir` | string | No | `.` |
+| `dockerfile` | string | No | `Dockerfile` |
+| `build-args` | string | No | empty |
+| `trivy-severity` | string | No | `CRITICAL,HIGH` |
+| `trivy-exit-code` | string | No | `1` |
+| `upload-sarif` | boolean | No | `false` |
+| `artifact-retention-days` | number | No | `14` |
 
-## Inputs
+The existing v1 inputs remain valid. v10 adds `execution-class`, `artifact-retention-days`, and outputs without changing the default hosted behavior.
 
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `workdir` | string | No | `.` | Working directory containing Dockerfile |
-| `dockerfile` | string | No | `Dockerfile` | Dockerfile path relative to workdir |
-| `build-args` | string | No | `""` | Newline-separated Docker build args |
-| `trivy-severity` | string | No | `"CRITICAL,HIGH"` | Comma-separated severity levels to scan |
-| `trivy-exit-code` | string | No | `"1"` | Exit code on findings (1 = fail, 0 = warn) |
+| Output | Guarantee |
+|---|---|
+| `image-digest` | Digest returned by the local BuildKit build |
+| `scan-artifact` | `docker-scan-<github.sha>` containing table and SARIF reports |
+| `sarif-artifact` | Alias of `scan-artifact` for code-scanning consumers |
 
-## Outputs
+The build/scan job grants only `contents: read`. The optional upload job grants `actions: read`, `contents: read`, and `security-events: write`. No secrets are accepted. `build-args` is the only build-argument source and is for non-secret values only.
 
-None.
+The execution trust boundary and repository-variable/manual fallback are documented in [reusable-browser-quality](reusable-browser-quality.md). Fork pull requests, `pull_request_target`, and Dependabot can never select a trusted runner.
 
-## Required Secrets
-
-None. This workflow does not push images or access external services.
-
-## Required Permissions
-
-```yaml
-permissions:
-  contents: read
-  security-events: write
-```
-
-## Jobs
-
-| Job | Description |
-|-----|-------------|
-| `build-and-scan` | Build Docker image locally and scan with Trivy |
-
-## Expected Behavior
-
-1. Checkout code
-2. Setup Docker Buildx
-3. Build image locally (no push)
-4. Run Trivy vulnerability scan
-5. Upload SARIF results to GitHub Security tab
-6. **Fail PR if CRITICAL/HIGH vulnerabilities found** (configurable)
-
-## Security Scanning
-
-The workflow uses [Trivy](https://trivy.dev/) to scan Docker images.
-
-**Default behavior:**
-- Scans for `CRITICAL` and `HIGH` severity vulnerabilities
-- Fails the pipeline if any are found (blocks merge)
-- Ignores unfixed vulnerabilities (only actionable findings)
-- Uploads results to GitHub Security tab (SARIF format)
-
-**Use cases:**
-- Shift security left: developers fix vulnerabilities in PRs
-- Consistent scanning across CI and CD pipelines
-- Visibility via GitHub Security tab
-
-## Breaking Change Policy
-
-See [versioning-policy.md](../versioning-policy.md) for major version upgrade procedures.
-
-Changes that require a major version bump:
-- Removing or renaming existing inputs
-- Changing default security scan behavior
-- Changing required permissions
-
-## Example Caller
+## Example
 
 ```yaml
-name: CI
-
-on:
-  pull_request:
-
 jobs:
-  docker-scan:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci-docker.yml@v1
+  image-quality:
+    permissions:
+      contents: read
+      security-events: write
+    uses: Tuinstra-DEV/devops/.github/workflows/reusable-ci-docker.yml@<full-v10-commit-sha>
     with:
-      dockerfile: Dockerfile
-```
-
-### Combined with Node.js CI
-
-```yaml
-name: CI
-
-on:
-  pull_request:
-
-jobs:
-  ci:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
-    with:
-      node-version: "24"
-  
-  docker-scan:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci-docker.yml@v1
-    with:
-      dockerfile: Dockerfile
+      execution-class: ${{ vars.CI_EXECUTION_CLASS || 'hosted' }}
+      upload-sarif: true
 ```

@@ -45,6 +45,27 @@ the DevOps platform.
 - Reusable workflows must declare provenance expectations in docs.
 - Build artifacts should include SBOM generation for deployable images.
 
+### 6) Runner Trust Boundary
+
+- Public contracts expose only `hosted` and `trusted-heavy`; arbitrary labels, groups, and `runs-on` fragments are prohibited.
+- `hosted` is the default and the fallback whenever a caller omits or supplies an invalid class.
+- Fork pull requests, Dependabot, and `pull_request_target` must never schedule `trusted-heavy`. The runner-selection expression enforces this before a job is queued, and contract validation fails a forbidden request on a hosted runner.
+- Consumer repository variables may select the execution class only with an explicit hosted fallback. Manual inputs must be enumerated choices.
+
+### 7) Build and Release Integrity
+
+- Docker build arguments come only from the declared `build-args` input. Workflows do not merge arbitrary environment variables into builds.
+- Secrets in Docker build arguments are prohibited. Reusable callers declare individual secrets and never use `secrets: inherit`.
+- Release workflows publish and return immutable `name@sha256:digest` references.
+- Release provenance is signed through GitHub OIDC, pushed alongside the image, and retained as a deterministic artifact. Deployments consume the digest, not a mutable tag.
+- Browser and scan reports use commit-derived names, explicit retention, and fail when promised artifacts are absent.
+
+### 8) Immutable Workflow References
+
+- Every third-party action is pinned to a full 40-character commit SHA. A version comment records the reviewed upstream release.
+- Production reusable-workflow callers pin the approved v10 release commit by full SHA. Tags remain immutable discovery and audit markers.
+- Rollback changes caller SHAs and image digests through normal reviewed commits; it never rewrites a branch or moves a tag.
+
 ## Pilot Repository Baseline
 
 The pilot model for control validation is documented in

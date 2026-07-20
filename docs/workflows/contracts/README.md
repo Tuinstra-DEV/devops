@@ -12,12 +12,19 @@ Workflow contracts document the stable API surface of each reusable workflow:
 
 ## Available Contracts
 
-### Node.js / Nuxt
+### v10 CI and release contracts
+
+| Workflow | Version | Status |
+|----------|---------|--------|
+| [reusable-browser-quality.yml](reusable-browser-quality.md) | v10 | Stable |
+| [reusable-ci-docker.yml](reusable-ci-docker.md) | v10 | Stable |
+| [reusable-release-image.yml](reusable-release-image.md) | v10 | Stable |
+
+### Legacy application contracts
 
 | Workflow | Version | Status |
 |----------|---------|--------|
 | [reusable-ci.yml](reusable-ci.md) | v1 | Stable |
-| [reusable-ci-docker.yml](reusable-ci-docker.md) | v1 | Stable |
 | [reusable-cd-nuxt-ssg.yml](reusable-cd-nuxt-ssg.md) | v1 | Stable |
 
 ### Vite / SPA
