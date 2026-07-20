@@ -34,9 +34,9 @@ while IFS= read -r use_line; do
   reference="${reference%%#*}"
   reference="${reference//[[:space:]]/}"
   [[ "$reference" =~ @([0-9a-f]{40})$ ]] || fail "external action is not full-SHA pinned: $use_line"
-done < <(rg --no-heading --line-number '^\s*uses:\s+[^.]' .github/workflows/reusable-*.yml)
+done < <(grep -nHE '^[[:space:]]*uses:[[:space:]]+[^.]' .github/workflows/reusable-*.yml)
 
-if rg --quiet --hidden '^\s*secrets:\s*inherit\s*$' .github/workflows; then
+if grep -ERq --include='*.yml' --include='*.yaml' '^[[:space:]]*secrets:[[:space:]]*inherit[[:space:]]*$' .github/workflows; then
   fail "secrets: inherit is prohibited"
 fi
 
@@ -47,37 +47,37 @@ contract_files=(
 )
 
 for file in "${contract_files[@]}"; do
-  rg --quiet 'execution-class:' "$file" || fail "$file does not declare execution-class"
-  rg --quiet 'default: hosted' "$file" || fail "$file does not default to hosted"
-  rg --quiet 'hosted\|trusted-heavy' "$file" || fail "$file does not reject arbitrary execution classes"
-  rg --quiet 'fromJSON\('\''\["self-hosted","trusted-heavy"\]\'\''\)' "$file" || fail "$file does not use the constrained trusted runner labels"
-  rg --quiet "\|\| 'ubuntu-24.04'" "$file" || fail "$file does not use the safe hosted fallback"
-  rg --quiet "github.event_name != 'pull_request_target'" "$file" || fail "$file does not keep pull_request_target off trusted runners"
-  rg --quiet '!github.event.pull_request.head.repo.fork' "$file" || fail "$file does not keep forks off trusted runners"
-  rg --quiet "github.actor != 'dependabot\[bot\]'" "$file" || fail "$file does not keep Dependabot off trusted runners"
+  grep -Fq 'execution-class:' "$file" || fail "$file does not declare execution-class"
+  grep -Fq 'default: hosted' "$file" || fail "$file does not default to hosted"
+  grep -Fq 'hosted|trusted-heavy' "$file" || fail "$file does not reject arbitrary execution classes"
+  grep -Fq "fromJSON('[\"self-hosted\",\"trusted-heavy\"]')" "$file" || fail "$file does not use the constrained trusted runner labels"
+  grep -Fq "|| 'ubuntu-24.04'" "$file" || fail "$file does not use the safe hosted fallback"
+  grep -Fq "github.event_name != 'pull_request_target'" "$file" || fail "$file does not keep pull_request_target off trusted runners"
+  grep -Fq '!github.event.pull_request.head.repo.fork' "$file" || fail "$file does not keep forks off trusted runners"
+  grep -Fq "github.actor != 'dependabot[bot]'" "$file" || fail "$file does not keep Dependabot off trusted runners"
 done
 
 docker_workflow=".github/workflows/reusable-ci-docker.yml"
 for legacy_input in workdir dockerfile build-args trivy-severity trivy-exit-code upload-sarif; do
-  rg --quiet "^      ${legacy_input}:" "$docker_workflow" || fail "Docker compatibility input missing: $legacy_input"
+  grep -Eq "^      ${legacy_input}:" "$docker_workflow" || fail "Docker compatibility input missing: $legacy_input"
 done
 for docker_output in image-digest scan-artifact sarif-artifact; do
-  rg --quiet "^      ${docker_output}:" "$docker_workflow" || fail "Docker output missing: $docker_output"
+  grep -Eq "^      ${docker_output}:" "$docker_workflow" || fail "Docker output missing: $docker_output"
 done
-rg --quiet 'security-events: write' "$docker_workflow" || fail "optional SARIF upload permission missing"
+grep -Fq 'security-events: write' "$docker_workflow" || fail "optional SARIF upload permission missing"
 
 browser_workflow=".github/workflows/reusable-browser-quality.yml"
-rg --quiet 'report-artifact:' "$browser_workflow" || fail "browser report output missing"
-rg --quiet 'if-no-files-found: error' "$browser_workflow" || fail "browser artifact is not enforced"
+grep -Fq 'report-artifact:' "$browser_workflow" || fail "browser report output missing"
+grep -Fq 'if-no-files-found: error' "$browser_workflow" || fail "browser artifact is not enforced"
 
 release_workflow=".github/workflows/reusable-release-image.yml"
 for release_output in image-ref image-digest provenance-artifact provenance-url; do
-  rg --quiet "^      ${release_output}:" "$release_workflow" || fail "release output missing: $release_output"
+  grep -Eq "^      ${release_output}:" "$release_workflow" || fail "release output missing: $release_output"
 done
 for permission in 'attestations: write' 'contents: read' 'id-token: write' 'packages: write'; do
-  rg --quiet "$permission" "$release_workflow" || fail "release permission missing: $permission"
+  grep -Fq "$permission" "$release_workflow" || fail "release permission missing: $permission"
 done
-rg --quiet 'subject-digest:.*steps.build.outputs.digest' "$release_workflow" || fail "provenance is not bound to the immutable digest"
-rg --quiet 'image-ref=.*@.*IMAGE_DIGEST' "$release_workflow" || fail "immutable image-ref output missing"
+grep -Eq 'subject-digest:.*steps.build.outputs.digest' "$release_workflow" || fail "provenance is not bound to the immutable digest"
+grep -Eq 'image-ref=.*@.*IMAGE_DIGEST' "$release_workflow" || fail "immutable image-ref output missing"
 
 echo "workflow contract test passed"
