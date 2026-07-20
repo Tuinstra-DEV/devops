@@ -1,0 +1,11 @@
+<network>
+  <name>sanctuary-ci</name>
+  <forward mode='nat'/>
+  <bridge name='{{ runner_bridge_name }}' stp='on' delay='0'/>
+  <dns enable='yes' forwardPlainNames='no'/>
+  <ip address='192.0.2.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.0.2.10' end='192.0.2.20'/>
+    </dhcp>
+  </ip>
+</network>

@@ -68,3 +68,8 @@ Shared deployment script documentation is available at
 
 Reusable Nuxt SSG CD workflow documentation is available at
 `docs/workflows/reusable-cd-nuxt-ssg.md`.
+
+## Ephemeral heavy CI
+
+The production design and host automation for the single-concurrency Sanctuary
+KVM runner are documented in `docs/runner/sanctuary-kvm-runner.md`.

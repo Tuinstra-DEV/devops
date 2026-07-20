@@ -1,0 +1,14 @@
+---
+- name: Restart runner manager
+  ansible.builtin.systemd:
+    name: ci-runner-manager.service
+    state: restarted
+    daemon_reload: true
+
+- name: Apply sanctuary firewall transaction
+  ansible.builtin.shell: |
+    set -euo pipefail
+    /usr/sbin/nft -c -f /etc/ci-runner/sanctuary-ci.nft
+    /usr/sbin/nft -f /etc/ci-runner/sanctuary-ci.nft
+  args:
+    executable: /bin/bash

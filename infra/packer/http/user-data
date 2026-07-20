@@ -1,0 +1,27 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: packer-runner
+    username: packer
+    # Development-only password "packer"; removed when the image is sealed.
+    password: "$6$packer-temporary$rde/FyQL8FGNT0aOWZHiS1.R14cYRbH8n/v3U/urUz1gn1ztjWTZu9T0T668kUX1/.HTBPNXD4F3SZrio0/KT0"
+  ssh:
+    install-server: true
+    allow-pw: true
+  storage:
+    layout:
+      name: direct
+  packages:
+    - build-essential
+    - cloud-init
+    - curl
+    - git
+    - gnupg
+    - jq
+    - software-properties-common
+  late-commands:
+    - curtin in-target --target=/target -- systemctl enable cloud-init

@@ -1,0 +1,9 @@
+all:
+  hosts:
+    sanctuary:
+      ansible_host: REPLACE_WITH_HOST
+      ansible_user: REPLACE_WITH_ADMIN_USER
+      runner_production_networks_reviewed: true
+      runner_blocked_production_ipv4_cidrs:
+        - 88.159.77.149/32
+      runner_blocked_production_ipv6_cidrs: []

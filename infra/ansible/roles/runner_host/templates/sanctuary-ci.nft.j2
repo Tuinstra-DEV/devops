@@ -1,0 +1,22 @@
+destroy table inet sanctuary_ci
+table inet sanctuary_ci {
+  chain input_guard {
+    type filter hook input priority -5; policy accept;
+    iifname "{{ runner_bridge_name }}" udp dport 67 accept
+    iifname "{{ runner_bridge_name }}" udp dport 53 accept
+    iifname "{{ runner_bridge_name }}" tcp dport 53 accept
+    iifname "{{ runner_bridge_name }}" drop
+  }
+
+  chain forward_guard {
+    type filter hook forward priority -5; policy accept;
+    iifname "{{ runner_bridge_name }}" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4 } drop
+    iifname "{{ runner_bridge_name }}" ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } drop
+{% for cidr in runner_blocked_production_ipv4_cidrs %}
+    iifname "{{ runner_bridge_name }}" ip daddr {{ cidr }} drop
+{% endfor %}
+{% for cidr in runner_blocked_production_ipv6_cidrs %}
+    iifname "{{ runner_bridge_name }}" ip6 daddr {{ cidr }} drop
+{% endfor %}
+  }
+}

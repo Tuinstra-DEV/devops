@@ -1,0 +1,11 @@
+/mnt/hdd1000-01/ci-audit/*.log {
+    daily
+    rotate 30
+    maxage 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su ci-runner-manager ci-runner-manager
+}

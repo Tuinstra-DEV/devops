@@ -1,0 +1,153 @@
+---
+- name: Assert immutable image inputs are pinned
+  ansible.builtin.assert:
+    that:
+      - runner_base_image_source | length > 0
+      - runner_base_image_sha256 is match('^[a-f0-9]{64}$')
+      - runner_production_networks_reviewed | bool
+      - (runner_blocked_production_ipv4_cidrs | length) + (runner_blocked_production_ipv6_cidrs | length) > 0
+    fail_msg: Pin the image and explicitly configure at least one production deny CIDR.
+
+- name: Check KVM device
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: runner_kvm_device
+
+- name: Require hardware virtualization
+  ansible.builtin.assert:
+    that:
+      - runner_kvm_device.stat.exists
+      - runner_kvm_device.stat.ischr
+    fail_msg: /dev/kvm is required; enable virtualization before provisioning.
+
+- name: Require dedicated runner filesystems
+  ansible.builtin.assert:
+    that:
+      - "'/mnt/ssd1000-01' in (ansible_mounts | map(attribute='mount') | list)"
+      - "'/mnt/hdd1000-01' in (ansible_mounts | map(attribute='mount') | list)"
+    fail_msg: Refusing to place overlays or audit logs on the host root filesystem.
+
+- name: Install virtualization and policy packages
+  ansible.builtin.apt:
+    name:
+      - cloud-image-utils
+      - libvirt-daemon-system
+      - nftables
+      - python3
+      - qemu-kvm
+      - qemu-utils
+      - virtinst
+    state: present
+    update_cache: true
+
+- name: Create dedicated manager account
+  ansible.builtin.user:
+    name: ci-runner-manager
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create runner directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/ci-runner, owner: root, group: ci-runner-manager, mode: '0750' }
+    - { path: /var/lib/ci-runner/images, owner: root, group: root, mode: '0755' }
+    - { path: /var/lib/ci-runner-manager/state, owner: ci-runner-manager, group: ci-runner-manager, mode: '0700' }
+    - { path: /mnt/ssd1000-01/ci-runner, owner: root, group: root, mode: '0700' }
+    - { path: /mnt/hdd1000-01/ci-audit, owner: ci-runner-manager, group: ci-runner-manager, mode: '0750' }
+
+- name: Inspect root-provisioned GitHub credential
+  ansible.builtin.stat:
+    path: /etc/ci-runner/github.token
+  register: runner_github_credential
+
+- name: Require private GitHub credential
+  ansible.builtin.assert:
+    that:
+      - runner_github_credential.stat.exists
+      - runner_github_credential.stat.isreg
+      - (runner_github_credential.stat.pw_name | default('')) == 'root'
+      - (runner_github_credential.stat.mode | default('')) == '0600'
+    fail_msg: Provision /etc/ci-runner/github.token as root mode 0600 outside Ansible source control.
+
+- name: Install pinned immutable base image
+  ansible.builtin.get_url:
+    url: "{{ runner_base_image_source }}"
+    dest: /var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2
+    checksum: "sha256:{{ runner_base_image_sha256 }}"
+    owner: root
+    group: root
+    mode: '0444'
+
+- name: Install manager platform files
+  ansible.builtin.copy:
+    src: "{{ runner_manager_source_root }}/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: runner/manager/ci_runner_manager.py, dest: /usr/local/bin/ci-runner-manager, mode: '0755' }
+    - { src: runner/host-helper/ci_runner_host_helper.py, dest: /usr/local/libexec/ci-runner-host-helper, mode: '0755' }
+    - { src: runner/config/manager.toml, dest: /etc/ci-runner/manager.toml, mode: '0640' }
+    - { src: runner/systemd/ci-runner-manager.service, dest: /etc/systemd/system/ci-runner-manager.service, mode: '0644' }
+    - { src: runner/systemd/sanctuary-ci-firewall.service, dest: /etc/systemd/system/sanctuary-ci-firewall.service, mode: '0644' }
+    - { src: runner/logrotate/ci-runner-audit, dest: /etc/logrotate.d/ci-runner-audit, mode: '0644' }
+  notify: Restart runner manager
+
+- name: Install validated sudo policy
+  ansible.builtin.template:
+    src: ci-runner-manager.sudoers.j2
+    dest: /etc/sudoers.d/ci-runner-manager
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Install isolated network definition
+  ansible.builtin.template:
+    src: sanctuary-ci.xml.j2
+    dest: /etc/libvirt/qemu/networks/sanctuary-ci.xml
+    owner: root
+    group: root
+    mode: '0600'
+  register: runner_network_definition
+
+- name: Define and start runner network
+  ansible.builtin.shell: |
+    set -euo pipefail
+    virsh net-define /etc/libvirt/qemu/networks/sanctuary-ci.xml
+    virsh net-autostart sanctuary-ci
+    if ! virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
+      virsh net-start sanctuary-ci
+    fi
+  args:
+    executable: /bin/bash
+  when: runner_network_definition.changed
+  changed_when: true
+
+- name: Install runner egress guard
+  ansible.builtin.template:
+    src: sanctuary-ci.nft.j2
+    dest: /etc/ci-runner/sanctuary-ci.nft
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/nft -c -f %s
+  notify: Apply sanctuary firewall transaction
+
+- name: Enable runner services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - libvirtd.service
+    - sanctuary-ci-firewall.service
+    - ci-runner-manager.service
