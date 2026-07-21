@@ -137,6 +137,7 @@ build {
   }
 
   provisioner "shell" {
+    execute_command = "chmod +x {{ .Path }}; echo 'packer' | sudo -S env {{ .Vars }} bash '{{ .Path }}'"
     environment_vars = [
       "RUNNER_VERSION=${var.runner_version}",
       "RUNNER_SHA256=${var.runner_sha256}",
@@ -161,11 +162,13 @@ build {
   }
 
   provisioner "shell" {
-    inline = ["sudo bash /tmp/verify-image-contract.sh"]
+    execute_command = "chmod +x {{ .Path }}; echo 'packer' | sudo -S env {{ .Vars }} bash '{{ .Path }}'"
+    inline          = ["bash /tmp/verify-image-contract.sh"]
   }
 
   provisioner "shell" {
-    script = "scripts/seal-image.sh"
+    execute_command = "chmod +x {{ .Path }}; echo 'packer' | sudo -S env {{ .Vars }} bash '{{ .Path }}'"
+    script          = "scripts/seal-image.sh"
   }
 
   post-processor "checksum" {
