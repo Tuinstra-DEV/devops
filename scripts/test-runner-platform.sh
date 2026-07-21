@@ -33,6 +33,9 @@ grep -q 'dest: /etc/ci-runner/sanctuary-ci.xml' infra/ansible/roles/runner_host/
 grep -q 'runner_libvirt_uri=qemu:///system' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-uuid sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-list --name.*grep -Fxq sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'net-list --all --persistent --name' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'net-list --all --autostart --name' infra/ansible/roles/runner_host/tasks/main.yml
+! grep -q 'when: runner_network_definition.changed' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q '<uuid>.*runner_network_uuid.*</uuid>' infra/ansible/roles/runner_host/tasks/main.yml
 ! grep -q 'virsh net-undefine sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
 ! grep -q 'dest: /etc/libvirt/qemu/networks/sanctuary-ci.xml' infra/ansible/roles/runner_host/tasks/main.yml

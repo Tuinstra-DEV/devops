@@ -264,7 +264,14 @@ def validate_repositories(cfg: dict[str, Any]) -> list[str]:
 
 def read_token(path: Path) -> str:
     stat = path.stat()
-    if stat.st_mode & 0o077:
+    credential_directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    inside_systemd_credentials = False
+    if credential_directory:
+        try:
+            inside_systemd_credentials = path.resolve(strict=True).parent == Path(credential_directory).resolve(strict=True)
+        except OSError:
+            inside_systemd_credentials = False
+    if not inside_systemd_credentials and stat.st_mode & 0o077:
         raise RunnerError("GitHub credential must not be accessible by group or others")
     return path.read_text(encoding="utf-8").strip()
 

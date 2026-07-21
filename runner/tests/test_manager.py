@@ -12,6 +12,35 @@ import ci_runner_manager as manager
 
 
 class ManagerTests(unittest.TestCase):
+    def test_token_file_requires_private_permissions_outside_systemd_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "github.token"
+            path.write_text("opaque-token\n", encoding="utf-8")
+            os.chmod(path, 0o640)
+            with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(manager.RunnerError):
+                manager.read_token(path)
+
+    def test_token_file_accepts_systemd_credential_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_directory = Path(directory) / "credentials"
+            credential_directory.mkdir(mode=0o700)
+            path = credential_directory / "github_token"
+            path.write_text("opaque-token\n", encoding="utf-8")
+            os.chmod(path, 0o440)
+            with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(credential_directory)}, clear=True):
+                self.assertEqual(manager.read_token(path), "opaque-token")
+
+    def test_systemd_credential_boundary_does_not_cover_sibling_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            credential_directory = root / "credentials"
+            credential_directory.mkdir(mode=0o700)
+            path = root / "github.token"
+            path.write_text("opaque-token\n", encoding="utf-8")
+            os.chmod(path, 0o640)
+            with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(credential_directory)}, clear=True), self.assertRaises(manager.RunnerError):
+                manager.read_token(path)
+
     def test_lease_validation_accepts_expected_identifier(self):
         self.assertEqual(manager.validate_lease_id("job-123_abc.1"), "job-123_abc.1")
 
