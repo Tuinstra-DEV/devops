@@ -39,7 +39,7 @@ sudo install -d -m 0755 /etc/apt/keyrings
 install_key https://download.docker.com/linux/ubuntu/gpg "$DOCKER_KEY_SHA256" /etc/apt/keyrings/docker.gpg
 install_key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "$NODE_KEY_SHA256" /etc/apt/keyrings/nodesource.gpg
 install_key https://aquasecurity.github.io/trivy-repo/deb/public.key "$TRIVY_KEY_SHA256" /etc/apt/keyrings/trivy.gpg
-install_key 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756F' "$PHP_KEY_SHA256" /etc/apt/keyrings/ondrej-php.gpg
+install_key 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6' "$PHP_KEY_SHA256" /etc/apt/keyrings/ondrej-php.gpg
 
 sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<'EOF'
 Types: deb
