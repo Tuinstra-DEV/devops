@@ -18,12 +18,16 @@ import tempfile
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PREFIX = "sanctuary-ci-"
 OVERLAY_ROOT = Path("/mnt/ssd1000-01/ci-runner")
-BASE_IMAGE = Path("/var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2")
+IMAGE_ROOT = Path("/var/lib/ci-runner/images")
+BASE_IMAGE = IMAGE_ROOT / "ubuntu-24.04-runner.qcow2"
+IMAGE_RE = re.compile(r"^ubuntu-24\.04-runner-[a-f0-9]{64}\.qcow2$")
 NETWORK = "sanctuary-ci"
 VCPUS = "8"
 MEMORY_MIB = "12288"
 DISK_GIB = "120G"
+MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
+HELPER_PATH = "/usr/local/libexec/ci-runner-host-helper"
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -48,11 +52,17 @@ def lease_dir(lease: str) -> Path:
     return directory
 
 
+def resolved_base_image() -> Path:
+    image = BASE_IMAGE.resolve(strict=True)
+    if image.parent != IMAGE_ROOT or not IMAGE_RE.fullmatch(image.name) or not image.is_file():
+        raise ValueError("base image link does not target a digest-versioned runner image")
+    return image
+
+
 def launch(lease: str) -> None:
     if os.geteuid() != 0:
         raise PermissionError("helper must run as root")
-    if not BASE_IMAGE.is_file():
-        raise FileNotFoundError(f"base image missing: {BASE_IMAGE}")
+    base_image = resolved_base_image()
     existing = run(["virsh", "list", "--all", "--name"])
     if any(line.startswith(PREFIX) for line in existing.stdout.splitlines()):
         raise RuntimeError("a sanctuary CI domain already exists")
@@ -67,7 +77,7 @@ def launch(lease: str) -> None:
     overlay = directory / "root.qcow2"
     seed = directory / "seed.iso"
     try:
-        run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(BASE_IMAGE), str(overlay), DISK_GIB])
+        run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_image), str(overlay), DISK_GIB])
         user_data = """#cloud-config
 bootcmd:
   - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
@@ -93,6 +103,9 @@ runcmd:
              "--disk", f"path={seed},device=cdrom,readonly=on",
              "--network", f"network={NETWORK},model=virtio", "--graphics", "none",
              "--rng", "/dev/urandom", "--controller", "type=scsi,model=virtio-scsi"])
+        run(["systemd-run", "--unit", f"{PREFIX}expire-{lease}",
+             "--on-active", f"{MAX_LEASE_SECONDS}s", "--timer-property", "AccuracySec=30s",
+             HELPER_PATH, "destroy", lease])
     except Exception:
         destroy(lease)
         raise
@@ -100,6 +113,7 @@ runcmd:
 
 def destroy(lease: str) -> None:
     domain = name(lease)
+    run(["systemctl", "stop", f"{PREFIX}expire-{lease}.timer"], check=False)
     run(["virsh", "destroy", domain], check=False)
     run(["virsh", "undefine", domain, "--nvram"], check=False)
     directory = lease_dir(lease)

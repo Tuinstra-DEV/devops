@@ -14,6 +14,7 @@ ExecStartPre=/usr/bin/test -s /run/ci-runner/jit.config
 ExecStart=/usr/local/bin/run-jit-runner
 ExecStopPost=-/usr/bin/rm -f /run/ci-runner/jit.config
 ExecStopPost=+/usr/bin/systemctl poweroff
+RuntimeMaxSec=7200
 Restart=no
 NoNewPrivileges=yes
 PrivateTmp=yes

@@ -13,12 +13,19 @@
 6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1, and
    120-minute lease limit in `/etc/ci-runner/manager.toml`.
 
+Image activation is fail-closed: Ansible stops new admission, refuses to switch
+the digest symlink while any `sanctuary-ci-*` domain or overlay entry exists,
+and retains prior digest-versioned images. Never bypass this drain assertion.
+
 Copy `infra/packer/sanctuary-runner.pkrvars.hcl.example` outside source control,
 replace every placeholder with an exact reviewed version or checksum, then run
 `packer build -var-file=/protected/path/sanctuary-runner.pkrvars.hcl
 sanctuary-runner.pkr.hcl` from `infra/packer`. The build fails unless Docker,
 Buildx, Compose, Node 24/Corepack, Playwright Chromium, Trivy, PHP 8.3/8.4,
 Composer, and the base CLI/build tools satisfy the image contract.
+Install Packer and the QEMU plugin only from the artifacts and SHA-256 values in
+`infra/packer/toolchain.lock`; retain the verified archives with the image build
+evidence.
 
 Validate the role locally before applying it, then execute check mode against
 the `sanctuary` inventory target. Check mode gathers host facts but does not
@@ -49,6 +56,12 @@ reachability while host, private and production ranges are blocked; one-job
 poweroff; complete reconciliation within 30 seconds; and audit events without
 the JIT payload.
 
+Repeat a failure canary with the manager stopped. Confirm the guest and host
+timer power the VM off at the configured upper bound, then restart the manager
+and confirm the local lease, overlay, seed and GitHub runner record are removed.
+Simulate one failed GitHub deletion and verify a private cleanup tombstone is
+retried without blocking the next VM admission.
+
 The Sanctuary production deny list must contain `88.159.77.149/32` plus every
 other public production CIDR. The dedicated firewall service must leave Docker
 and all non-`sanctuary_ci` nftables tables unchanged.
@@ -73,3 +86,7 @@ lease directory remains.
 
 Keep the checksum-pinned base image during rollback so restoration is
 reversible. Re-enable only after a canary passes the acceptance checks.
+To roll back an image, drain to zero domains and overlays, atomically repoint
+`ubuntu-24.04-runner.qcow2` to the digest recorded by
+`ubuntu-24.04-runner.previous.qcow2`, restart the manager, and pass the same
+non-production canary. Verify backing chains before deleting any retained image.

@@ -24,6 +24,13 @@ grep -q 'VCPUS = "8"' runner/host-helper/ci_runner_host_helper.py
 grep -q 'DISK_GIB = "120G"' runner/host-helper/ci_runner_host_helper.py
 grep -q 'concurrency is 1' runner/manager/ci_runner_manager.py
 grep -q 'max_lease_seconds = 7200' runner/config/manager.toml
+grep -q '^RuntimeMaxSec=7200$' runner/systemd/ci-runner-job.service
+grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
+grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'required_version = "= 1.15.4"' infra/packer/sanctuary-runner.pkr.hcl
+grep -q 'version = "= 1.1.6"' infra/packer/sanctuary-runner.pkr.hcl
+grep -q 'packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112beac413ccbce80da927cf1' infra/packer/toolchain.lock
+grep -q 'qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87' infra/packer/toolchain.lock
 grep -q 'Tuinstra-DEV/tuinstra-site' runner/config/manager.toml
 ! grep -q 'Tuinstra-DEV/devops' runner/config/manager.toml
 grep -q '88.159.77.149/32' infra/ansible/inventory/hosts.example.yml
