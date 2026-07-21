@@ -12,7 +12,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -25,6 +27,12 @@ import urllib.request
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 LOG = logging.getLogger("ci-runner-manager")
 REGISTRATION_GRACE_SECONDS = 300
+HELPER_HEADER_MAX = 4096
+HELPER_RESPONSE_MAX = 65536
+HELPER_JIT_MAX = 131072
+HELPER_ERROR_CODES = {"invalid_request", "unauthorized", "operation_failed", "busy"}
+HELPER_QUERY_TIMEOUT_SECONDS = 120
+HELPER_MUTATION_TIMEOUT_SECONDS = 330
 
 
 class RunnerError(RuntimeError):
@@ -41,10 +49,19 @@ class NotFound(RunnerError):
     pass
 
 
+def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RunnerError("host helper returned an invalid response")
+        result[key] = value
+    return result
+
+
 def load_config(path: Path) -> dict[str, Any]:
     with path.open("rb") as handle:
         cfg = tomllib.load(handle)
-    required = {"state_dir", "lock_file", "audit_log", "helper", "min_free_memory_mib", "min_free_disk_gib", "max_load_1m", "max_lease_seconds", "github_token_file", "repositories", "runner_label"}
+    required = {"state_dir", "lock_file", "audit_log", "helper_socket", "min_free_memory_mib", "min_free_disk_gib", "max_load_1m", "max_lease_seconds", "github_token_file", "repositories", "runner_label"}
     missing = required.difference(cfg)
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
@@ -57,18 +74,22 @@ def validate_lease_id(value: str) -> str:
     return value
 
 
-def read_jit_config(path: Path) -> bytes:
-    stat = path.stat()
-    if stat.st_mode & 0o077:
-        raise RunnerError("JIT configuration file must not be accessible by group or others")
-    raw = path.read_bytes().strip()
-    if not raw or len(raw) > 131072:
+def validate_jit_config(raw: bytes) -> bytes:
+    raw = raw.strip()
+    if not raw or len(raw) > HELPER_JIT_MAX:
         raise RunnerError("JIT configuration is empty or exceeds 128 KiB")
     try:
         base64.b64decode(raw, validate=True)
     except ValueError as exc:
         raise RunnerError("JIT configuration is not valid base64") from exc
     return raw
+
+
+def read_jit_config(path: Path) -> bytes:
+    stat = path.stat()
+    if stat.st_mode & 0o077:
+        raise RunnerError("JIT configuration file must not be accessible by group or others")
+    return validate_jit_config(path.read_bytes())
 
 
 def memory_available_mib() -> int:
@@ -147,7 +168,8 @@ class StateStore:
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
 
-    def defer_cleanup(self, lease: str, state: dict[str, Any], now: int) -> None:
+    def defer_cleanup(self, lease: str, state: dict[str, Any], now: int, *,
+                      preserve_lease: bool = False) -> None:
         attempts = int(state.get("cleanup_attempts", 0)) + 1
         pending = dict(state)
         pending.update({
@@ -160,7 +182,8 @@ class StateStore:
         temporary.write_text(json.dumps(pending, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
-        self.remove(lease)
+        if not preserve_lease:
+            self.remove(lease)
 
     def remove_cleanup(self, state: dict[str, Any]) -> None:
         self.cleanup_path(state).unlink(missing_ok=True)
@@ -276,10 +299,62 @@ def read_token(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-    command = ["sudo", "--non-interactive", str(cfg["helper"]), *args]
-    return subprocess.run(command, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          check=check, timeout=120, text=False)
+def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    if not args or args[0] not in {"list", "launch", "destroy"} or len(args) > 2:
+        raise RunnerError("invalid host helper operation")
+    operation = args[0]
+    request_id = secrets.token_hex(16)
+    request: dict[str, Any] = {"v": 1, "id": request_id, "op": operation}
+    if operation in {"launch", "destroy"}:
+        if len(args) != 2:
+            raise RunnerError("host helper operation requires a lease")
+        request["lease"] = validate_lease_id(args[1])
+    elif len(args) != 1:
+        raise RunnerError("list operation does not accept a lease")
+    if operation == "launch":
+        if stdin is None:
+            raise RunnerError("launch requires JIT configuration")
+        stdin = validate_jit_config(stdin)
+    elif stdin is not None:
+        raise RunnerError("host helper payload is only valid for launch")
+    header = json.dumps(request, separators=(",", ":")).encode("utf-8")
+    if len(header) > HELPER_HEADER_MAX:
+        raise RunnerError("host helper request header exceeds limit")
+    command = ["host-helper", operation, *args[1:]]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
+            connection.settimeout(HELPER_QUERY_TIMEOUT_SECONDS if operation == "list"
+                                  else HELPER_MUTATION_TIMEOUT_SECONDS)
+            connection.connect(str(cfg["helper_socket"]))
+            if connection.send(header) != len(header):
+                raise RunnerError("host helper request was truncated")
+            if stdin is not None and connection.send(stdin) != len(stdin):
+                raise RunnerError("host helper JIT payload was truncated")
+            payload, _ancillary, flags, _address = connection.recvmsg(HELPER_RESPONSE_MAX)
+    except (OSError, TimeoutError) as exc:
+        raise RunnerError("host helper is unavailable") from exc
+    if flags & socket.MSG_TRUNC or not payload:
+        raise RunnerError("host helper returned an invalid response")
+    try:
+        response = json.loads(payload, object_pairs_hook=strict_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, RunnerError) as exc:
+        raise RunnerError("host helper returned an invalid response") from exc
+    if not isinstance(response, dict) or response.get("v") != 1 or response.get("id") != request_id:
+        raise RunnerError("host helper returned an invalid response")
+    if response.get("ok") is True and set(response) == {"v", "id", "ok", "result"}:
+        result = response["result"]
+        if (operation == "list" and not isinstance(result, dict)) or \
+                (operation != "list" and result is not None):
+            raise RunnerError("host helper returned an invalid response")
+        stdout = json.dumps(result, sort_keys=True).encode("utf-8") if operation == "list" else b""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+    error = response.get("error")
+    if response.get("ok") is not False or set(response) != {"v", "id", "ok", "error"} or error not in HELPER_ERROR_CODES:
+        raise RunnerError("host helper returned an invalid response")
+    completed = subprocess.CompletedProcess(command, 1, stdout=b"", stderr=str(error).encode("ascii"))
+    if check:
+        raise subprocess.CalledProcessError(1, command, output=b"", stderr=completed.stderr)
+    return completed
 
 
 def with_lock(path: Path):
@@ -289,9 +364,9 @@ def with_lock(path: Path):
     return handle
 
 
-def launch(cfg: dict[str, Any], lease: str, jit_path: Path, *, metadata: dict[str, Any] | None = None) -> None:
+def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *, metadata: dict[str, Any] | None = None) -> None:
     lease = validate_lease_id(lease)
-    jit = read_jit_config(jit_path)
+    jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         if store.leases():
@@ -312,7 +387,11 @@ def launch(cfg: dict[str, Any], lease: str, jit_path: Path, *, metadata: dict[st
         try:
             helper(cfg, "launch", lease, stdin=jit)
         except Exception:
-            store.remove(lease)
+            # The socket may close while the root-side mutation is still being
+            # terminated. Keep the cleanup obligation durable so the next
+            # reconcile destroys both a possible domain and its lease files.
+            state["phase"] = "provisioning_failed"
+            store.write(lease, state)
             raise
         state["phase"] = "running"
         store.write(lease, state)
@@ -345,6 +424,8 @@ def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None)
             raise
         else:
             store.remove(lease)
+            if isinstance(state.get("repo"), str) and isinstance(state.get("runner_id"), int):
+                store.remove_cleanup(state)
         LOG.info("destroy completed lease=%s", lease)
 
 
@@ -382,8 +463,11 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
         states = {item["lease"]: item for item in store.leases() if "lease" in item}
         expired = {lease for lease, state in states.items()
                    if int(state.get("launched_at", 0)) + int(cfg["max_lease_seconds"]) < now}
-        running = {lease for lease, state in domains.items() if state == "running"} - expired
-        for lease in sorted(known - running):
+        healthy = {
+            lease for lease, domain_state in domains.items()
+            if domain_state == "running" and states.get(lease, {}).get("phase") == "running"
+        } - expired
+        for lease in sorted(known - healthy):
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
             try:
@@ -393,6 +477,9 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
                 store.defer_cleanup(lease, states[lease], now)
             else:
                 store.remove(lease)
+                if isinstance(states[lease].get("repo"), str) \
+                        and isinstance(states[lease].get("runner_id"), int):
+                    store.remove_cleanup(states[lease])
         for lease in sorted(set(domains) - known):
             LOG.warning("destroying orphan domain lease=%s", lease)
             helper(cfg, "destroy", lease)
@@ -435,11 +522,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     else:
                         store.remove_cleanup(registration)
                 raise RunnerError("GitHub returned an invalid JIT response")
-            jit_path = Path(cfg.get("runtime_dir", "/run/ci-runner-manager")) / f"{lease}.jit"
             try:
-                jit_path.write_text(encoded, encoding="utf-8")
-                os.chmod(jit_path, 0o600)
-                launch(cfg, lease, jit_path, metadata={
+                launch(cfg, lease, encoded.encode("ascii"), metadata={
                     "repo": repo,
                     "runner_id": runner_id,
                     "run_id": job["run_id"],
@@ -461,12 +545,10 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                         "runner_id": runner_id,
                         "run_id": job["run_id"],
                         "job_id": job["job_id"],
-                    }, int(time.time()))
+                    }, int(time.time()), preserve_lease=True)
                 else:
                     store.remove_cleanup(registration)
                 raise
-            finally:
-                jit_path.unlink(missing_ok=True)
     return False
 
 

@@ -1,8 +1,8 @@
 [Unit]
 Description=Sanctuary CI runner reconciler
-After=network-online.target libvirtd.service sanctuary-ci-firewall.service
+After=network-online.target libvirtd.service sanctuary-ci-firewall.service ci-runner-host-helper.socket
 Wants=network-online.target
-Requires=libvirtd.service sanctuary-ci-firewall.service
+Requires=libvirtd.service sanctuary-ci-firewall.service ci-runner-host-helper.socket
 ConditionPathExists=/etc/ci-runner/github.token
 
 [Service]
@@ -17,7 +17,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/ci-runner-manager /run/lock /mnt/hdd1000-01/ci-audit
+ReadWritePaths=/var/lib/ci-runner-manager /run/ci-runner-manager /mnt/hdd1000-01/ci-audit
 RuntimeDirectory=ci-runner-manager
 RuntimeDirectoryMode=0700
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

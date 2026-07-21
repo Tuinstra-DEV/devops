@@ -33,10 +33,19 @@ sudo -u ci-runner-manager /usr/local/bin/ci-runner-manager launch \
   --lease JOB_ID --jit-config-file /run/ci-runner-manager/JOB_ID.jit
 ```
 
-The manager passes the value to the root helper over stdin; neither layer logs
-it or includes it in a host process argument. The guest uses the JIT value for
-one job, powers off after the runner exits, and the reconciler removes the
-domain, seed ISO, and overlay.
+The manager keeps `NoNewPrivileges=yes` and sends the value as a separate,
+bounded packet to a root-owned systemd socket-activated helper. The helper
+accepts only the exact manager UID (socket mode plus `SO_PEERCRED`) and a strict
+`list`, `launch`, or `destroy` protocol. Neither layer logs the JIT value or
+includes it in a host process argument. Normal GitHub dispatch sends the value
+directly from memory without a manager-side temporary file. The guest uses the
+JIT value for one job, powers off after the runner exits, and the reconciler
+removes the domain, seed ISO, and overlay.
+
+The root helper never receives the GitHub API credential. Its detailed security
+events go only to journald; responses expose allowlisted error codes rather than
+subprocess output. The JIT value remains in the root-only seed ISO until lease
+cleanup, so seed and overlay files must never be copied into tickets or logs.
 
 The polling adapter uses only documented GitHub REST endpoints and is not a
 replacement for GitHub's scale-set client. Migrate to the official client when

@@ -1,7 +1,7 @@
 state_dir = "/var/lib/ci-runner-manager/state"
-lock_file = "/run/lock/ci-runner-manager.lock"
+lock_file = "/run/ci-runner-manager/manager.lock"
 audit_log = "/mnt/hdd1000-01/ci-audit/manager.log"
-helper = "/usr/local/libexec/ci-runner-host-helper"
+helper_socket = "/run/ci-runner-host-helper.sock"
 overlay_root = "/mnt/ssd1000-01/ci-runner"
 min_free_memory_mib = 14336
 min_free_disk_gib = 140

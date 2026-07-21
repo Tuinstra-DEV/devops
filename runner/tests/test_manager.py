@@ -6,12 +6,81 @@ import unittest
 from unittest import mock
 import json
 import io
+import subprocess
 import urllib.error
 
 import ci_runner_manager as manager
 
 
 class ManagerTests(unittest.TestCase):
+    def helper_connection(self, response):
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        packets = []
+        connection.send.side_effect = lambda packet: packets.append(packet) or len(packet)
+        connection.recvmsg.return_value = (
+            json.dumps(response, separators=(",", ":")).encode("utf-8"), [], 0, None
+        )
+        return connection, packets
+
+    @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)
+    @mock.patch.object(manager.socket, "socket")
+    def test_helper_list_uses_bounded_seqpacket_protocol(self, socket_factory, _token):
+        connection, packets = self.helper_connection(
+            {"v": 1, "id": "a" * 32, "ok": True, "result": {"lease": "running"}}
+        )
+        socket_factory.return_value = connection
+        result = manager.helper({"helper_socket": "/run/helper.sock"}, "list")
+        self.assertEqual(json.loads(result.stdout), {"lease": "running"})
+        request = json.loads(packets[0])
+        self.assertEqual(set(request), {"v", "id", "op"})
+        self.assertEqual(request["op"], "list")
+
+    @mock.patch.object(manager.secrets, "token_hex", return_value="b" * 32)
+    @mock.patch.object(manager.socket, "socket")
+    def test_helper_launch_sends_jit_as_separate_packet(self, socket_factory, _token):
+        connection, packets = self.helper_connection(
+            {"v": 1, "id": "b" * 32, "ok": True, "result": None}
+        )
+        socket_factory.return_value = connection
+        jit = base64.b64encode(b"opaque-jit")
+        manager.helper({"helper_socket": "/run/helper.sock"}, "launch", "lease-1", stdin=jit)
+        self.assertEqual(packets[1], jit)
+        self.assertNotIn(jit, packets[0])
+
+    @mock.patch.object(manager.secrets, "token_hex", return_value="c" * 32)
+    @mock.patch.object(manager.socket, "socket")
+    def test_helper_failure_exposes_only_allowlisted_code(self, socket_factory, _token):
+        connection, _packets = self.helper_connection(
+            {"v": 1, "id": "c" * 32, "ok": False, "error": "operation_failed"}
+        )
+        socket_factory.return_value = connection
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            manager.helper({"helper_socket": "/run/helper.sock"}, "list")
+        self.assertEqual(raised.exception.stderr, b"operation_failed")
+
+    @mock.patch.object(manager.secrets, "token_hex", return_value="d" * 32)
+    @mock.patch.object(manager.socket, "socket")
+    def test_helper_rejects_mismatched_response_id(self, socket_factory, _token):
+        connection, _packets = self.helper_connection(
+            {"v": 1, "id": "e" * 32, "ok": True, "result": {}}
+        )
+        socket_factory.return_value = connection
+        with self.assertRaisesRegex(manager.RunnerError, "invalid response"):
+            manager.helper({"helper_socket": "/run/helper.sock"}, "list")
+
+    @mock.patch.object(manager.secrets, "token_hex", return_value="f" * 32)
+    @mock.patch.object(manager.socket, "socket")
+    def test_helper_rejects_duplicate_response_members(self, socket_factory, _token):
+        connection, _packets = self.helper_connection({})
+        connection.recvmsg.return_value = (
+            ('{"v":1,"id":"' + "f" * 32 +
+             '","ok":true,"ok":true,"result":{}}').encode("utf-8"), [], 0, None
+        )
+        socket_factory.return_value = connection
+        with self.assertRaisesRegex(manager.RunnerError, "invalid response"):
+            manager.helper({"helper_socket": "/run/helper.sock"}, "list")
+
     def test_token_file_requires_private_permissions_outside_systemd_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "github.token"
@@ -104,6 +173,31 @@ class ManagerTests(unittest.TestCase):
             with self.assertRaisesRegex(manager.RunnerError, "domain already exists"):
                 manager.launch(cfg, "new-job", jit)
 
+    @mock.patch.object(manager, "capacity_errors", return_value=[])
+    @mock.patch.object(manager, "helper")
+    def test_failed_launch_keeps_durable_cleanup_state(self, helper, _capacity):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            helper.side_effect = [
+                mock.Mock(stdout=b"{}"),
+                manager.RunnerError("ambiguous launch completion"),
+            ]
+
+            with self.assertRaisesRegex(manager.RunnerError, "ambiguous"):
+                manager.launch(cfg, "new-job", base64.b64encode(b"opaque"))
+
+            states = manager.StateStore(cfg["state_dir"]).leases()
+            self.assertEqual(states[0]["lease"], "new-job")
+            self.assertEqual(states[0]["phase"], "provisioning_failed")
+
+            helper.side_effect = [mock.Mock(stdout=b'{"new-job":"running"}'), mock.Mock()]
+            manager.reconcile(cfg)
+            self.assertEqual(manager.StateStore(cfg["state_dir"]).leases(), [])
+            self.assertIn(("destroy", "new-job"),
+                          [call.args[1:] for call in helper.call_args_list])
+
     def test_candidate_jobs_filter_status_and_label(self):
         client = manager.GitHubClient("secret")
         client.request = mock.Mock(side_effect=[
@@ -183,9 +277,10 @@ class ManagerTests(unittest.TestCase):
                 mock.ANY,
                 metadata={"repo": "Tuinstra-DEV/gate", "runner_id": 30, "run_id": 10, "job_id": 20},
             )
+            self.assertEqual(launch.call_args.args[2], base64.b64encode(b"jit"))
+            self.assertEqual(list((root / "run").iterdir()), [])
 
-    @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
-    def test_dispatch_defers_runner_cleanup_when_launch_and_delete_fail(self, _launch):
+    def test_dispatch_preserves_host_cleanup_when_launch_and_delete_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             client = mock.Mock()
@@ -199,12 +294,21 @@ class ManagerTests(unittest.TestCase):
                    "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
             (root / "run").mkdir()
 
-            with self.assertRaisesRegex(manager.RunnerError, "launch failed"):
+            def ambiguous_launch(launch_cfg, lease, _jit, *, metadata=None):
+                state = {"lease": lease, "phase": "provisioning_failed", "launched_at": 1}
+                state.update(metadata or {})
+                manager.StateStore(Path(launch_cfg["state_dir"])).write(lease, state)
+                raise manager.RunnerError("launch failed")
+
+            with mock.patch.object(manager, "launch", side_effect=ambiguous_launch), \
+                    self.assertRaisesRegex(manager.RunnerError, "launch failed"):
                 manager.dispatch_once(cfg, client)
 
-            cleanup = manager.StateStore(root / "state").cleanup_items()
+            store = manager.StateStore(root / "state")
+            cleanup = store.cleanup_items()
             self.assertEqual(cleanup[0]["repo"], "Tuinstra-DEV/gate")
             self.assertEqual(cleanup[0]["runner_id"], 30)
+            self.assertEqual(store.leases()[0]["phase"], "provisioning_failed")
 
     @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
     def test_repeated_failed_job_registrations_keep_distinct_cleanup_obligations(self, _launch):

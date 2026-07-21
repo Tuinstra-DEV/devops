@@ -1,9 +1,11 @@
 # Sanctuary ephemeral CI runner
 
 This directory contains the host-side boundary for one ephemeral GitHub Actions
-runner. It is intentionally smaller than a runner scale-set client: the
-official GitHub client owns job acquisition and JIT configuration, while
-`ci-runner-manager` owns local admission, VM launch, and cleanup.
+runner. It is intentionally smaller than a runner scale-set client: a
+repository-scoped polling adapter owns job acquisition and JIT configuration,
+while `ci-runner-manager` owns local admission, VM launch, and cleanup.
+It remains unprivileged and communicates with the root-only lifecycle helper
+through a bounded systemd `SOCK_SEQPACKET` socket guarded by exact peer UID.
 
 See [the platform design](../docs/runner/sanctuary-kvm-runner.md) and
 [the operations runbook](../docs/playbooks/ci-runner-host.md) before deployment.
