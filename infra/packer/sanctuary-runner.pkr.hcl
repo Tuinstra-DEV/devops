@@ -107,7 +107,7 @@ source "qemu" "ubuntu_runner" {
   ssh_username     = "packer"
   ssh_password     = "packer"
   ssh_timeout      = "30m"
-  shutdown_command = "echo 'packer' | sudo -S shutdown -P now"
+  shutdown_command = "echo 'packer' | sudo -S sh -c 'passwd --lock packer && systemctl poweroff'"
   http_directory   = "http"
   boot_wait        = "5s"
   boot_command = [
