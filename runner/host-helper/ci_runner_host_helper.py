@@ -7,9 +7,11 @@ import argparse
 import base64
 import binascii
 import fcntl
+import grp
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import socket
@@ -34,6 +36,8 @@ MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
 HELPER_PATH = "/usr/local/libexec/ci-runner-host-helper"
 MANAGER_USER = "ci-runner-manager"
+QEMU_USER = "libvirt-qemu"
+QEMU_GROUP = "kvm"
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 4096
 MAX_JIT_BYTES = 131072
@@ -104,6 +108,19 @@ def resolved_base_image() -> Path:
     return image
 
 
+def qemu_identity() -> tuple[int, int]:
+    user = pwd.getpwnam(QEMU_USER)
+    group = grp.getgrnam(QEMU_GROUP)
+    if user.pw_gid != group.gr_gid:
+        raise RuntimeError("libvirt QEMU primary group does not match configured group")
+    return user.pw_uid, group.gr_gid
+
+
+def set_qemu_access(path: Path, uid: int, gid: int, mode: int) -> None:
+    os.chown(path, uid, gid)
+    os.chmod(path, mode)
+
+
 def validate_jit_payload(encoded_jit: bytes) -> bytes:
     if not encoded_jit or len(encoded_jit) > MAX_JIT_BYTES:
         raise ProtocolError("invalid JIT configuration size")
@@ -131,8 +148,11 @@ def launch(lease: str, encoded_jit: bytes | None = None) -> None:
     directory.mkdir(mode=0o700)
     overlay = directory / "root.qcow2"
     seed = directory / "seed.iso"
+    qemu_uid, qemu_gid = qemu_identity()
+    set_qemu_access(directory, 0, qemu_gid, 0o710)
     try:
         run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_image), str(overlay), DISK_GIB])
+        set_qemu_access(overlay, qemu_uid, qemu_gid, 0o600)
         user_data = """#cloud-config
 bootcmd:
   - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
@@ -152,6 +172,7 @@ runcmd:
             (temp / "meta-data").write_text(meta_data, encoding="utf-8")
             os.chmod(temp / "user-data", 0o600)
             run(["cloud-localds", str(seed), str(temp / "user-data"), str(temp / "meta-data")])
+        set_qemu_access(seed, qemu_uid, qemu_gid, 0o600)
         run(["virt-install", "--connect", LIBVIRT_URI,
              "--name", name(lease), "--memory", MEMORY_MIB, "--vcpus", VCPUS,
              "--cpu", "host-passthrough", "--import", "--noautoconsole", "--os-variant", "ubuntu24.04",
@@ -271,7 +292,6 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
     request_id = UNKNOWN_REQUEST_ID
     try:
         if expected_uid is None:
-            import pwd
             expected_uid = pwd.getpwnam(MANAGER_USER).pw_uid
         _pid, uid, _gid = peer_credentials(connection)
         if uid != expected_uid:

@@ -37,6 +37,8 @@ grep -q '^RuntimeMaxSec=7200$' runner/systemd/ci-runner-job.service
 grep -q '^RuntimeMaxSec=300s$' runner/systemd/ci-runner-host-helper@.service
 grep -q '^MaxConnections=4$' runner/systemd/ci-runner-host-helper.socket
 grep -q '^HELPER_MUTATION_TIMEOUT_SECONDS = 330$' runner/manager/ci_runner_manager.py
+grep -q 'QEMU_USER = "libvirt-qemu"' runner/host-helper/ci_runner_host_helper.py
+grep -q "path: /mnt/ssd1000-01/ci-runner, owner: root, group: kvm, mode: '0710'" infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
 grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra/ansible/roles/runner_host/tasks/main.yml

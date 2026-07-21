@@ -65,8 +65,9 @@ fork pull requests select this machine.
 - Admission requires at least 8 host logical CPUs, 14 GiB available memory,
   140 GiB free on `/mnt/ssd1000-01/ci-runner`, and one-minute load no higher
   than 8. Thresholds are configurable; VM dimensions are root-helper constants.
-- The base image is root-owned and mode `0444`. Per-job files live in a mode
-  `0700` lease directory.
+- The base image is root-owned and mode `0444`. The overlay root and per-job
+  lease directories are root-owned, group `kvm`, and mode `0710`. Only the
+  isolated `libvirt-qemu` account owns the mode `0600` overlay and seed images.
 - A running lease older than `max_lease_seconds` (default 7,200 seconds) is
   destroyed by reconciliation even if libvirt still reports it running.
 

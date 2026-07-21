@@ -61,8 +61,17 @@ class HostHelperTests(unittest.TestCase):
             image.return_value = helper.IMAGE_ROOT / ("ubuntu-24.04-runner-" + "a" * 64 + ".qcow2")
             run.return_value = mock.Mock(stdout="")
             with mock.patch.object(helper, "lease_dir", return_value=Path(directory) / "lease"), \
-                    mock.patch.object(helper.sys, "stdin", stdin):
+                    mock.patch.object(helper.sys, "stdin", stdin), \
+                    mock.patch.object(helper, "qemu_identity", return_value=(64055, 994)), \
+                    mock.patch.object(helper, "set_qemu_access") as set_access:
                 helper.launch("lease")
+
+            lease = Path(directory) / "lease"
+            self.assertEqual(set_access.call_args_list, [
+                mock.call(lease, 0, 994, 0o710),
+                mock.call(lease / "root.qcow2", 64055, 994, 0o600),
+                mock.call(lease / "seed.iso", 64055, 994, 0o600),
+            ])
 
         self.assertIn(mock.call([
             "systemd-run", "--unit", "sanctuary-ci-expire-lease",
@@ -73,6 +82,14 @@ class HostHelperTests(unittest.TestCase):
             "--property=RestrictAddressFamilies=AF_UNIX",
             "/usr/local/libexec/ci-runner-host-helper", "destroy", "lease",
         ]), run.call_args_list)
+
+    @mock.patch.object(helper.os, "chmod")
+    @mock.patch.object(helper.os, "chown")
+    def test_qemu_access_sets_exact_owner_group_and_mode(self, chown, chmod):
+        path = Path("/runner/seed.iso")
+        helper.set_qemu_access(path, 64055, 994, 0o600)
+        chown.assert_called_once_with(path, 64055, 994)
+        chmod.assert_called_once_with(path, 0o600)
 
     def test_serve_rejects_untrusted_peer_before_reading_request(self):
         connection = self.connection_for_uid(1001)
