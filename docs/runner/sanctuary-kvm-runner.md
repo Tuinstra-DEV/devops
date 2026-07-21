@@ -21,13 +21,18 @@ its own changes.
 
 The adapter deduplicates completed job IDs for 24 hours. Repository JIT runners
 are label-scoped, so GitHub may assign a different queued heavy job than the one
-used to name the runner. After runner cleanup, the manager keeps a durable
-handoff tombstone, waits for API consistency, and retries a still-queued target
-with exponential cooldown capped at one hour. Pending handoffs block duplicate
-dispatch even if history is absent. It launches at most one VM and removes the
-offline GitHub runner record if VM launch fails. Any malformed API response,
-permission error, transport failure, or rate limit fails closed; rate-limit
-responses honor a bounded retry interval.
+used to name the runner. The manager records that candidate as `trigger_job_id`
+and records `actual_job_id` only after GitHub reports a job assigned to the
+registration's runner ID, corroborated by its runner name when available.
+Runner names are reused across retries and are never sufficient for attribution
+without the numeric runner ID.
+After runner cleanup, the manager keeps a durable handoff tombstone, waits for
+API consistency, and retries a still-queued trigger with exponential cooldown
+capped at one hour. Pending handoffs block
+duplicate dispatch even if history is absent. It launches at most one VM and
+removes the offline GitHub runner record if VM launch fails. Any malformed API
+response, permission error, transport failure, or rate limit fails closed;
+rate-limit responses honor a bounded retry interval.
 
 For manual break-glass operation, a single-use JIT value can still be supplied
 to the manager using a mode `0600` file. Delete that host-side file immediately

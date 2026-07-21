@@ -267,6 +267,78 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(client.candidate_jobs("Tuinstra-DEV/gate", "trusted-heavy"),
                          [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 1}])
 
+    def test_find_assigned_job_matches_github_reported_runner_name(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": [{"id": 10}, {"id": 11}]},
+            {"jobs": [{"id": 20, "status": "queued", "runner_name": ""}]},
+            {"jobs": [{"id": 83, "status": "in_progress", "runner_id": 30,
+                       "runner_name": "sanctuary-20"}]},
+            {"workflow_runs": []},
+        ])
+
+        self.assertEqual(
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20"),
+            {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
+        )
+
+    def test_find_assigned_job_captures_fast_completed_job_by_runner_id(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 11}]},
+            {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        self.assertEqual(
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20"),
+            {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
+        )
+
+    def test_find_assigned_job_ignores_reused_name_with_different_runner_id(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 10}, {"id": 11}]},
+            {"jobs": [{"id": 21, "status": "completed", "runner_id": 29,
+                       "runner_name": "sanctuary-20"}]},
+            {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        self.assertEqual(
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20"),
+            {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
+        )
+
+    def test_find_assigned_job_ignores_single_stale_name_without_runner_id(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 10}]},
+            {"jobs": [{"id": 21, "status": "completed",
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        self.assertIsNone(
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20")
+        )
+
+    def test_find_assigned_job_fails_closed_for_ambiguous_runner_id(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 10}, {"id": 11}]},
+            {"jobs": [{"id": 21, "status": "completed", "runner_id": 30,
+                       "runner_name": "sanctuary-20"}]},
+            {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        with self.assertRaisesRegex(manager.RunnerError, "ambiguous"):
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20")
+
     @mock.patch.object(manager.urllib.request, "urlopen")
     def test_rate_limit_is_fail_closed_and_does_not_expose_token(self, urlopen):
         headers = {"Retry-After": "60"}
@@ -354,21 +426,30 @@ class ManagerTests(unittest.TestCase):
             client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
             client.generate_jit.return_value = {
                 "encoded_jit_config": base64.b64encode(b"jit").decode(),
-                "runner": {"id": 30},
+                "runner": {"id": 30, "name": "sanctuary-20"},
             }
             cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
                    "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
             (root / "run").mkdir()
 
-            self.assertTrue(manager.dispatch_once(cfg, client))
+            with self.assertLogs("ci-runner-manager", level="INFO") as logs:
+                self.assertTrue(manager.dispatch_once(cfg, client))
 
             launch.assert_called_once_with(
                 cfg,
                 "gh-20",
                 mock.ANY,
-                metadata={"repo": "Tuinstra-DEV/gate", "runner_id": 30, "run_id": 10, "job_id": 20},
+                metadata={
+                    "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                    "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                    "trigger_job_id": 20,
+                },
                 dispatch_history_key="Tuinstra-DEV/gate:20",
             )
+            self.assertNotIn("actual_job_id", launch.call_args.kwargs["metadata"])
+            audit = "\n".join(logs.output)
+            self.assertIn("trigger_job_id=20 assignment=unverified", audit)
+            self.assertNotIn("actual_job_id=20", audit)
             self.assertEqual(launch.call_args.args[2], base64.b64encode(b"jit"))
             self.assertEqual(list((root / "run").iterdir()), [])
 
@@ -506,6 +587,83 @@ class ManagerTests(unittest.TestCase):
 
             client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
             self.assertEqual(store.leases(), [])
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_reconcile_records_verified_actual_job_without_relabeling_trigger(
+            self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.return_value = mock.Mock(stdout=b'{"gh-20":"running"}')
+            client = mock.Mock()
+            client.find_assigned_job.return_value = {
+                "repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83,
+            }
+
+            with self.assertLogs("ci-runner-manager", level="INFO") as logs:
+                manager.reconcile(cfg, client)
+
+            state = store.leases()[0]
+            self.assertEqual(state["trigger_job_id"], 20)
+            self.assertEqual(state["actual_job_id"], 83)
+            self.assertEqual(state["actual_run_id"], 11)
+            self.assertEqual(state["runner_id"], 30)
+            self.assertEqual(state["lease"], "gh-20")
+            self.assertIn("trigger_job_id=20 actual_job_id=83", "\n".join(logs.output))
+            client.find_assigned_job.assert_called_once_with(
+                "Tuinstra-DEV/gate", 30, "sanctuary-20", include_completed=False
+            )
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_label_steal_cleanup_retries_trigger_and_retains_actual_audit(self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            state = {
+                "lease": "gh-20", "phase": "running", "launched_at": 1,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20, "dispatch_attempts": 1,
+            }
+            store.write("gh-20", state)
+            history.add("Tuinstra-DEV/gate:20", 1000)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.find_assigned_job.return_value = {
+                "repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83,
+            }
+            client.get_job.return_value = {
+                "id": 20, "status": "queued", "runner_name": "",
+            }
+
+            manager.reconcile(cfg, client)
+
+            pending = store.cleanup_items()[0]
+            self.assertEqual(pending["trigger_job_id"], 20)
+            self.assertEqual(pending["actual_job_id"], 83)
+            self.assertEqual(pending["runner_id"], 30)
+            self.assertEqual(pending["lease"], "gh-20")
+            client.find_assigned_job.assert_called_once_with(
+                "Tuinstra-DEV/gate", 30, "sanctuary-20", include_completed=True
+            )
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            client.get_job.assert_called_once_with("Tuinstra-DEV/gate", 20)
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1091))
 
     @mock.patch.object(manager.time, "time", return_value=1001)
     @mock.patch.object(manager, "helper")
