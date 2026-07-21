@@ -27,6 +27,7 @@ grep -q 'max_lease_seconds = 7200' runner/config/manager.toml
 grep -q '^RuntimeMaxSec=7200$' runner/systemd/ci-runner-job.service
 grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
 grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'required_version = "= 1.15.4"' infra/packer/sanctuary-runner.pkr.hcl
 grep -q 'version = "= 1.1.6"' infra/packer/sanctuary-runner.pkr.hcl
 test "$(grep -c "execute_command.*sudo -S env" infra/packer/sanctuary-runner.pkr.hcl)" -eq 3
