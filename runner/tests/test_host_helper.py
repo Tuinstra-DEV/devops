@@ -36,9 +36,22 @@ class HostHelperTests(unittest.TestCase):
         self.assertIn("- [chmod, '1770', /opt/actions-runner]", user_data)
         self.assertIn("ReadWritePaths=/opt/actions-runner", user_data)
         self.assertIn("UMask=0077", user_data)
-        self.assertIn("- [systemctl, daemon-reload]", user_data)
-        self.assertIn("- [systemctl, start, --no-block, ci-runner-job.service]", user_data)
+        self.assertIn("systemctl daemon-reload", user_data)
+        self.assertIn("systemctl start --no-block ci-runner-job.service", user_data)
+        self.assertNotIn("- [systemctl, start, --no-block, ci-runner-job.service]", user_data)
         self.assertNotIn("- [systemctl, start, ci-runner-job.service]", user_data)
+
+    def test_cloud_init_selects_verified_overlay2_before_runner_start(self):
+        user_data = helper.cloud_init_user_data(base64.b64encode(b"opaque-jit"))
+
+        self.assertIn('"containerd-snapshotter": false', user_data)
+        self.assertIn('"storage-driver": "overlay2"', user_data)
+        self.assertIn("docker info --format '{{.Driver}}'", user_data)
+        verify = user_data.index("test \"$(docker info --format '{{.Driver}}')\" = overlay2")
+        runner = user_data.index("systemctl start --no-block ci-runner-job.service")
+        self.assertLess(verify, runner)
+        runcmd = user_data.split("runcmd:\n", 1)[1]
+        self.assertEqual(runcmd, "  - [/usr/local/sbin/ci-runner-prepare-docker]\n")
 
     def test_lease_directory_cannot_escape_overlay_root(self):
         for value in ("../etc", "a/b", "white space", ""):
