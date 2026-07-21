@@ -70,8 +70,10 @@ fork pull requests select this machine.
   isolated `libvirt-qemu` account owns the mode `0600` overlay and seed images.
 - Inside each one-job guest, existing runner files remain root-owned and
   non-writable. Cloud-init makes only the top-level runner directory sticky and
-  group-writable so upstream JIT configuration can atomically replace its own
-  mode `0600` runtime files; the entire overlay is destroyed after the job.
+  group-writable so upstream JIT configuration can create and atomically replace
+  its own mode `0600` runtime files. Those files must start absent because the
+  upstream runner treats an existing `.runner` as configured state. The entire
+  overlay is destroyed after the job.
 - A running lease older than `max_lease_seconds` (default 7,200 seconds) is
   destroyed by reconciliation even if libvirt still reports it running.
 

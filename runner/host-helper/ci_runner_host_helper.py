@@ -137,11 +137,6 @@ def cloud_init_user_data(encoded_jit: bytes) -> str:
 bootcmd:
   - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
   - [install, -d, -o, root, -g, root, -m, '0755', /etc/systemd/system/ci-runner-job.service.d]
-  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.runner]
-  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials]
-  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials_rsaparams]
-  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.runner_migrated]
-  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials_migrated]
   - [chown, root:ci-runner, /opt/actions-runner]
   - [chmod, '1770', /opt/actions-runner]
 write_files:
