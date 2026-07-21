@@ -59,7 +59,7 @@
     - { path: /usr/local/libexec, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/ci-runner/images, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/ci-runner-manager/state, owner: ci-runner-manager, group: ci-runner-manager, mode: '0700' }
-    - { path: /mnt/ssd1000-01/ci-runner, owner: root, group: root, mode: '0700' }
+    - { path: /mnt/ssd1000-01/ci-runner, owner: root, group: kvm, mode: '0710' }
     - { path: /mnt/hdd1000-01/ci-audit, owner: ci-runner-manager, group: ci-runner-manager, mode: '0750' }
 
 - name: Inspect root-provisioned GitHub credential
