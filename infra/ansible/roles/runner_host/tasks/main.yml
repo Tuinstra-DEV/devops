@@ -163,12 +163,12 @@
     src: "{{ runner_manager_source_root }}/{{ item.src }}"
     dest: "{{ item.dest }}"
     owner: root
-    group: root
+    group: "{{ item.group | default('root') }}"
     mode: "{{ item.mode }}"
   loop:
     - { src: runner/manager/ci_runner_manager.py, dest: /usr/local/bin/ci-runner-manager, mode: '0755' }
     - { src: runner/host-helper/ci_runner_host_helper.py, dest: /usr/local/libexec/ci-runner-host-helper, mode: '0755' }
-    - { src: runner/config/manager.toml, dest: /etc/ci-runner/manager.toml, mode: '0640' }
+    - { src: runner/config/manager.toml, dest: /etc/ci-runner/manager.toml, group: ci-runner-manager, mode: '0640' }
     - { src: runner/systemd/ci-runner-manager.service, dest: /etc/systemd/system/ci-runner-manager.service, mode: '0644' }
     - { src: runner/systemd/sanctuary-ci-firewall.service, dest: /etc/systemd/system/sanctuary-ci-firewall.service, mode: '0644' }
     - { src: runner/logrotate/ci-runner-audit, dest: /etc/logrotate.d/ci-runner-audit, mode: '0644' }
