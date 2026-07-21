@@ -42,7 +42,10 @@ grep -q 'docker buildx version' infra/packer/scripts/verify-image-contract.sh
 grep -q "node --version.*v24" infra/packer/scripts/verify-image-contract.sh
 grep -q 'php8.3' infra/packer/scripts/verify-image-contract.sh
 grep -q 'php8.4' infra/packer/scripts/verify-image-contract.sh
-grep -q '0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6' infra/packer/scripts/install-runner.sh
+grep -q 'B8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6' infra/packer/scripts/install-runner.sh
+grep -q 'keys/ondrej-php.asc' infra/packer/sanctuary-runner.pkr.hcl
+test "$(shasum -a 256 infra/packer/keys/ondrej-php.asc | awk '{print $1}')" = '7258b1cb18300b87cd5668a6d64ce78184d9c0e129382879a0d79291c4ef463d'
+! grep -q 'keyserver.ubuntu.com' infra/packer/scripts/install-runner.sh
 grep -q 'playwright install --with-deps chromium' infra/packer/scripts/install-runner.sh
 grep -q 'exec ./run.sh --jitconfig' runner/guest/run-jit-runner.sh
 grep -q 'ExecStopPost=+/usr/bin/systemctl poweroff' runner/systemd/ci-runner-job.service

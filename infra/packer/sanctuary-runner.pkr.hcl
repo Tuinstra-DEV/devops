@@ -136,6 +136,11 @@ build {
     destination = "/tmp/verify-image-contract.sh"
   }
 
+  provisioner "file" {
+    source      = "keys/ondrej-php.asc"
+    destination = "/tmp/ondrej-php.asc"
+  }
+
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; echo 'packer' | sudo -S env {{ .Vars }} bash '{{ .Path }}'"
     environment_vars = [
