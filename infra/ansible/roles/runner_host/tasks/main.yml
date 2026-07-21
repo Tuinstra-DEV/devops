@@ -195,23 +195,32 @@
 - name: Define and start runner network
   ansible.builtin.shell: |
     set -euo pipefail
-    if virsh net-info sanctuary-ci >/dev/null 2>&1; then
-      runner_network_persistent=false
-      if virsh net-info sanctuary-ci | grep -q '^Persistent:.*yes'; then
-        runner_network_persistent=true
+    runner_libvirt_uri=qemu:///system
+    runner_network_xml=/etc/ci-runner/sanctuary-ci.xml
+    runner_network_effective_xml="$(mktemp)"
+    trap 'rm -f "$runner_network_effective_xml"' EXIT
+    if runner_network_uuid="$(virsh --connect "$runner_libvirt_uri" net-uuid sanctuary-ci 2>/dev/null)"; then
+      if [[ ! "$runner_network_uuid" =~ ^[a-f0-9-]{36}$ ]]; then
+        echo "refusing invalid existing runner network UUID" >&2
+        exit 1
       fi
-      if virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
-        virsh net-destroy sanctuary-ci
-      fi
-      if [ "$runner_network_persistent" = true ]; then
-        virsh net-undefine sanctuary-ci
-      fi
+      awk -v runner_network_uuid="$runner_network_uuid" '
+        /<name>sanctuary-ci<\/name>/ {
+          print
+          print "  <uuid>" runner_network_uuid "</uuid>"
+          next
+        }
+        { print }
+      ' "$runner_network_xml" > "$runner_network_effective_xml"
+    else
+      cp "$runner_network_xml" "$runner_network_effective_xml"
     fi
-    virsh net-define /etc/ci-runner/sanctuary-ci.xml
-    virsh net-autostart sanctuary-ci
-    if ! virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
-      virsh net-start sanctuary-ci
+    virsh --connect "$runner_libvirt_uri" net-define "$runner_network_effective_xml"
+    virsh --connect "$runner_libvirt_uri" net-autostart sanctuary-ci
+    if virsh --connect "$runner_libvirt_uri" net-list --name | grep -Fxq sanctuary-ci; then
+      virsh --connect "$runner_libvirt_uri" net-destroy sanctuary-ci
     fi
+    virsh --connect "$runner_libvirt_uri" net-start sanctuary-ci
   args:
     executable: /bin/bash
   when: runner_network_definition.changed
