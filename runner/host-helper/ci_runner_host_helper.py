@@ -152,9 +152,29 @@ write_files:
       [Service]
       ReadWritePaths=/opt/actions-runner
       UMask=0077
+  - path: /etc/docker/daemon.json
+    owner: root:root
+    permissions: '0644'
+    content: |
+      {
+        "features": {
+          "containerd-snapshotter": false
+        },
+        "storage-driver": "overlay2"
+      }
+  - path: /usr/local/sbin/ci-runner-prepare-docker
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      set -eu
+      systemctl restart docker.service
+      systemctl is-active --quiet docker.service
+      test "$(docker info --format '{{.Driver}}')" = overlay2
+      systemctl daemon-reload
+      systemctl start --no-block ci-runner-job.service
 runcmd:
-  - [systemctl, daemon-reload]
-  - [systemctl, start, --no-block, ci-runner-job.service]
+  - [/usr/local/sbin/ci-runner-prepare-docker]
 """ % base64.b64encode(encoded_jit).decode("ascii")
 
 
