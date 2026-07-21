@@ -198,7 +198,20 @@
     runner_libvirt_uri=qemu:///system
     runner_network_xml=/etc/ci-runner/sanctuary-ci.xml
     runner_network_effective_xml="$(mktemp)"
+    runner_network_restart={{ runner_network_definition.changed | ternary('true', 'false') }}
     trap 'rm -f "$runner_network_effective_xml"' EXIT
+    runner_network_was_active=false
+    runner_network_was_persistent=false
+    runner_network_was_autostart=false
+    if virsh --connect "$runner_libvirt_uri" net-list --name | grep -Fxq sanctuary-ci; then
+      runner_network_was_active=true
+    fi
+    if virsh --connect "$runner_libvirt_uri" net-list --all --persistent --name | grep -Fxq sanctuary-ci; then
+      runner_network_was_persistent=true
+    fi
+    if virsh --connect "$runner_libvirt_uri" net-list --all --autostart --name | grep -Fxq sanctuary-ci; then
+      runner_network_was_autostart=true
+    fi
     if runner_network_uuid="$(virsh --connect "$runner_libvirt_uri" net-uuid sanctuary-ci 2>/dev/null)"; then
       if [[ ! "$runner_network_uuid" =~ ^[a-f0-9-]{36}$ ]]; then
         echo "refusing invalid existing runner network UUID" >&2
@@ -217,14 +230,22 @@
     fi
     virsh --connect "$runner_libvirt_uri" net-define "$runner_network_effective_xml"
     virsh --connect "$runner_libvirt_uri" net-autostart sanctuary-ci
-    if virsh --connect "$runner_libvirt_uri" net-list --name | grep -Fxq sanctuary-ci; then
+    if [ "$runner_network_restart" = true ] && [ "$runner_network_was_active" = true ]; then
       virsh --connect "$runner_libvirt_uri" net-destroy sanctuary-ci
     fi
-    virsh --connect "$runner_libvirt_uri" net-start sanctuary-ci
+    if ! virsh --connect "$runner_libvirt_uri" net-list --name | grep -Fxq sanctuary-ci; then
+      virsh --connect "$runner_libvirt_uri" net-start sanctuary-ci
+    fi
+    if [ "$runner_network_restart" = true ] ||
+       [ "$runner_network_was_active" = false ] ||
+       [ "$runner_network_was_persistent" = false ] ||
+       [ "$runner_network_was_autostart" = false ]; then
+      echo changed
+    fi
   args:
     executable: /bin/bash
-  when: runner_network_definition.changed
-  changed_when: true
+  changed_when: "'changed' in runner_network_activation.stdout_lines"
+  register: runner_network_activation
 
 - name: Install runner egress guard
   ansible.builtin.template:
