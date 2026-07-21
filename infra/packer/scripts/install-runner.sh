@@ -35,11 +35,23 @@ install_key() {
   rm -f "$temporary"
 }
 
+install_vendored_key() {
+  local source=$1 expected=$2 fingerprint=$3 destination=$4 actual_fingerprint
+  printf '%s  %s\n' "$expected" "$source" | sha256sum --check --strict
+  actual_fingerprint=$(gpg --batch --show-keys --with-colons "$source" | awk -F: '$1 == "fpr" { print $10; exit }')
+  if [[ "$actual_fingerprint" != "$fingerprint" ]]; then
+    echo "vendored signing key fingerprint mismatch" >&2
+    exit 1
+  fi
+  sudo gpg --batch --yes --dearmor --output "$destination" "$source"
+  sudo chmod 0644 "$destination"
+}
+
 sudo install -d -m 0755 /etc/apt/keyrings
 install_key https://download.docker.com/linux/ubuntu/gpg "$DOCKER_KEY_SHA256" /etc/apt/keyrings/docker.gpg
 install_key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "$NODE_KEY_SHA256" /etc/apt/keyrings/nodesource.gpg
 install_key https://aquasecurity.github.io/trivy-repo/deb/public.key "$TRIVY_KEY_SHA256" /etc/apt/keyrings/trivy.gpg
-install_key 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xB8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6' "$PHP_KEY_SHA256" /etc/apt/keyrings/ondrej-php.gpg
+install_vendored_key /tmp/ondrej-php.asc "$PHP_KEY_SHA256" B8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6 /etc/apt/keyrings/ondrej-php.gpg
 
 sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<'EOF'
 Types: deb
