@@ -131,6 +131,22 @@ def validate_jit_payload(encoded_jit: bytes) -> bytes:
     return encoded_jit
 
 
+def cloud_init_user_data(encoded_jit: bytes) -> str:
+    encoded_jit = validate_jit_payload(encoded_jit)
+    return """#cloud-config
+bootcmd:
+  - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
+write_files:
+  - path: /run/ci-runner/jit.config
+    owner: ci-runner:ci-runner
+    permissions: '0600'
+    encoding: b64
+    content: %s
+runcmd:
+  - [systemctl, start, --no-block, ci-runner-job.service]
+""" % base64.b64encode(encoded_jit).decode("ascii")
+
+
 def launch(lease: str, encoded_jit: bytes | None = None) -> None:
     if os.geteuid() != 0:
         raise PermissionError("helper must run as root")
@@ -153,18 +169,7 @@ def launch(lease: str, encoded_jit: bytes | None = None) -> None:
     try:
         run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_image), str(overlay), DISK_GIB])
         set_qemu_access(overlay, qemu_uid, qemu_gid, 0o600)
-        user_data = """#cloud-config
-bootcmd:
-  - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
-write_files:
-  - path: /run/ci-runner/jit.config
-    owner: ci-runner:ci-runner
-    permissions: '0600'
-    encoding: b64
-    content: %s
-runcmd:
-  - [systemctl, start, ci-runner-job.service]
-""" % base64.b64encode(encoded_jit).decode("ascii")
+        user_data = cloud_init_user_data(encoded_jit)
         meta_data = f"instance-id: {name(lease)}\nlocal-hostname: ci-worker\n"
         with tempfile.TemporaryDirectory(dir=directory) as temporary:
             temp = Path(temporary)

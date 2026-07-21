@@ -27,6 +27,11 @@ class HostHelperTests(unittest.TestCase):
     def test_domain_name_is_namespaced(self):
         self.assertEqual(helper.name("job-9"), "sanctuary-ci-job-9")
 
+    def test_cloud_init_queues_runner_after_cloud_final_without_deadlock(self):
+        user_data = helper.cloud_init_user_data(base64.b64encode(b"opaque-jit"))
+        self.assertIn("- [systemctl, start, --no-block, ci-runner-job.service]", user_data)
+        self.assertNotIn("- [systemctl, start, ci-runner-job.service]", user_data)
+
     def test_lease_directory_cannot_escape_overlay_root(self):
         for value in ("../etc", "a/b", "white space", ""):
             with self.subTest(value=value), self.assertRaises(ValueError):
