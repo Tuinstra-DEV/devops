@@ -1,0 +1,14 @@
+# Reviewed HashiCorp release artifacts used by this image build.
+# Verify the downloaded zip with sha256sum before extraction.
+
+packer_version=1.15.4
+packer_linux_amd64_url=https://releases.hashicorp.com/packer/1.15.4/packer_1.15.4_linux_amd64.zip
+packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112beac413ccbce80da927cf1
+packer_darwin_arm64_url=https://releases.hashicorp.com/packer/1.15.4/packer_1.15.4_darwin_arm64.zip
+packer_darwin_arm64_sha256=d95ba177dd2ebb84d7d155493b4188ec2a519d2c3b041528db5b63a6aff9da80
+
+qemu_plugin_version=1.1.6
+qemu_plugin_linux_amd64_url=https://releases.hashicorp.com/packer-plugin-qemu/1.1.6/packer-plugin-qemu_1.1.6_linux_amd64.zip
+qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87
+qemu_plugin_darwin_arm64_url=https://releases.hashicorp.com/packer-plugin-qemu/1.1.6/packer-plugin-qemu_1.1.6_darwin_arm64.zip
+qemu_plugin_darwin_arm64_sha256=3fce2e8b5c3fce0aac5f47f59b81b7ecfffd397532ecd4021ba7b6dfd2935ba6

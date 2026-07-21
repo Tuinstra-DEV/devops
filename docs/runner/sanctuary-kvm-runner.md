@@ -120,9 +120,22 @@ clean host, retain the manifest, run the image contract, and pass a
 non-production canary before changing the Ansible image digest. Never update a
 package in place on Sanctuary; roll forward with a new immutable image.
 
+Images are stored by SHA-256 and activated through the fixed
+`ubuntu-24.04-runner.qcow2` symlink only after admission is stopped and both the
+libvirt domain list and overlay directory are empty. The helper resolves that
+link before creating an overlay and records the digest path as its backing file,
+so a later symlink switch cannot alter an active backing chain. Previous digest
+files remain local for reviewed rollback and must never be removed while
+referenced by `qemu-img info --backing-chain`.
+
 The guest unit invokes a fixed wrapper which reads the JIT value, removes its
 runtime file, and `exec`s `run.sh --jitconfig` exactly once. The service does not
 restart and powers the VM off after the runner exits, including failure paths.
+Both the guest unit and an independent host timer enforce the 120-minute upper
+bound. The manager persists the repository and GitHub runner ID before launch;
+completed and forced leases delete the runner record idempotently. Failed API
+cleanup is moved to a private retry tombstone with bounded exponential delay and
+does not masquerade as a live VM lease.
 
 ## Audit and retention
 

@@ -105,6 +105,11 @@ class ManagerTests(unittest.TestCase):
         self.assertNotIn("top-secret-token", str(raised.exception))
         self.assertNotIn("body may be sensitive", str(raised.exception))
 
+    def test_delete_runner_treats_not_found_as_already_clean(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=manager.NotFound("gone"))
+        client.delete_runner("Tuinstra-DEV/gate", 30)
+
     def test_dispatch_history_deduplicates_job(self):
         with tempfile.TemporaryDirectory() as directory:
             history = manager.DispatchHistory(Path(directory))
@@ -126,6 +131,89 @@ class ManagerTests(unittest.TestCase):
                 manager.dispatch_once(cfg, client)
             client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
             self.assertEqual(list((root / "run").iterdir()), [])
+
+    @mock.patch.object(manager, "launch")
+    def test_dispatch_persists_github_runner_identity_with_lease(self, launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
+                   "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
+            (root / "run").mkdir()
+
+            self.assertTrue(manager.dispatch_once(cfg, client))
+
+            launch.assert_called_once_with(
+                cfg,
+                "gh-20",
+                mock.ANY,
+                metadata={"repo": "Tuinstra-DEV/gate", "runner_id": 30, "run_id": 10, "job_id": 20},
+            )
+
+    @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
+    def test_dispatch_defers_runner_cleanup_when_launch_and_delete_fail(self, _launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+            cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
+                   "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
+            (root / "run").mkdir()
+
+            with self.assertRaisesRegex(manager.RunnerError, "launch failed"):
+                manager.dispatch_once(cfg, client)
+
+            cleanup = manager.StateStore(root / "state").cleanup_items()
+            self.assertEqual(cleanup[0]["repo"], "Tuinstra-DEV/gate")
+            self.assertEqual(cleanup[0]["runner_id"], 30)
+
+    @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
+    def test_repeated_failed_job_registrations_keep_distinct_cleanup_obligations(self, _launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            client.generate_jit.side_effect = [
+                {"encoded_jit_config": base64.b64encode(b"jit").decode(), "runner": {"id": 30}},
+                {"encoded_jit_config": base64.b64encode(b"jit").decode(), "runner": {"id": 31}},
+            ]
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+            cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
+                   "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
+            (root / "run").mkdir()
+
+            for _ in range(2):
+                with self.assertRaisesRegex(manager.RunnerError, "launch failed"):
+                    manager.dispatch_once(cfg, client)
+
+            cleanup = manager.StateStore(root / "state").cleanup_items()
+            self.assertEqual({item["runner_id"] for item in cleanup}, {30, 31})
+
+    def test_malformed_jit_cleanup_failure_is_durable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            client.generate_jit.return_value = {"encoded_jit_config": None, "runner": {"id": 30}}
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+            cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
+                   "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
+
+            with self.assertRaisesRegex(manager.RunnerError, "invalid JIT"):
+                manager.dispatch_once(cfg, client)
+
+            cleanup = manager.StateStore(root / "state").cleanup_items()
+            self.assertEqual(cleanup[0]["runner_id"], 30)
 
     @mock.patch.object(manager.time, "time", return_value=1001)
     def test_dispatch_skips_job_in_history(self, _time):
@@ -150,6 +238,84 @@ class ManagerTests(unittest.TestCase):
             helper.side_effect = [mock.Mock(stdout=b'{"expired":"running"}'), mock.Mock()]
             manager.reconcile(cfg)
             self.assertIn(("destroy", "expired"), [call.args[1:] for call in helper.call_args_list])
+
+    @mock.patch.object(manager, "helper")
+    def test_reconcile_deletes_persisted_github_runner_before_state(self, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("finished", {
+                "lease": "finished", "launched_at": 1,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+            })
+            helper.side_effect = [mock.Mock(stdout=b'{"finished":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+
+            manager.reconcile(cfg, client)
+
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(store.leases(), [])
+
+    @mock.patch.object(manager, "helper")
+    def test_reconcile_moves_failed_github_cleanup_to_tombstone(self, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("finished", {
+                "lease": "finished", "launched_at": 1,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+            })
+            helper.side_effect = [mock.Mock(stdout=b'{"finished":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual(store.leases(), [])
+            self.assertEqual(store.cleanup_items()[0]["runner_id"], 30)
+            self.assertGreater(store.cleanup_items()[0]["next_retry_at"], 0)
+
+    def test_due_cleanup_tombstone_is_retried_and_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            store.defer_cleanup("finished", {
+                "lease": "finished", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+            }, 1)
+            client = mock.Mock()
+
+            manager.retry_pending_cleanup(store, client, 100)
+
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(store.cleanup_items(), [])
+
+    def test_registration_obligation_transfers_to_matching_active_lease(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            state = {"lease": "running", "repo": "Tuinstra-DEV/gate", "runner_id": 30}
+            store.write_cleanup_obligation("running", state, 100)
+            client = mock.Mock()
+
+            manager.retry_pending_cleanup(store, client, 100, [state])
+
+            client.delete_runner.assert_not_called()
+            self.assertEqual(store.cleanup_items(), [])
+
+    def test_registration_obligation_waits_for_launch_grace_then_cleans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            state = {"lease": "pending", "repo": "Tuinstra-DEV/gate", "runner_id": 30}
+            store.write_cleanup_obligation("pending", state, 100)
+            client = mock.Mock()
+
+            manager.retry_pending_cleanup(store, client, 399)
+            client.delete_runner.assert_not_called()
+            self.assertEqual(len(store.cleanup_items()), 1)
+
+            manager.retry_pending_cleanup(store, client, 400)
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(store.cleanup_items(), [])
 
 
 if __name__ == "__main__":

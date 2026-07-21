@@ -75,14 +75,87 @@
       - (runner_github_credential.stat.mode | default('')) == '0600'
     fail_msg: Provision /etc/ci-runner/github.token as root mode 0600 outside Ansible source control.
 
-- name: Install pinned immutable base image
+- name: Inspect existing services before image activation
+  ansible.builtin.service_facts:
+
+- name: Stop runner admission before image activation
+  ansible.builtin.systemd:
+    name: ci-runner-manager.service
+    state: stopped
+  when: "'ci-runner-manager.service' in ansible_facts.services"
+
+- name: Inspect runner domains before image activation
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - list
+      - --all
+      - --name
+  register: runner_existing_domains
+  changed_when: false
+
+- name: Require a fully drained runner before image activation
+  ansible.builtin.assert:
+    that:
+      - runner_existing_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
+    fail_msg: Refusing to switch the base image while a Sanctuary CI domain exists.
+
+- name: Inspect runner overlay directory before image activation
+  ansible.builtin.find:
+    paths: /mnt/ssd1000-01/ci-runner
+    file_type: any
+    hidden: true
+    recurse: false
+  register: runner_overlay_entries
+
+- name: Require no runner overlays before image activation
+  ansible.builtin.assert:
+    that:
+      - runner_overlay_entries.matched == 0
+    fail_msg: Refusing to switch the base image while a runner overlay or seed remains.
+
+- name: Install digest-versioned immutable base image
   ansible.builtin.get_url:
     url: "{{ runner_base_image_source }}"
-    dest: /var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2
+    dest: "/var/lib/ci-runner/images/ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2"
     checksum: "sha256:{{ runner_base_image_sha256 }}"
     owner: root
     group: root
     mode: '0444'
+
+- name: Atomically activate image and retain the previous target
+  ansible.builtin.shell: |
+    set -euo pipefail
+    image_root=/var/lib/ci-runner/images
+    current="$image_root/ubuntu-24.04-runner.qcow2"
+    previous="$image_root/ubuntu-24.04-runner.previous.qcow2"
+    target="$image_root/ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2"
+    old=""
+    if [ -L "$current" ]; then
+      old="$(readlink -f "$current")"
+      if [[ ! "$old" =~ ^$image_root/ubuntu-24\.04-runner-[a-f0-9]{64}\.qcow2$ ]]; then
+        echo "refusing unexpected current image target" >&2
+        exit 1
+      fi
+    elif [ -e "$current" ]; then
+      echo "refusing to replace a non-symlink current image" >&2
+      exit 1
+    fi
+    if [ "$old" = "$target" ]; then
+      exit 0
+    fi
+    if [ -n "$old" ]; then
+      ln -sfn "$old" "$previous.new"
+      mv -Tf "$previous.new" "$previous"
+    fi
+    ln -sfn "$target" "$current.new"
+    mv -Tf "$current.new" "$current"
+    echo changed
+  args:
+    executable: /bin/bash
+  register: runner_image_activation
+  changed_when: "'changed' in runner_image_activation.stdout_lines"
+  notify: Restart runner manager
 
 - name: Install manager platform files
   ansible.builtin.copy:

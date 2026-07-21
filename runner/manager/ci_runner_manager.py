@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ import urllib.request
 
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 LOG = logging.getLogger("ci-runner-manager")
+REGISTRATION_GRACE_SECONDS = 300
 
 
 class RunnerError(RuntimeError):
@@ -33,6 +35,10 @@ class RateLimited(RunnerError):
     def __init__(self, retry_after: int) -> None:
         super().__init__("GitHub API rate limit reached")
         self.retry_after = max(5, min(retry_after, 3600))
+
+
+class NotFound(RunnerError):
+    pass
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -100,6 +106,15 @@ class StateStore:
                 LOG.error("invalid state file %s: %s", path.name, exc)
         return result
 
+    def cleanup_items(self) -> list[dict[str, Any]]:
+        result = []
+        for path in sorted(self.directory.glob("cleanup-*.json")):
+            try:
+                result.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError) as exc:
+                LOG.error("invalid cleanup state file %s: %s", path.name, exc)
+        return result
+
     def write(self, lease: str, state: dict[str, Any]) -> None:
         destination = self.directory / f"lease-{lease}.json"
         temporary = destination.with_suffix(".tmp")
@@ -109,6 +124,46 @@ class StateStore:
 
     def remove(self, lease: str) -> None:
         (self.directory / f"lease-{lease}.json").unlink(missing_ok=True)
+
+    @staticmethod
+    def cleanup_key(state: dict[str, Any]) -> str:
+        repo = state.get("repo")
+        runner_id = state.get("runner_id")
+        if not isinstance(repo, str) or not isinstance(runner_id, int):
+            raise RunnerError("cleanup obligation requires a GitHub runner identity")
+        return hashlib.sha256(f"{repo}:{runner_id}".encode("utf-8")).hexdigest()
+
+    def cleanup_path(self, state: dict[str, Any]) -> Path:
+        return self.directory / f"cleanup-{self.cleanup_key(state)}.json"
+
+    def write_cleanup_obligation(self, lease: str, state: dict[str, Any], now: int) -> None:
+        pending = dict(state)
+        pending.update({"lease": lease, "phase": "registration_pending",
+                        "created_at": now, "cleanup_attempts": 0,
+                        "next_retry_at": now + REGISTRATION_GRACE_SECONDS})
+        destination = self.cleanup_path(pending)
+        temporary = destination.with_suffix(".tmp")
+        temporary.write_text(json.dumps(pending, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+
+    def defer_cleanup(self, lease: str, state: dict[str, Any], now: int) -> None:
+        attempts = int(state.get("cleanup_attempts", 0)) + 1
+        pending = dict(state)
+        pending.update({
+            "phase": "cleanup_pending",
+            "cleanup_attempts": attempts,
+            "next_retry_at": now + min(30 * (2 ** min(attempts - 1, 7)), 3600),
+        })
+        destination = self.cleanup_path(pending)
+        temporary = destination.with_suffix(".tmp")
+        temporary.write_text(json.dumps(pending, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+        self.remove(lease)
+
+    def remove_cleanup(self, state: dict[str, Any]) -> None:
+        self.cleanup_path(state).unlink(missing_ok=True)
 
 
 class DispatchHistory:
@@ -154,6 +209,8 @@ class GitHubClient:
                 raw = response.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise NotFound("GitHub resource was already removed") from exc
             remaining = exc.headers.get("X-RateLimit-Remaining")
             if exc.code == 429 or (exc.code == 403 and (exc.headers.get("Retry-After") or remaining == "0")):
                 retry = exc.headers.get("Retry-After")
@@ -188,7 +245,10 @@ class GitHubClient:
         })
 
     def delete_runner(self, repo: str, runner_id: int) -> None:
-        self.request("DELETE", f"{self.repo_path(repo)}/actions/runners/{runner_id}")
+        try:
+            self.request("DELETE", f"{self.repo_path(repo)}/actions/runners/{runner_id}")
+        except NotFound:
+            return
 
 
 def validate_repositories(cfg: dict[str, Any]) -> list[str]:
@@ -222,7 +282,7 @@ def with_lock(path: Path):
     return handle
 
 
-def launch(cfg: dict[str, Any], lease: str, jit_path: Path) -> None:
+def launch(cfg: dict[str, Any], lease: str, jit_path: Path, *, metadata: dict[str, Any] | None = None) -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_path)
     store = StateStore(Path(cfg["state_dir"]))
@@ -237,23 +297,73 @@ def launch(cfg: dict[str, Any], lease: str, jit_path: Path) -> None:
         failures = capacity_errors(cfg)
         if failures:
             raise RunnerError("; ".join(failures))
+        state = {"lease": lease, "phase": "provisioning", "launched_at": int(time.time())}
+        if metadata:
+            state.update(metadata)
+        store.write(lease, state)
         LOG.info("launch requested lease=%s", lease)
-        helper(cfg, "launch", lease, stdin=jit)
-        store.write(lease, {"lease": lease, "launched_at": int(time.time())})
+        try:
+            helper(cfg, "launch", lease, stdin=jit)
+        except Exception:
+            store.remove(lease)
+            raise
+        state["phase"] = "running"
+        store.write(lease, state)
         LOG.info("launch completed lease=%s", lease)
 
 
-def destroy(cfg: dict[str, Any], lease: str) -> None:
+def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any]) -> None:
+    repo = state.get("repo")
+    runner_id = state.get("runner_id")
+    if repo is None and runner_id is None:
+        return
+    if client is None:
+        raise RunnerError("GitHub client is required to clean a registered runner")
+    if not isinstance(repo, str) or not isinstance(runner_id, int):
+        raise RunnerError("lease contains invalid GitHub runner identity")
+    client.delete_runner(repo, runner_id)
+
+
+def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None) -> None:
     lease = validate_lease_id(lease)
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         LOG.info("destroy requested lease=%s", lease)
+        state = next((item for item in store.leases() if item.get("lease") == lease), {"lease": lease})
         helper(cfg, "destroy", lease)
-        store.remove(lease)
+        try:
+            cleanup_github_runner(client, state)
+        except RunnerError:
+            store.defer_cleanup(lease, state, int(time.time()))
+            raise
+        else:
+            store.remove(lease)
         LOG.info("destroy completed lease=%s", lease)
 
 
-def reconcile(cfg: dict[str, Any]) -> None:
+def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: int,
+                          active_states: list[dict[str, Any]] | None = None) -> None:
+    active_keys = {store.cleanup_key(state) for state in (active_states or [])
+                   if isinstance(state.get("repo"), str) and isinstance(state.get("runner_id"), int)}
+    for state in store.cleanup_items():
+        lease = validate_lease_id(str(state.get("lease", "")))
+        if state.get("phase") == "registration_pending" and store.cleanup_key(state) in active_keys:
+            store.remove_cleanup(state)
+            LOG.info("GitHub cleanup obligation transferred to active lease=%s", lease)
+            continue
+        if int(state.get("next_retry_at", 0)) > now:
+            continue
+        try:
+            cleanup_github_runner(client, state)
+        except RunnerError as exc:
+            LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
+            store.defer_cleanup(lease, state, now)
+        else:
+            store.remove_cleanup(state)
+            LOG.info("GitHub runner cleanup completed lease=%s", lease)
+
+
+def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         result = helper(cfg, "list", check=True)
@@ -269,10 +379,17 @@ def reconcile(cfg: dict[str, Any]) -> None:
         for lease in sorted(known - running):
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
-            store.remove(lease)
+            try:
+                cleanup_github_runner(client, states[lease])
+            except RunnerError as exc:
+                LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
+                store.defer_cleanup(lease, states[lease], now)
+            else:
+                store.remove(lease)
         for lease in sorted(set(domains) - known):
             LOG.warning("destroying orphan domain lease=%s", lease)
             helper(cfg, "destroy", lease)
+        retry_pending_cleanup(store, client, now, store.leases())
 
 
 def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
@@ -290,27 +407,56 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
             response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
             encoded = response.get("encoded_jit_config")
             runner_id = response.get("runner", {}).get("id")
+            lease = f"gh-{job['job_id']}"
+            registration = {
+                "lease": lease,
+                "repo": repo,
+                "runner_id": runner_id,
+                "run_id": job["run_id"],
+                "job_id": job["job_id"],
+            }
+            if isinstance(runner_id, int):
+                store.write_cleanup_obligation(lease, registration, int(time.time()))
             if not isinstance(encoded, str) or not isinstance(runner_id, int):
                 if isinstance(runner_id, int):
                     try:
                         client.delete_runner(repo, runner_id)
-                    except RunnerError:
-                        LOG.error("failed to remove malformed GitHub runner repo=%s runner_id=%s", repo, runner_id)
+                    except RunnerError as exc:
+                        LOG.error("deferring malformed GitHub runner cleanup repo=%s runner_id=%s error=%s",
+                                  repo, runner_id, exc)
+                        store.defer_cleanup(lease, registration, int(time.time()))
+                    else:
+                        store.remove_cleanup(registration)
                 raise RunnerError("GitHub returned an invalid JIT response")
-            lease = f"gh-{job['job_id']}"
             jit_path = Path(cfg.get("runtime_dir", "/run/ci-runner-manager")) / f"{lease}.jit"
             try:
                 jit_path.write_text(encoded, encoding="utf-8")
                 os.chmod(jit_path, 0o600)
-                launch(cfg, lease, jit_path)
+                launch(cfg, lease, jit_path, metadata={
+                    "repo": repo,
+                    "runner_id": runner_id,
+                    "run_id": job["run_id"],
+                    "job_id": job["job_id"],
+                })
+                store.remove_cleanup(registration)
                 history.add(key, now)
                 LOG.info("dispatched repo=%s run_id=%s job_id=%s", repo, job["run_id"], job["job_id"])
                 return True
             except Exception:
                 try:
                     client.delete_runner(repo, runner_id)
-                except RunnerError:
-                    LOG.error("failed to remove unused GitHub runner repo=%s runner_id=%s", repo, runner_id)
+                except RunnerError as exc:
+                    LOG.error("deferring unused GitHub runner cleanup repo=%s runner_id=%s error=%s",
+                              repo, runner_id, exc)
+                    store.defer_cleanup(lease, {
+                        "lease": lease,
+                        "repo": repo,
+                        "runner_id": runner_id,
+                        "run_id": job["run_id"],
+                        "job_id": job["job_id"],
+                    }, int(time.time()))
+                else:
+                    store.remove_cleanup(registration)
                 raise
             finally:
                 jit_path.unlink(missing_ok=True)
@@ -342,16 +488,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "launch":
             launch(cfg, args.lease, args.jit_config_file)
         elif args.command == "destroy":
-            destroy(cfg, args.lease)
+            client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
+            destroy(cfg, args.lease, client)
         elif args.command == "reconcile":
-            reconcile(cfg)
+            client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
+            reconcile(cfg, client)
         else:
             if args.interval < 5:
                 raise RunnerError("daemon interval must be at least 5 seconds")
             client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
             while True:
                 try:
-                    reconcile(cfg)
+                    reconcile(cfg, client)
                     dispatch_once(cfg, client)
                 except RateLimited as exc:
                     LOG.warning("GitHub rate limited; retrying later")
