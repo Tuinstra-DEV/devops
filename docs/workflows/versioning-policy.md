@@ -1,96 +1,54 @@
 # Reusable Workflow Versioning Policy
 
-> See also: [Workflow Contracts](contracts/README.md) for detailed API specifications.
+> See [Workflow Contracts](contracts/README.md) for the public interfaces.
 
-## Goals
+## Stable v10 channel
 
-- Keep consumer repositories stable during workflow evolution.
-- Allow safe validation of upcoming changes.
-- Provide clear communication and migration guidance for breaking changes.
+The browser-quality, Docker build/scan, and immutable release-image contracts are the stable v10 interface. `v10` and `v10.0.0` are immutable annotated release tags created from the same reviewed commit. They are release markers, not moving branches.
 
-## Channels
+Production callers resolve the approved v10 tag once and pin the reusable workflow to its full 40-character commit SHA:
 
-- Stable channel:
-  - `@v1` for generally available workflows.
-- Next major channel:
-  - `@v2` after breaking-change rollout.
-- Canary channel:
-  - `@main` for rapid validation.
-  - Optional rolling preview tag `@v1-next` for controlled canary testing.
+```yaml
+uses: Tuinstra-DEV/devops/.github/workflows/reusable-ci-docker.yml@<full-v10-commit-sha>
+```
 
-## Release Semantics
+This prevents an upstream tag movement or compromised release from silently changing consumer CI. `@main`, floating major tags, and short SHAs are prohibited in production callers. Canary validation may pin a reviewed feature commit SHA.
 
-- Patch:
-  - Non-functional fixes, minor hardening, documentation updates.
-  - No input or behavior changes for callers.
-- Minor:
-  - Backward-compatible new inputs with defaults.
-  - Additional optional jobs or diagnostics.
-- Major:
-  - Input changes, output changes, job contract changes, or behavior shifts.
-  - Requires new major tag (`v2`, `v3`, ...).
+## Release semantics
 
-## Compatibility Rules
+- Patch: implementation hardening or documentation with no public-interface or default change. Publish an immutable `v10.0.x` tag and deliberately update consumer SHAs after canary validation.
+- Minor: backward-compatible optional inputs or outputs with safe defaults. Publish immutable `v10.x.0` and deliberately update consumer SHAs.
+- Major: removed/renamed inputs or outputs, changed defaults, changed permissions, runner trust changes, or other behavioral breaks. Publish the next immutable major contract.
 
-- Existing required inputs may not be removed in stable major versions.
-- New inputs must be optional or include safe defaults.
-- Deprecations require a written migration path.
+Existing required inputs are never removed within a major. New inputs must be optional or have safe defaults. Deprecations have a written migration path and at least 60 days' notice.
 
-## Deprecation Window
+## Security and compatibility rules
 
-- Minimum deprecation period: 60 days.
-- Breaking changes must be announced before release of a new major.
-- Stable major remains patched for critical fixes during deprecation window.
+- Every external `uses:` reference in a reusable workflow is pinned to a full commit SHA with a version comment.
+- Consumer reusable-workflow callers are pinned to a full commit SHA.
+- `execution-class` accepts only `hosted` and `trusted-heavy`, defaults to `hosted`, and cannot route fork, Dependabot, or `pull_request_target` work to a trusted runner.
+- Build arguments are supplied only through the explicit `build-args` input and must not contain secrets.
+- Reusable callers pass only explicitly declared secrets; `secrets: inherit` is prohibited.
+- Workflow and contract changes require CODEOWNERS review and the contract checks in `make lint` and `make test`.
 
-## Rollout Strategy
+## Rollout
 
-1. Ship change to canary (`@main` or `@v1-next`).
-2. Validate in designated canary repositories.
-3. Promote to stable major after validation.
-4. Monitor and keep rollback path available.
+1. Merge the reviewed workflow and contract changes.
+2. Create immutable v10 release tags using [the release procedure](release-procedure.md).
+3. Resolve the release tag to a full commit SHA and validate that SHA in designated canary repositories on hosted runners.
+4. Enable `trusted-heavy` only for trusted repository events after runner controls are verified.
+5. Update production callers deliberately to the approved SHA and monitor them.
 
-## Rollback and Fallback
+Repository variables may select the execution class with a safe fallback:
 
-- Rollback mechanism: switch caller workflow back to previous tag (`@v1`).
-- For urgent regressions, pin caller to known-good commit SHA temporarily.
-- Document every rollback in release notes.
+```yaml
+execution-class: ${{ vars.CI_EXECUTION_CLASS || 'hosted' }}
+```
 
-## Changelog Format
+Manual callers expose a choice with only `hosted` and `trusted-heavy`; they do not accept a free-form label.
 
-Each reusable workflow release includes:
+## Rollback
 
-- `Changed`: behavior and implementation updates.
-- `Impact`: consumer-facing effect.
-- `Action Required`: migration steps when needed.
-- `Rollback`: safe fallback instructions.
+Never move, delete, or force-push a release tag. Roll back a consumer by restoring its last known-good full workflow SHA, then make a normal reviewed commit. Keep image deployment rollback pinned to the previously verified `name@sha256:digest` reference. Publish a new immutable patch or major release for the correction.
 
-## Communication Template
-
-Release title example:
-
-`workflow-release: reusable-ci v1.4.0`
-
-Release message:
-
-- Scope and reason for the change.
-- Compatibility statement.
-- Effective date and rollout plan.
-- Link to migration checklist when applicable.
-
-## Migration Checklist (v1 -> v2)
-
-- Inventory repositories currently pinned to `@v1`.
-- Validate `@v2` in canary repositories.
-- Update caller workflow references from `@v1` to `@v2`.
-- Verify environment secrets and required permissions.
-- Run repository CI and deployment smoke tests.
-- Keep rollback instruction (`@v1`) prepared until stabilization.
-
-## Governance
-
-Workflow changes are governed by CODEOWNERS. Changes to:
-- `.github/workflows/reusable-*.yml`
-- `docs/workflows/contracts/`
-- `docs/workflows/versioning-policy.md`
-
-Require approval from platform owners before merge.
+Release notes record `Changed`, `Impact`, `Action Required`, verification evidence, and the exact rollback SHA/digest.

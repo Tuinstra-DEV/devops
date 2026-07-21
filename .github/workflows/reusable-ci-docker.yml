@@ -3,85 +3,168 @@ name: Reusable CI Docker
 on:
   workflow_call:
     inputs:
+      execution-class:
+        description: "Execution class: hosted or trusted-heavy"
+        required: false
+        default: hosted
+        type: string
       workdir:
-        description: Working directory containing Dockerfile
+        description: Working directory containing the Docker build context
         required: false
         default: "."
         type: string
       dockerfile:
         description: Dockerfile path relative to workdir
         required: false
-        default: "Dockerfile"
+        default: Dockerfile
         type: string
       build-args:
-        description: "Newline-separated Docker build args (e.g. ARG_NAME=value)"
+        description: "Explicit, newline-separated non-secret Docker build arguments"
         required: false
         default: ""
         type: string
       trivy-severity:
-        description: "Comma-separated severity levels to scan for"
+        description: Comma-separated vulnerability severity levels
         required: false
-        default: "CRITICAL,HIGH"
+        default: CRITICAL,HIGH
         type: string
       trivy-exit-code:
-        description: "Exit code when vulnerabilities are found (1 = fail, 0 = warn only)"
+        description: "Exit code on findings: 1 fails, 0 reports only"
         required: false
         default: "1"
         type: string
       upload-sarif:
-        description: "Upload Trivy SARIF results to GitHub code scanning"
+        description: Upload the SARIF report to GitHub code scanning
         required: false
         default: false
         type: boolean
+      artifact-retention-days:
+        description: Number of days to retain scan reports
+        required: false
+        default: 14
+        type: number
+    outputs:
+      image-digest:
+        description: Digest of the locally built scan image
+        value: ${{ jobs['build-and-scan'].outputs['image-digest'] }}
+      scan-artifact:
+        description: Deterministic artifact name containing table and SARIF reports
+        value: ${{ jobs['build-and-scan'].outputs['scan-artifact'] }}
+      sarif-artifact:
+        description: Scan artifact used for an optional code-scanning upload
+        value: ${{ jobs['build-and-scan'].outputs['scan-artifact'] }}
 
 jobs:
   build-and-scan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
     permissions:
-      actions: read
       contents: read
-      security-events: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      scan-artifact: ${{ steps.contract.outputs['scan-artifact'] }}
     steps:
+      - name: Validate contract inputs
+        shell: bash
+        env:
+          EXECUTION_CLASS: ${{ inputs['execution-class'] }}
+          EVENT_NAME: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          WORKDIR: ${{ inputs.workdir }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          TRIVY_EXIT_CODE: ${{ inputs['trivy-exit-code'] }}
+          RETENTION_DAYS: ${{ inputs['artifact-retention-days'] }}
+        run: |
+          set -euo pipefail
+          case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
+          if [[ "$EXECUTION_CLASS" = trusted-heavy ]] && { [[ "$EVENT_NAME" = pull_request_target ]] || [[ "$IS_FORK" = true ]] || [[ "$ACTOR" = 'dependabot[bot]' ]]; }; then
+            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
+            exit 2
+          fi
+          for path in "$WORKDIR" "$DOCKERFILE"; do
+            if [[ -z "$path" || "$path" = /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
+              echo "workdir and dockerfile must be non-empty repository-relative paths without '..'" >&2
+              exit 2
+            fi
+          done
+          case "$TRIVY_EXIT_CODE" in 0|1) ;; *) echo "trivy-exit-code must be 0 or 1" >&2; exit 2 ;; esac
+          if (( RETENTION_DAYS < 1 || RETENTION_DAYS > 90 )); then
+            echo "artifact-retention-days must be between 1 and 90" >&2
+            exit 2
+          fi
+          echo "scan-artifact=docker-scan-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        id: contract
+
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0
 
       - name: Build image for scanning
-        uses: docker/build-push-action@v7
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.0.0
         with:
           context: ${{ inputs.workdir }}
           file: ${{ inputs.workdir }}/${{ inputs.dockerfile }}
           push: false
           load: true
           tags: scan-target:${{ github.sha }}
-          build-args: ${{ inputs.build-args }}
+          build-args: ${{ inputs['build-args'] }}
+          provenance: false
+          sbom: false
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.35.0
+      - name: Run enforcing vulnerability scan
+        id: scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: scan-target:${{ github.sha }}
           format: table
-          exit-code: ${{ inputs.trivy-exit-code }}
-          severity: ${{ inputs.trivy-severity }}
+          output: trivy-results.txt
+          exit-code: ${{ inputs['trivy-exit-code'] }}
+          severity: ${{ inputs['trivy-severity'] }}
           ignore-unfixed: true
           cache: false
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: aquasecurity/trivy-action@0.35.0
-        if: ${{ always() && inputs.upload-sarif }}
+      - name: Produce deterministic SARIF report
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: scan-target:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
-          severity: ${{ inputs.trivy-severity }}
+          exit-code: "0"
+          severity: ${{ inputs['trivy-severity'] }}
           ignore-unfixed: true
           cache: false
 
-      - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v4
-        if: ${{ always() && inputs.upload-sarif }}
-        continue-on-error: true
+      - name: Upload deterministic scan reports
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.contract.outputs['scan-artifact'] }}
+          path: |
+            trivy-results.txt
+            trivy-results.sarif
+          if-no-files-found: error
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          compression-level: 9
+
+  upload-sarif:
+    needs: build-and-scan
+    if: ${{ always() && inputs['upload-sarif'] && needs['build-and-scan'].outputs['scan-artifact'] != '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Download scan reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs['build-and-scan'].outputs['scan-artifact'] }}
+
+      - name: Upload SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4.32.6
         with:
           sarif_file: trivy-results.sarif

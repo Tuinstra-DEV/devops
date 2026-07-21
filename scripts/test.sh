@@ -20,4 +20,6 @@ if ! grep -q "Auth0" "README.md"; then
   exit 1
 fi
 
+./scripts/workflow-contract-test.sh
+
 echo "test passed"
