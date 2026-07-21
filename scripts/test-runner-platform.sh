@@ -38,6 +38,8 @@ grep -q '^RuntimeMaxSec=300s$' runner/systemd/ci-runner-host-helper@.service
 grep -q '^MaxConnections=4$' runner/systemd/ci-runner-host-helper.socket
 grep -q '^HELPER_MUTATION_TIMEOUT_SECONDS = 330$' runner/manager/ci_runner_manager.py
 grep -q 'QEMU_USER = "libvirt-qemu"' runner/host-helper/ci_runner_host_helper.py
+grep -q 'UMask=0022' runner/host-helper/ci_runner_host_helper.py
+assert_absent 'UMask=0077' runner/host-helper/ci_runner_host_helper.py
 grep -q 'systemctl start --no-block ci-runner-job.service' runner/host-helper/ci_runner_host_helper.py
 grep -q -- '- \[/usr/local/sbin/ci-runner-prepare-docker\]' runner/host-helper/ci_runner_host_helper.py
 assert_absent '\[systemctl, start, --no-block, ci-runner-job.service\]' runner/host-helper/ci_runner_host_helper.py
