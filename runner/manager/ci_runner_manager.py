@@ -60,6 +60,10 @@ def trigger_job_id(state: dict[str, Any]) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def runner_name_for_trigger(job_id: int) -> str:
+    return f"sanctuary-{job_id}"
+
+
 def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -349,7 +353,7 @@ class GitHubClient:
 
     def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
         return self.request("POST", f"{self.repo_path(repo)}/actions/runners/generate-jitconfig", {
-            "name": f"sanctuary-{job_id}", "runner_group_id": group_id,
+            "name": runner_name_for_trigger(job_id), "runner_group_id": group_id,
             "labels": ["self-hosted", "linux", "x64", label], "work_folder": "_work",
         })
 
@@ -359,7 +363,8 @@ class GitHubClient:
         if not runner_name or runner_id < 1:
             return None
         id_matches: dict[tuple[int, int], dict[str, Any]] = {}
-        statuses = ("in_progress", "completed") if include_completed else ("in_progress",)
+        statuses = ("in_progress", "completed", "queued") \
+            if include_completed else ("in_progress",)
         for status in statuses:
             runs = self.request(
                 "GET", f"{self.repo_path(repo)}/actions/runs?status={status}"
@@ -758,8 +763,11 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 continue
             response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
             encoded = response.get("encoded_jit_config")
-            runner_id = response.get("runner", {}).get("id")
-            runner_name = response.get("runner", {}).get("name")
+            runner = response.get("runner", {})
+            runner_id = runner.get("id") if isinstance(runner, dict) else None
+            reported_runner_name = runner.get("name") if isinstance(runner, dict) else None
+            runner_name = runner_name_for_trigger(job["job_id"])
+            runner_name_conflicts = reported_runner_name not in (None, "", runner_name)
             lease = f"gh-{job['job_id']}"
             registration = {
                 "lease": lease,
@@ -768,9 +776,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 "trigger_run_id": job["run_id"],
                 "trigger_job_id": job["job_id"],
             }
-            if isinstance(runner_name, str) and runner_name:
-                registration["runner_name"] = runner_name
-            if not isinstance(encoded, str) or not isinstance(runner_id, int):
+            registration["runner_name"] = runner_name
+            if not isinstance(encoded, str) or not isinstance(runner_id, int) \
+                    or runner_name_conflicts:
                 if isinstance(runner_id, int):
                     store.write_cleanup_obligation(lease, registration, int(time.time()))
                     try:
@@ -786,8 +794,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 launch(cfg, lease, encoded.encode("ascii"), metadata={
                     "repo": repo,
                     "runner_id": runner_id,
-                    **({"runner_name": runner_name}
-                       if isinstance(runner_name, str) and runner_name else {}),
+                    "runner_name": runner_name,
                     "trigger_run_id": job["run_id"],
                     "trigger_job_id": job["job_id"],
                 }, dispatch_history_key=key)
@@ -807,8 +814,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                         "lease": lease,
                         "repo": repo,
                         "runner_id": runner_id,
-                        **({"runner_name": runner_name}
-                           if isinstance(runner_name, str) and runner_name else {}),
+                        "runner_name": runner_name,
                         "trigger_run_id": job["run_id"],
                         "trigger_job_id": job["job_id"],
                     }, int(time.time()), preserve_lease=True)
