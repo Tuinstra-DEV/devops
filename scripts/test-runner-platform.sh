@@ -29,6 +29,7 @@ grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
 grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'required_version = "= 1.15.4"' infra/packer/sanctuary-runner.pkr.hcl
 grep -q 'version = "= 1.1.6"' infra/packer/sanctuary-runner.pkr.hcl
+test "$(grep -c "execute_command.*sudo -S env" infra/packer/sanctuary-runner.pkr.hcl)" -eq 3
 grep -q 'packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112beac413ccbce80da927cf1' infra/packer/toolchain.lock
 grep -q 'qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87' infra/packer/toolchain.lock
 grep -q 'Tuinstra-DEV/tuinstra-site' runner/config/manager.toml
