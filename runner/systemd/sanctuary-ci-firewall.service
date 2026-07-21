@@ -1,0 +1,14 @@
+[Unit]
+Description=Sanctuary CI isolated nftables policy
+Before=ci-runner-manager.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/nft -c -f /etc/ci-runner/sanctuary-ci.nft
+ExecStart=/usr/sbin/nft -f /etc/ci-runner/sanctuary-ci.nft
+ExecStop=-/usr/sbin/nft delete table inet sanctuary_ci
+
+[Install]
+WantedBy=multi-user.target

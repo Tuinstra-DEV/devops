@@ -15,6 +15,8 @@ for dir in "${required_dirs[@]}"; do
   fi
 done
 
+./scripts/test-runner-platform.sh
+
 if ! grep -q "Auth0" "README.md"; then
   echo "README must document Auth0 direction"
   exit 1

@@ -1,0 +1,27 @@
+# Resolve exact versions from the signed repositories immediately before a
+# reviewed image build. Never use "latest", wildcards, or an unpinned key.
+ubuntu_iso_url      = "https://releases.ubuntu.com/24.04/REPLACE.iso"
+ubuntu_iso_checksum = "REPLACE_64_HEX"
+runner_version      = "REPLACE"
+runner_sha256       = "REPLACE_64_HEX"
+
+docker_key_sha256 = "REPLACE_64_HEX"
+docker_ce_version  = "REPLACE_EXACT_APT_VERSION"
+docker_cli_version = "REPLACE_EXACT_APT_VERSION"
+containerd_version = "REPLACE_EXACT_APT_VERSION"
+buildx_version     = "REPLACE_EXACT_APT_VERSION"
+compose_version    = "REPLACE_EXACT_APT_VERSION"
+
+node_key_sha256 = "REPLACE_64_HEX"
+node_version     = "REPLACE_EXACT_NODE_24_APT_VERSION"
+
+trivy_key_sha256 = "REPLACE_64_HEX"
+trivy_version     = "REPLACE_EXACT_APT_VERSION"
+
+php_key_sha256 = "REPLACE_64_HEX"
+php83_version   = "REPLACE_EXACT_APT_VERSION"
+php84_version   = "REPLACE_EXACT_APT_VERSION"
+
+composer_version = "REPLACE_EXACT_VERSION"
+composer_sha384   = "REPLACE_96_HEX"
+playwright_version = "REPLACE_EXACT_VERSION"

@@ -1,0 +1,25 @@
+state_dir = "/var/lib/ci-runner-manager/state"
+lock_file = "/run/lock/ci-runner-manager.lock"
+audit_log = "/mnt/hdd1000-01/ci-audit/manager.log"
+helper = "/usr/local/libexec/ci-runner-host-helper"
+overlay_root = "/mnt/ssd1000-01/ci-runner"
+min_free_memory_mib = 14336
+min_free_disk_gib = 140
+max_load_1m = 8.0
+max_lease_seconds = 7200
+runtime_dir = "/run/ci-runner-manager"
+github_token_file = "/run/credentials/ci-runner-manager.service/github_token"
+github_api_url = "https://api.github.com"
+allowed_owner = "Tuinstra-DEV"
+repositories = [
+  "Tuinstra-DEV/gate",
+  "Tuinstra-DEV/WODIQ",
+  "Tuinstra-DEV/tracker",
+  "Tuinstra-DEV/notify",
+  "Tuinstra-DEV/console",
+  "Tuinstra-DEV/wodiq-site",
+  "Tuinstra-DEV/marcel-site",
+  "Tuinstra-DEV/tuinstra-site",
+]
+runner_label = "trusted-heavy"
+runner_group_id = 1

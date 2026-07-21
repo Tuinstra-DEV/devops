@@ -1,0 +1,25 @@
+[Unit]
+Description=One-shot GitHub Actions JIT runner
+After=network-online.target cloud-final.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ci-runner
+Group=ci-runner
+WorkingDirectory=/opt/actions-runner
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+Environment=RUNNER_DISABLEUPDATE=1
+ExecStartPre=/usr/bin/test -s /run/ci-runner/jit.config
+ExecStart=/usr/local/bin/run-jit-runner
+ExecStopPost=-/usr/bin/rm -f /run/ci-runner/jit.config
+ExecStopPost=+/usr/bin/systemctl poweroff
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/actions-runner/_diag /opt/actions-runner/_work /run/ci-runner
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+---
+- name: Configure the sanctuary ephemeral runner host
+  hosts: sanctuary
+  become: true
+  roles:
+    - runner_host

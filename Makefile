@@ -1,10 +1,13 @@
-.PHONY: lint test release-tag
+.PHONY: lint test test-runner release-tag
 
 lint:
 	./scripts/lint.sh
 
 test:
 	./scripts/test.sh
+
+test-runner:
+	./scripts/test-runner-platform.sh
 
 # Usage: make release-tag TAG=v1
 # Moves an existing tag to current HEAD and force-pushes it.

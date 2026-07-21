@@ -1,0 +1,9 @@
+---
+runner_base_image_source: ""
+runner_base_image_sha256: ""
+runner_manager_source_root: "{{ playbook_dir }}/../.."
+runner_bridge_name: virbr-ci
+runner_network_cidr: 192.0.2.0/24
+runner_production_networks_reviewed: false
+runner_blocked_production_ipv4_cidrs: []
+runner_blocked_production_ipv6_cidrs: []
