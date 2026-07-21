@@ -40,12 +40,25 @@ MAX_JIT_BYTES = 131072
 MAX_RESPONSE_BYTES = 65536
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 ERROR_CODES = frozenset({"invalid_request", "unauthorized", "operation_failed", "busy"})
+DIAGNOSTIC_COMMANDS = frozenset({
+    "cloud-localds", "qemu-img", "systemctl", "systemd-run", "virsh", "virt-install",
+})
 UNKNOWN_REQUEST_ID = "0" * 32
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 
 
 class ProtocolError(ValueError):
     """A request error that is safe to represent with a generic code."""
+
+
+class HostCommandError(RuntimeError):
+    """A host command failure containing only allowlisted diagnostic metadata."""
+
+    def __init__(self, command_name: str, returncode: int | str) -> None:
+        safe_name = Path(command_name).name
+        self.command_name = safe_name if safe_name in DIAGNOSTIC_COMMANDS else "unknown"
+        self.returncode = returncode if isinstance(returncode, int) else "timeout"
+        super().__init__(f"{self.command_name} rc={self.returncode}")
 
 
 def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -58,8 +71,13 @@ def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, timeout=90)
+    try:
+        return subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=90)
+    except subprocess.CalledProcessError as exc:
+        raise HostCommandError(command[0], exc.returncode) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HostCommandError(command[0], "timeout") from exc
 
 
 def validate_lease(value: str) -> str:
@@ -284,6 +302,9 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
     except ProtocolError as exc:
         print(f"ci-runner-host-helper: {exc}", file=sys.stderr)
         response = encode_response(request_id, error="invalid_request")
+    except HostCommandError as exc:
+        print(f"ci-runner-host-helper: command failed: {exc}", file=sys.stderr)
+        response = encode_response(request_id, error="operation_failed")
     except Exception as exc:
         print(f"ci-runner-host-helper: operation failed: {type(exc).__name__}", file=sys.stderr)
         response = encode_response(request_id, error="operation_failed")
@@ -320,6 +341,9 @@ def main() -> int:
             else:
                 print(json.dumps(list_leases(), sort_keys=True))
         return 0
+    except HostCommandError as exc:
+        print(f"ci-runner-host-helper: command failed: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"ci-runner-host-helper: operation failed: {type(exc).__name__}", file=sys.stderr)
         return 1

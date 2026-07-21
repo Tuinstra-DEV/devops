@@ -161,6 +161,26 @@ class HostHelperTests(unittest.TestCase):
         self.assertIn("RuntimeError", stderr.getvalue())
         self.assertEqual(json.loads(encoded)["error"], "operation_failed")
 
+    @mock.patch.object(helper.subprocess, "run")
+    def test_command_failure_keeps_output_secret_and_exposes_safe_stage(self, run):
+        secret = "sensitive-command-output"
+        run.side_effect = helper.subprocess.CalledProcessError(
+            7, ["virt-install"], output="ignored", stderr=secret
+        )
+
+        with self.assertRaises(helper.HostCommandError) as raised:
+            helper.run(["virt-install", "--connect", "qemu:///system"])
+
+        self.assertEqual(raised.exception.command_name, "virt-install")
+        self.assertEqual(raised.exception.returncode, 7)
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_command_diagnostic_rejects_unknown_name_and_normalizes_timeout(self):
+        error = helper.HostCommandError("untrusted-command-name", "anything")
+        self.assertEqual(error.command_name, "unknown")
+        self.assertEqual(error.returncode, "timeout")
+        self.assertEqual(str(error), "unknown rc=timeout")
+
     @mock.patch.object(helper, "run")
     def test_libvirt_commands_use_explicit_system_uri(self, run):
         run.return_value = mock.Mock(stdout="")
