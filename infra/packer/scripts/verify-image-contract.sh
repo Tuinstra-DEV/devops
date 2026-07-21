@@ -30,6 +30,7 @@ php8.3 --version | grep -Eq '^PHP 8\.3\.'
 php8.4 --version | grep -Eq '^PHP 8\.4\.'
 composer --version
 playwright --version
+chromium --version
 trivy --version
 test -x /opt/actions-runner/run.sh
 test -x /usr/local/bin/run-jit-runner
@@ -50,6 +51,8 @@ test -z "$unsafe_runner_entry" || {
   exit 1
 }
 test -d /opt/ms-playwright
+test -x /usr/local/bin/chromium
+readlink -f /usr/local/bin/chromium | grep -q '^/opt/ms-playwright/'
 test -s /etc/ci-runner-image-manifest
 
 echo "immutable runner image contract passed"

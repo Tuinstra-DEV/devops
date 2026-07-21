@@ -105,6 +105,15 @@ sudo npm install --global --ignore-scripts "playwright@${PLAYWRIGHT_VERSION}"
 sudo /usr/bin/env PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium
 sudo chmod -R a+rX /opt/ms-playwright
 
+playwright_chromium="$(find /opt/ms-playwright -type f \
+  \( -path '*/chrome-linux/chrome' -o -path '*/chrome-linux64/chrome' \) \
+  -perm -0111 -print -quit)"
+if [[ -z "$playwright_chromium" ]]; then
+  echo "Playwright Chromium executable was not installed" >&2
+  exit 1
+fi
+sudo ln --symbolic --force "$playwright_chromium" /usr/local/bin/chromium
+
 composer_installer=/tmp/composer-setup.php
 curl --fail --silent --show-error --location https://getcomposer.org/installer --output "$composer_installer"
 printf '%s  %s\n' "$COMPOSER_SHA384" "$composer_installer" | sha384sum --check --strict
