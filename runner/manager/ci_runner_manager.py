@@ -31,6 +31,7 @@ HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
+ASSIGNMENT_RUNS_PER_STATUS = 10
 HELPER_HEADER_MAX = 4096
 HELPER_RESPONSE_MAX = 65536
 HELPER_JIT_MAX = 131072
@@ -51,6 +52,12 @@ class RateLimited(RunnerError):
 
 class NotFound(RunnerError):
     pass
+
+
+def trigger_job_id(state: dict[str, Any]) -> int | None:
+    """Return the admission trigger, including leases written before the rename."""
+    value = state.get("trigger_job_id", state.get("job_id"))
+    return value if isinstance(value, int) else None
 
 
 def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -142,9 +149,10 @@ class StateStore:
 
     def pending_dispatch_keys(self) -> set[str]:
         return {
-            f"{state['repo']}:{state['job_id']}"
+            f"{state['repo']}:{job_id}"
             for state in self.cleanup_items()
-            if isinstance(state.get("repo"), str) and isinstance(state.get("job_id"), int)
+            if isinstance(state.get("repo"), str)
+            and (job_id := trigger_job_id(state)) is not None
         }
 
     def write(self, lease: str, state: dict[str, Any]) -> None:
@@ -345,6 +353,46 @@ class GitHubClient:
             "labels": ["self-hosted", "linux", "x64", label], "work_folder": "_work",
         })
 
+    def find_assigned_job(self, repo: str, runner_id: int,
+                          runner_name: str, *,
+                          include_completed: bool = True) -> dict[str, Any] | None:
+        if not runner_name or runner_id < 1:
+            return None
+        id_matches: dict[tuple[int, int], dict[str, Any]] = {}
+        name_matches: dict[tuple[int, int], dict[str, Any]] = {}
+        statuses = ("in_progress", "completed") if include_completed else ("in_progress",)
+        for status in statuses:
+            runs = self.request(
+                "GET", f"{self.repo_path(repo)}/actions/runs?status={status}"
+                f"&per_page={ASSIGNMENT_RUNS_PER_STATUS}&page=1"
+            )
+            for run in runs.get("workflow_runs", []):
+                run_id = int(run["id"])
+                jobs = self.request(
+                    "GET", f"{self.repo_path(repo)}/actions/runs/{run_id}"
+                    "/jobs?filter=latest&per_page=100&page=1"
+                )
+                for job in jobs.get("jobs", []):
+                    job_id = job.get("id")
+                    if not isinstance(job_id, int):
+                        continue
+                    reported_runner_id = job.get("runner_id")
+                    reported_runner_name = job.get("runner_name")
+                    assignment = {"repo": repo, "run_id": run_id, "job_id": job_id}
+                    key = (run_id, job_id)
+                    if isinstance(reported_runner_id, int):
+                        if reported_runner_id != runner_id:
+                            continue
+                        if reported_runner_name not in (None, "", runner_name):
+                            raise RunnerError("GitHub returned a conflicting runner assignment")
+                        id_matches[key] = assignment
+                    elif reported_runner_name == runner_name:
+                        name_matches[key] = assignment
+        matches = id_matches or name_matches
+        if len(matches) > 1:
+            raise RunnerError("GitHub returned an ambiguous runner assignment")
+        return next(iter(matches.values())) if matches else None
+
     def delete_runner(self, repo: str, runner_id: int) -> None:
         try:
             self.request("DELETE", f"{self.repo_path(repo)}/actions/runners/{runner_id}")
@@ -513,13 +561,55 @@ def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any]) ->
 
 
 def has_dispatch_target(state: dict[str, Any]) -> bool:
-    return isinstance(state.get("repo"), str) and isinstance(state.get("job_id"), int)
+    return isinstance(state.get("repo"), str) and trigger_job_id(state) is not None
+
+
+def record_verified_assignment(store: StateStore, client: GitHubClient | None,
+                               state: dict[str, Any], *,
+                               include_completed: bool) -> dict[str, Any]:
+    if client is None or isinstance(state.get("actual_job_id"), int):
+        return state
+    repo = state.get("repo")
+    runner_name = state.get("runner_name")
+    lease = state.get("lease")
+    runner_id = state.get("runner_id")
+    trigger_id = trigger_job_id(state)
+    if not isinstance(repo, str) or not isinstance(runner_name, str) \
+            or not isinstance(lease, str) or not isinstance(runner_id, int) \
+            or trigger_id is None:
+        return state
+    try:
+        assignment = client.find_assigned_job(
+            repo, runner_id, runner_name, include_completed=include_completed
+        )
+    except RunnerError as exc:
+        LOG.warning(
+            "runner assignment could not be verified lease=%s repo=%s runner_id=%s "
+            "trigger_job_id=%s error=%s",
+            lease, repo, runner_id, trigger_id, exc,
+        )
+        return state
+    if assignment is None:
+        return state
+    actual_job_id = assignment.get("job_id")
+    actual_run_id = assignment.get("run_id")
+    if not isinstance(actual_job_id, int) or not isinstance(actual_run_id, int):
+        return state
+    updated = dict(state)
+    updated.update({"actual_job_id": actual_job_id, "actual_run_id": actual_run_id})
+    store.write(lease, updated)
+    LOG.info(
+        "runner assignment verified lease=%s repo=%s runner_id=%s runner_name=%s "
+        "trigger_job_id=%s actual_job_id=%s",
+        lease, repo, runner_id, runner_name, trigger_id, actual_job_id,
+    )
+    return updated
 
 
 def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
                            state: dict[str, Any], now: int) -> None:
     repo = state.get("repo")
-    job_id = state.get("job_id")
+    job_id = trigger_job_id(state)
     if client is None or not isinstance(repo, str) or not isinstance(job_id, int):
         store.defer_handoff_check(state, now)
         return
@@ -527,17 +617,22 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
         job = client.get_job(repo, job_id)
     except NotFound:
         store.remove_cleanup(state)
-        LOG.info("dispatch handoff target no longer exists repo=%s job_id=%s", repo, job_id)
+        LOG.info(
+            "dispatch handoff trigger no longer exists repo=%s trigger_job_id=%s",
+            repo, job_id,
+        )
         return
     except RunnerError as exc:
-        LOG.warning("dispatch handoff could not be verified repo=%s job_id=%s error=%s",
-                    repo, job_id, exc)
+        LOG.warning(
+            "dispatch handoff trigger could not be verified repo=%s trigger_job_id=%s error=%s",
+            repo, job_id, exc,
+        )
         store.defer_handoff_check(state, now)
         return
     status = job.get("status")
     if status == "completed":
         store.remove_cleanup(state)
-        LOG.info("dispatch handoff completed repo=%s job_id=%s", repo, job_id)
+        LOG.info("dispatch handoff trigger completed repo=%s trigger_job_id=%s", repo, job_id)
         return
     if status == "queued":
         key = f"{repo}:{job_id}"
@@ -545,12 +640,16 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
             key, now, int(state.get("dispatch_attempts", 1))
         )
         store.remove_cleanup(state)
-        LOG.info("dispatch handoff queued for retry repo=%s job_id=%s retry_after=%s",
-                 repo, job_id, delay)
+        LOG.info(
+            "dispatch handoff trigger queued for retry repo=%s trigger_job_id=%s retry_after=%s",
+            repo, job_id, delay,
+        )
         return
     store.defer_handoff_check(state, now)
-    LOG.info("dispatch handoff remains pending repo=%s job_id=%s status=%s",
-             repo, job_id, status if isinstance(status, str) else "invalid")
+    LOG.info(
+        "dispatch handoff trigger remains pending repo=%s trigger_job_id=%s status=%s",
+        repo, job_id, status if isinstance(status, str) else "invalid",
+    )
 
 
 def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None) -> None:
@@ -622,6 +721,10 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
             lease for lease, domain_state in domains.items()
             if domain_state == "running" and states.get(lease, {}).get("phase") == "running"
         } - expired
+        for lease, state in list(states.items()):
+            states[lease] = record_verified_assignment(
+                store, client, state, include_completed=lease not in healthy
+            )
         for lease in sorted(known - healthy):
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
@@ -660,14 +763,17 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
             response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
             encoded = response.get("encoded_jit_config")
             runner_id = response.get("runner", {}).get("id")
+            runner_name = response.get("runner", {}).get("name")
             lease = f"gh-{job['job_id']}"
             registration = {
                 "lease": lease,
                 "repo": repo,
                 "runner_id": runner_id,
-                "run_id": job["run_id"],
-                "job_id": job["job_id"],
+                "trigger_run_id": job["run_id"],
+                "trigger_job_id": job["job_id"],
             }
+            if isinstance(runner_name, str) and runner_name:
+                registration["runner_name"] = runner_name
             if not isinstance(encoded, str) or not isinstance(runner_id, int):
                 if isinstance(runner_id, int):
                     store.write_cleanup_obligation(lease, registration, int(time.time()))
@@ -684,10 +790,16 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 launch(cfg, lease, encoded.encode("ascii"), metadata={
                     "repo": repo,
                     "runner_id": runner_id,
-                    "run_id": job["run_id"],
-                    "job_id": job["job_id"],
+                    **({"runner_name": runner_name}
+                       if isinstance(runner_name, str) and runner_name else {}),
+                    "trigger_run_id": job["run_id"],
+                    "trigger_job_id": job["job_id"],
                 }, dispatch_history_key=key)
-                LOG.info("dispatched repo=%s run_id=%s job_id=%s", repo, job["run_id"], job["job_id"])
+                LOG.info(
+                    "runner registered lease=%s repo=%s runner_id=%s trigger_run_id=%s "
+                    "trigger_job_id=%s assignment=unverified",
+                    lease, repo, runner_id, job["run_id"], job["job_id"],
+                )
                 return True
             except Exception:
                 try:
@@ -699,8 +811,10 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                         "lease": lease,
                         "repo": repo,
                         "runner_id": runner_id,
-                        "run_id": job["run_id"],
-                        "job_id": job["job_id"],
+                        **({"runner_name": runner_name}
+                           if isinstance(runner_name, str) and runner_name else {}),
+                        "trigger_run_id": job["run_id"],
+                        "trigger_job_id": job["job_id"],
                     }, int(time.time()), preserve_lease=True)
                 else:
                     store.remove_cleanup(registration)
