@@ -275,6 +275,7 @@ class ManagerTests(unittest.TestCase):
             {"jobs": [{"id": 83, "status": "in_progress", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
             {"workflow_runs": []},
+            {"workflow_runs": []},
         ])
 
         self.assertEqual(
@@ -289,11 +290,40 @@ class ManagerTests(unittest.TestCase):
             {"workflow_runs": [{"id": 11}]},
             {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
+            {"workflow_runs": []},
         ])
 
         self.assertEqual(
             client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20"),
             {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
+        )
+
+    def test_teardown_finds_completed_job_inside_queued_workflow_run(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 11}]},
+            {"jobs": [{"id": 77, "status": "completed", "runner_id": 36,
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        self.assertEqual(
+            client.find_assigned_job("Tuinstra-DEV/gate", 36, "sanctuary-20"),
+            {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 77},
+        )
+
+    def test_healthy_assignment_search_does_not_scan_queued_workflow_runs(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(return_value={"workflow_runs": []})
+
+        self.assertIsNone(client.find_assigned_job(
+            "Tuinstra-DEV/gate", 36, "sanctuary-20", include_completed=False
+        ))
+
+        client.request.assert_called_once_with(
+            "GET", "/repos/Tuinstra-DEV/gate/actions/runs?status=in_progress"
+            f"&per_page={manager.ASSIGNMENT_RUNS_PER_STATUS}&page=1"
         )
 
     def test_find_assigned_job_ignores_reused_name_with_different_runner_id(self):
@@ -305,6 +335,7 @@ class ManagerTests(unittest.TestCase):
                        "runner_name": "sanctuary-20"}]},
             {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
+            {"workflow_runs": []},
         ])
 
         self.assertEqual(
@@ -319,6 +350,7 @@ class ManagerTests(unittest.TestCase):
             {"workflow_runs": [{"id": 10}]},
             {"jobs": [{"id": 21, "status": "completed",
                        "runner_name": "sanctuary-20"}]},
+            {"workflow_runs": []},
         ])
 
         self.assertIsNone(
@@ -334,6 +366,7 @@ class ManagerTests(unittest.TestCase):
                        "runner_name": "sanctuary-20"}]},
             {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
+            {"workflow_runs": []},
         ])
 
         with self.assertRaisesRegex(manager.RunnerError, "ambiguous"):
@@ -426,7 +459,7 @@ class ManagerTests(unittest.TestCase):
             client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
             client.generate_jit.return_value = {
                 "encoded_jit_config": base64.b64encode(b"jit").decode(),
-                "runner": {"id": 30, "name": "sanctuary-20"},
+                "runner": {"id": 30},
             }
             cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
                    "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
@@ -452,6 +485,29 @@ class ManagerTests(unittest.TestCase):
             self.assertNotIn("actual_job_id=20", audit)
             self.assertEqual(launch.call_args.args[2], base64.b64encode(b"jit"))
             self.assertEqual(list((root / "run").iterdir()), [])
+
+    @mock.patch.object(manager, "launch")
+    def test_dispatch_rejects_conflicting_reported_runner_name(self, launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30, "name": "unexpected-runner"},
+            }
+            cfg = {"state_dir": root / "state", "runtime_dir": root / "run",
+                   "repositories": ["Tuinstra-DEV/gate"],
+                   "runner_label": "trusted-heavy"}
+            (root / "run").mkdir()
+
+            with self.assertRaisesRegex(manager.RunnerError, "invalid JIT"):
+                manager.dispatch_once(cfg, client)
+
+            launch.assert_not_called()
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
 
     def test_dispatch_preserves_host_cleanup_when_launch_and_delete_fail(self):
         with tempfile.TemporaryDirectory() as directory:
