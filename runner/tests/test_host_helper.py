@@ -31,7 +31,7 @@ class HostHelperTests(unittest.TestCase):
         user_data = helper.cloud_init_user_data(base64.b64encode(b"opaque-jit"))
         for filename in (".runner", ".credentials", ".credentials_rsaparams",
                          ".runner_migrated", ".credentials_migrated"):
-            self.assertIn(f"/opt/actions-runner/{filename}", user_data)
+            self.assertNotIn(f"/opt/actions-runner/{filename}", user_data)
         self.assertIn("- [chown, root:ci-runner, /opt/actions-runner]", user_data)
         self.assertIn("- [chmod, '1770', /opt/actions-runner]", user_data)
         self.assertIn("ReadWritePaths=/opt/actions-runner", user_data)

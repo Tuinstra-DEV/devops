@@ -34,6 +34,13 @@ trivy --version
 test -x /opt/actions-runner/run.sh
 test -x /usr/local/bin/run-jit-runner
 test "$(stat -c '%U:%G:%a' /opt/actions-runner)" = "root:root:755"
+for runtime_file in .runner .credentials .credentials_rsaparams .runner_migrated .credentials_migrated; do
+  runtime_path="/opt/actions-runner/$runtime_file"
+  if [[ -e "$runtime_path" || -L "$runtime_path" ]]; then
+    echo "image contract found pre-existing runner state: $runtime_path" >&2
+    exit 1
+  fi
+done
 unsafe_runner_entry="$(find /opt/actions-runner -xdev \
   \( -path /opt/actions-runner/_diag -o -path /opt/actions-runner/_work \) -prune -o \
   \( \( ! -user root -o ! -group root \) -o \( \( -type f -o -type d \) -perm /022 \) \) \
