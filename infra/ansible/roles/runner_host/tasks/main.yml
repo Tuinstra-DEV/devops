@@ -199,6 +199,8 @@
     runner_network_xml=/etc/ci-runner/sanctuary-ci.xml
     runner_network_effective_xml="$(mktemp)"
     runner_network_restart={{ runner_network_definition.changed | ternary('true', 'false') }}
+    runner_network_config=/etc/libvirt/qemu/networks/sanctuary-ci.xml
+    runner_network_autostart_link=/etc/libvirt/qemu/networks/autostart/sanctuary-ci.xml
     trap 'rm -f "$runner_network_effective_xml"' EXIT
     runner_network_was_active=false
     runner_network_was_persistent=false
@@ -229,6 +231,16 @@
       cp "$runner_network_xml" "$runner_network_effective_xml"
     fi
     virsh --connect "$runner_libvirt_uri" net-define "$runner_network_effective_xml"
+    if [ "$runner_network_was_autostart" = false ] &&
+       { [ -e "$runner_network_autostart_link" ] || [ -L "$runner_network_autostart_link" ]; }; then
+      runner_network_autostart_target="$(readlink "$runner_network_autostart_link" 2>/dev/null || true)"
+      if [ ! -L "$runner_network_autostart_link" ] ||
+         [ "$runner_network_autostart_target" != "$runner_network_config" ]; then
+        echo "refusing unexpected runner autostart entry" >&2
+        exit 1
+      fi
+      rm -f -- "$runner_network_autostart_link"
+    fi
     virsh --connect "$runner_libvirt_uri" net-autostart sanctuary-ci
     if [ "$runner_network_restart" = true ] && [ "$runner_network_was_active" = true ]; then
       virsh --connect "$runner_libvirt_uri" net-destroy sanctuary-ci

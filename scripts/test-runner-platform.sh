@@ -35,6 +35,8 @@ grep -q 'net-uuid sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-list --name.*grep -Fxq sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-list --all --persistent --name' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-list --all --autostart --name' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'readlink.*runner_network_autostart_link' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'refusing unexpected runner autostart entry' infra/ansible/roles/runner_host/tasks/main.yml
 ! grep -q 'when: runner_network_definition.changed' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q '<uuid>.*runner_network_uuid.*</uuid>' infra/ansible/roles/runner_host/tasks/main.yml
 ! grep -q 'virsh net-undefine sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
