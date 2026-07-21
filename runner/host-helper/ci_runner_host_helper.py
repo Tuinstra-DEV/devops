@@ -136,13 +136,24 @@ def cloud_init_user_data(encoded_jit: bytes) -> str:
     return """#cloud-config
 bootcmd:
   - [install, -d, -o, ci-runner, -g, ci-runner, -m, '0700', /run/ci-runner]
+  - [install, -d, -o, root, -g, root, -m, '0755', /etc/systemd/system/ci-runner-job.service.d]
+  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.runner]
+  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials]
+  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials_rsaparams]
 write_files:
   - path: /run/ci-runner/jit.config
     owner: ci-runner:ci-runner
     permissions: '0600'
     encoding: b64
     content: %s
+  - path: /etc/systemd/system/ci-runner-job.service.d/10-jit-files.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Service]
+      ReadWritePaths=/opt/actions-runner/.runner /opt/actions-runner/.credentials /opt/actions-runner/.credentials_rsaparams
 runcmd:
+  - [systemctl, daemon-reload]
   - [systemctl, start, --no-block, ci-runner-job.service]
 """ % base64.b64encode(encoded_jit).decode("ascii")
 
