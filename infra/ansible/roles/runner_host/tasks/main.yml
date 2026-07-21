@@ -186,7 +186,7 @@
 - name: Install isolated network definition
   ansible.builtin.template:
     src: sanctuary-ci.xml.j2
-    dest: /etc/libvirt/qemu/networks/sanctuary-ci.xml
+    dest: /etc/ci-runner/sanctuary-ci.xml
     owner: root
     group: root
     mode: '0600'
@@ -195,7 +195,13 @@
 - name: Define and start runner network
   ansible.builtin.shell: |
     set -euo pipefail
-    virsh net-define /etc/libvirt/qemu/networks/sanctuary-ci.xml
+    if virsh net-info sanctuary-ci >/dev/null 2>&1; then
+      if virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
+        virsh net-destroy sanctuary-ci
+      fi
+      virsh net-undefine sanctuary-ci
+    fi
+    virsh net-define /etc/ci-runner/sanctuary-ci.xml
     virsh net-autostart sanctuary-ci
     if ! virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
       virsh net-start sanctuary-ci
