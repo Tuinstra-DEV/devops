@@ -196,10 +196,16 @@
   ansible.builtin.shell: |
     set -euo pipefail
     if virsh net-info sanctuary-ci >/dev/null 2>&1; then
+      runner_network_persistent=false
+      if virsh net-info sanctuary-ci | grep -q '^Persistent:.*yes'; then
+        runner_network_persistent=true
+      fi
       if virsh net-info sanctuary-ci | grep -q '^Active:.*yes'; then
         virsh net-destroy sanctuary-ci
       fi
-      virsh net-undefine sanctuary-ci
+      if [ "$runner_network_persistent" = true ]; then
+        virsh net-undefine sanctuary-ci
+      fi
     fi
     virsh net-define /etc/ci-runner/sanctuary-ci.xml
     virsh net-autostart sanctuary-ci

@@ -31,6 +31,8 @@ grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra
 grep -q "src: runner/config/manager.toml.*group: ci-runner-manager.*mode: '0640'" infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'dest: /etc/ci-runner/sanctuary-ci.xml' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'virsh net-undefine sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'runner_network_persistent=false' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'if \[ "$runner_network_persistent" = true \]' infra/ansible/roles/runner_host/tasks/main.yml
 ! grep -q 'dest: /etc/libvirt/qemu/networks/sanctuary-ci.xml' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'required_version = "= 1.15.4"' infra/packer/sanctuary-runner.pkr.hcl
 grep -q 'version = "= 1.1.6"' infra/packer/sanctuary-runner.pkr.hcl
