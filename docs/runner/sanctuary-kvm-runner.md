@@ -24,6 +24,8 @@ are label-scoped, so GitHub may assign a different queued heavy job than the one
 used to name the runner. The manager records that candidate as `trigger_job_id`
 and records `actual_job_id` only after GitHub reports a job assigned to the
 registration's runner ID, corroborated by its runner name when available.
+Runner names are reused across retries and are never sufficient for attribution
+without the numeric runner ID.
 After runner cleanup, the manager keeps a durable handoff tombstone, waits for
 API consistency, and retries a still-queued trigger with exponential cooldown
 capped at one hour. Pending handoffs block

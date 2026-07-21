@@ -272,7 +272,7 @@ class ManagerTests(unittest.TestCase):
         client.request = mock.Mock(side_effect=[
             {"workflow_runs": [{"id": 10}, {"id": 11}]},
             {"jobs": [{"id": 20, "status": "queued", "runner_name": ""}]},
-            {"jobs": [{"id": 83, "status": "in_progress",
+            {"jobs": [{"id": 83, "status": "in_progress", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
             {"workflow_runs": []},
         ])
@@ -312,14 +312,27 @@ class ManagerTests(unittest.TestCase):
             {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
         )
 
-    def test_find_assigned_job_fails_closed_for_ambiguous_name_fallback(self):
+    def test_find_assigned_job_ignores_single_stale_name_without_runner_id(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": [{"id": 10}]},
+            {"jobs": [{"id": 21, "status": "completed",
+                       "runner_name": "sanctuary-20"}]},
+        ])
+
+        self.assertIsNone(
+            client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20")
+        )
+
+    def test_find_assigned_job_fails_closed_for_ambiguous_runner_id(self):
         client = manager.GitHubClient("secret")
         client.request = mock.Mock(side_effect=[
             {"workflow_runs": []},
             {"workflow_runs": [{"id": 10}, {"id": 11}]},
-            {"jobs": [{"id": 21, "status": "completed",
+            {"jobs": [{"id": 21, "status": "completed", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
-            {"jobs": [{"id": 83, "status": "completed",
+            {"jobs": [{"id": 83, "status": "completed", "runner_id": 30,
                        "runner_name": "sanctuary-20"}]},
         ])
 

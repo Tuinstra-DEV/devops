@@ -359,7 +359,6 @@ class GitHubClient:
         if not runner_name or runner_id < 1:
             return None
         id_matches: dict[tuple[int, int], dict[str, Any]] = {}
-        name_matches: dict[tuple[int, int], dict[str, Any]] = {}
         statuses = ("in_progress", "completed") if include_completed else ("in_progress",)
         for status in statuses:
             runs = self.request(
@@ -380,18 +379,15 @@ class GitHubClient:
                     reported_runner_name = job.get("runner_name")
                     assignment = {"repo": repo, "run_id": run_id, "job_id": job_id}
                     key = (run_id, job_id)
-                    if isinstance(reported_runner_id, int):
-                        if reported_runner_id != runner_id:
-                            continue
-                        if reported_runner_name not in (None, "", runner_name):
-                            raise RunnerError("GitHub returned a conflicting runner assignment")
-                        id_matches[key] = assignment
-                    elif reported_runner_name == runner_name:
-                        name_matches[key] = assignment
-        matches = id_matches or name_matches
-        if len(matches) > 1:
+                    if not isinstance(reported_runner_id, int) \
+                            or reported_runner_id != runner_id:
+                        continue
+                    if reported_runner_name not in (None, "", runner_name):
+                        raise RunnerError("GitHub returned a conflicting runner assignment")
+                    id_matches[key] = assignment
+        if len(id_matches) > 1:
             raise RunnerError("GitHub returned an ambiguous runner assignment")
-        return next(iter(matches.values())) if matches else None
+        return next(iter(id_matches.values())) if id_matches else None
 
     def delete_runner(self, repo: str, runner_id: int) -> None:
         try:
