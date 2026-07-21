@@ -79,11 +79,15 @@ fork pull requests select this machine.
   its own mode `0600` runtime files. Those files must start absent because the
   upstream runner treats an existing `.runner` as configured state. The entire
   overlay is destroyed after the job.
-- Cloud-init selects Docker's `overlay2` image store before admitting the JIT
-  runner and verifies the active driver. This avoids the observed Docker 29.6.2
-  containerd snapshotter failure where a build-time `COPY` layer was absent
-  from the runtime filesystem. Driver activation failure prevents the job from
+- Cloud-init selects and verifies Docker's `overlay2` image store before
+  admitting the JIT runner. Driver activation failure prevents the job from
   starting; the guest is disposable, so no image-store migration is required.
+- The JIT runner service uses `UMask=0022`, matching the file-mode contract
+  expected by Actions checkouts and Docker build contexts. A restrictive job
+  umask makes copied application directories inaccessible to non-root image
+  users. JIT confidentiality instead remains explicit: `jit.config` is mode
+  `0600` inside `/run/ci-runner` mode `0700`, and the runner root is not
+  traversable by unrelated guest accounts.
 - A running lease older than `max_lease_seconds` (default 7,200 seconds) is
   destroyed by reconciliation even if libvirt still reports it running.
 

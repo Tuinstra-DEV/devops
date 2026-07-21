@@ -151,7 +151,7 @@ write_files:
     content: |
       [Service]
       ReadWritePaths=/opt/actions-runner
-      UMask=0077
+      UMask=0022
   - path: /etc/docker/daemon.json
     owner: root:root
     permissions: '0644'
