@@ -1,0 +1,176 @@
+name: Reusable Release Image
+
+on:
+  workflow_call:
+    inputs:
+      execution-class:
+        description: "Execution class: hosted or trusted-heavy"
+        required: false
+        default: hosted
+        type: string
+      registry:
+        description: OCI registry hostname
+        required: false
+        default: ghcr.io
+        type: string
+      image-name:
+        description: Lowercase repository path in the registry, without a tag
+        required: true
+        type: string
+      workdir:
+        description: Working directory used as Docker build context
+        required: false
+        default: "."
+        type: string
+      dockerfile:
+        description: Dockerfile path relative to workdir
+        required: false
+        default: Dockerfile
+        type: string
+      build-args:
+        description: "Explicit, newline-separated non-secret Docker build arguments"
+        required: false
+        default: ""
+        type: string
+      platforms:
+        description: "Comma-separated target platforms: linux/amd64 and/or linux/arm64"
+        required: false
+        default: linux/amd64
+        type: string
+      artifact-retention-days:
+        description: Number of days to retain the signed provenance bundle
+        required: false
+        default: 30
+        type: number
+    secrets:
+      registry-username:
+        description: Explicit registry username; defaults to github.actor for GHCR
+        required: false
+      registry-password:
+        description: Explicit registry token; defaults to github.token for GHCR
+        required: false
+    outputs:
+      image-ref:
+        description: Immutable registry reference in name@digest form
+        value: ${{ jobs['release-image'].outputs['image-ref'] }}
+      image-digest:
+        description: Immutable OCI manifest digest
+        value: ${{ jobs['release-image'].outputs['image-digest'] }}
+      provenance-artifact:
+        description: Deterministic artifact containing the signed provenance bundle
+        value: ${{ jobs['release-image'].outputs['provenance-artifact'] }}
+      provenance-url:
+        description: GitHub attestation URL for the released digest
+        value: ${{ jobs['release-image'].outputs['provenance-url'] }}
+
+jobs:
+  release-image:
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      image-ref: ${{ steps['contract-outputs'].outputs['image-ref'] }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      provenance-artifact: ${{ steps.contract.outputs['provenance-artifact'] }}
+      provenance-url: ${{ steps.provenance.outputs['attestation-url'] }}
+    steps:
+      - name: Validate contract inputs
+        id: contract
+        shell: bash
+        env:
+          EXECUTION_CLASS: ${{ inputs['execution-class'] }}
+          EVENT_NAME: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE_NAME: ${{ inputs['image-name'] }}
+          WORKDIR: ${{ inputs.workdir }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          PLATFORMS: ${{ inputs.platforms }}
+          RETENTION_DAYS: ${{ inputs['artifact-retention-days'] }}
+        run: |
+          set -euo pipefail
+          case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
+          if [[ "$EXECUTION_CLASS" = trusted-heavy ]] && { [[ "$EVENT_NAME" = pull_request_target ]] || [[ "$IS_FORK" = true ]] || [[ "$ACTOR" = 'dependabot[bot]' ]]; }; then
+            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
+            exit 2
+          fi
+          if [[ ! "$REGISTRY" =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]]; then
+            echo "registry must be a hostname with an optional port" >&2
+            exit 2
+          fi
+          if [[ ! "$IMAGE_NAME" =~ ^[a-z0-9]+([._/-][a-z0-9]+)*$ ]]; then
+            echo "image-name must be a lowercase registry repository path without a tag" >&2
+            exit 2
+          fi
+          for path in "$WORKDIR" "$DOCKERFILE"; do
+            if [[ -z "$path" || "$path" = /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
+              echo "workdir and dockerfile must be non-empty repository-relative paths without '..'" >&2
+              exit 2
+            fi
+          done
+          case "$PLATFORMS" in linux/amd64|linux/arm64|linux/amd64,linux/arm64|linux/arm64,linux/amd64) ;;
+            *) echo "platforms may contain only linux/amd64 and linux/arm64" >&2; exit 2 ;;
+          esac
+          if (( RETENTION_DAYS < 1 || RETENTION_DAYS > 90 )); then
+            echo "artifact-retention-days must be between 1 and 90" >&2
+            exit 2
+          fi
+          echo "provenance-artifact=release-provenance-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0
+
+      - name: Log in to registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.0.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets['registry-username'] || github.actor }}
+          password: ${{ secrets['registry-password'] || github.token }}
+
+      - name: Build and push release image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.0.0
+        with:
+          context: ${{ inputs.workdir }}
+          file: ${{ inputs.workdir }}/${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ inputs.registry }}/${{ inputs['image-name'] }}:sha-${{ github.sha }}
+          build-args: ${{ inputs['build-args'] }}
+          provenance: false
+          sbom: true
+
+      - name: Attest immutable image digest
+        id: provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3.2.0
+        with:
+          subject-name: ${{ inputs.registry }}/${{ inputs['image-name'] }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish immutable contract outputs
+        id: contract-outputs
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ${{ inputs.registry }}/${{ inputs['image-name'] }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "image-ref=${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed provenance bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.contract.outputs['provenance-artifact'] }}
+          path: ${{ steps.provenance.outputs['bundle-path'] }}
+          if-no-files-found: error
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          compression-level: 9

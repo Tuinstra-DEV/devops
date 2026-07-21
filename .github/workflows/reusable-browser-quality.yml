@@ -1,0 +1,129 @@
+name: Reusable Browser Quality
+
+on:
+  workflow_call:
+    inputs:
+      execution-class:
+        description: "Execution class: hosted or trusted-heavy"
+        required: false
+        default: hosted
+        type: string
+      node-version:
+        description: Node.js version used for the browser suite
+        required: false
+        default: "24"
+        type: string
+      workdir:
+        description: Working directory containing package-lock.json
+        required: false
+        default: "."
+        type: string
+      browser:
+        description: "Playwright browser: chromium, firefox, or webkit"
+        required: false
+        default: chromium
+        type: string
+      test-script:
+        description: npm package script that executes the browser suite
+        required: false
+        default: test:ui
+        type: string
+      report-path:
+        description: Repository-relative path produced by the browser reporter
+        required: false
+        default: playwright-report
+        type: string
+      artifact-retention-days:
+        description: Number of days to retain the browser report
+        required: false
+        default: 14
+        type: number
+    outputs:
+      report-artifact:
+        description: Deterministic browser report artifact name
+        value: ${{ jobs['browser-quality'].outputs['report-artifact'] }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  browser-quality:
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.workdir }}
+    outputs:
+      report-artifact: ${{ steps.contract.outputs['report-artifact'] }}
+    steps:
+      - name: Validate contract inputs
+        id: contract
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          EXECUTION_CLASS: ${{ inputs['execution-class'] }}
+          EVENT_NAME: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          WORKDIR: ${{ inputs.workdir }}
+          BROWSER: ${{ inputs.browser }}
+          TEST_SCRIPT: ${{ inputs['test-script'] }}
+          REPORT_PATH: ${{ inputs['report-path'] }}
+          RETENTION_DAYS: ${{ inputs['artifact-retention-days'] }}
+        run: |
+          set -euo pipefail
+          case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
+          if [[ "$EXECUTION_CLASS" = trusted-heavy ]] && { [[ "$EVENT_NAME" = pull_request_target ]] || [[ "$IS_FORK" = true ]] || [[ "$ACTOR" = 'dependabot[bot]' ]]; }; then
+            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
+            exit 2
+          fi
+          case "$BROWSER" in chromium|firefox|webkit) ;; *) echo "browser must be chromium, firefox, or webkit" >&2; exit 2 ;; esac
+          if [[ ! "$TEST_SCRIPT" =~ ^[A-Za-z0-9:_-]+$ ]]; then
+            echo "test-script must be an npm script name, not a shell command" >&2
+            exit 2
+          fi
+          for path in "$WORKDIR" "$REPORT_PATH"; do
+            if [[ -z "$path" || "$path" = /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
+              echo "workdir and report-path must be non-empty repository-relative paths without '..'" >&2
+              exit 2
+            fi
+          done
+          if (( RETENTION_DAYS < 1 || RETENTION_DAYS > 90 )); then
+            echo "artifact-retention-days must be between 1 and 90" >&2
+            exit 2
+          fi
+          echo "report-artifact=browser-quality-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+        with:
+          node-version: ${{ inputs['node-version'] }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.workdir }}/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install requested Playwright browser
+        env:
+          BROWSER: ${{ inputs.browser }}
+        run: ./node_modules/.bin/playwright install --with-deps "$BROWSER"
+
+      - name: Run browser quality suite
+        env:
+          TEST_SCRIPT: ${{ inputs['test-script'] }}
+        run: npm run "$TEST_SCRIPT"
+
+      - name: Upload deterministic browser report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.contract.outputs['report-artifact'] }}
+          path: ${{ inputs.workdir }}/${{ inputs['report-path'] }}
+          if-no-files-found: error
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          compression-level: 9

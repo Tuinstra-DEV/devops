@@ -12,3 +12,7 @@ docs/workflows/contracts/ @marcel-tuinstra
 # Versioning and release policy - require platform owner review
 docs/workflows/versioning-policy.md @marcel-tuinstra
 docs/workflows/release-procedure.md @marcel-tuinstra
+
+# Security policy and executable workflow contract checks
+docs/security/pipeline-security-policy.md @marcel-tuinstra
+scripts/workflow-contract-test.sh @marcel-tuinstra

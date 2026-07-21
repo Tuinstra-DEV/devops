@@ -118,7 +118,7 @@ jobs:
       image-ref: ${{ steps.image.outputs.image_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
 
       - name: Resolve build args from environment
         id: resolve-args
@@ -208,7 +208,7 @@ jobs:
         working-directory: .
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4.32.6
         if: ${{ always() && inputs.upload-sarif }}
         continue-on-error: true
         with:
@@ -243,7 +243,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
 
       - name: Ensure SSH key is present
         env:
