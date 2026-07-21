@@ -27,6 +27,10 @@ import urllib.request
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 LOG = logging.getLogger("ci-runner-manager")
 REGISTRATION_GRACE_SECONDS = 300
+HANDOFF_GRACE_SECONDS = 30
+HANDOFF_RETRY_MAX_SECONDS = 600
+DISPATCH_RETRY_BASE_SECONDS = 60
+DISPATCH_RETRY_MAX_SECONDS = 3600
 HELPER_HEADER_MAX = 4096
 HELPER_RESPONSE_MAX = 65536
 HELPER_JIT_MAX = 131072
@@ -136,6 +140,13 @@ class StateStore:
                 LOG.error("invalid cleanup state file %s: %s", path.name, exc)
         return result
 
+    def pending_dispatch_keys(self) -> set[str]:
+        return {
+            f"{state['repo']}:{state['job_id']}"
+            for state in self.cleanup_items()
+            if isinstance(state.get("repo"), str) and isinstance(state.get("job_id"), int)
+        }
+
     def write(self, lease: str, state: dict[str, Any]) -> None:
         destination = self.directory / f"lease-{lease}.json"
         temporary = destination.with_suffix(".tmp")
@@ -157,16 +168,24 @@ class StateStore:
     def cleanup_path(self, state: dict[str, Any]) -> Path:
         return self.directory / f"cleanup-{self.cleanup_key(state)}.json"
 
+    def write_cleanup_state(self, state: dict[str, Any]) -> None:
+        destination = self.cleanup_path(state)
+        temporary = destination.with_name(
+            f".{destination.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        )
+        try:
+            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def write_cleanup_obligation(self, lease: str, state: dict[str, Any], now: int) -> None:
         pending = dict(state)
         pending.update({"lease": lease, "phase": "registration_pending",
                         "created_at": now, "cleanup_attempts": 0,
                         "next_retry_at": now + REGISTRATION_GRACE_SECONDS})
-        destination = self.cleanup_path(pending)
-        temporary = destination.with_suffix(".tmp")
-        temporary.write_text(json.dumps(pending, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, destination)
+        self.write_cleanup_state(pending)
 
     def defer_cleanup(self, lease: str, state: dict[str, Any], now: int, *,
                       preserve_lease: bool = False) -> None:
@@ -177,13 +196,32 @@ class StateStore:
             "cleanup_attempts": attempts,
             "next_retry_at": now + min(30 * (2 ** min(attempts - 1, 7)), 3600),
         })
-        destination = self.cleanup_path(pending)
-        temporary = destination.with_suffix(".tmp")
-        temporary.write_text(json.dumps(pending, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, destination)
+        self.write_cleanup_state(pending)
         if not preserve_lease:
             self.remove(lease)
+
+    def write_handoff_obligation(self, lease: str, state: dict[str, Any], now: int) -> None:
+        pending = dict(state)
+        pending.update({
+            "lease": lease,
+            "phase": "handoff_pending",
+            "handoff_checks": int(state.get("handoff_checks", 0)),
+            "next_retry_at": now + HANDOFF_GRACE_SECONDS,
+        })
+        self.write_cleanup_state(pending)
+
+    def defer_handoff_check(self, state: dict[str, Any], now: int) -> None:
+        checks = int(state.get("handoff_checks", 0)) + 1
+        pending = dict(state)
+        pending.update({
+            "phase": "handoff_pending",
+            "handoff_checks": checks,
+            "next_retry_at": now + min(
+                HANDOFF_GRACE_SECONDS * (2 ** min(checks - 1, 7)),
+                HANDOFF_RETRY_MAX_SECONDS,
+            ),
+        })
+        self.write_cleanup_state(pending)
 
     def remove_cleanup(self, state: dict[str, Any]) -> None:
         self.cleanup_path(state).unlink(missing_ok=True)
@@ -193,24 +231,64 @@ class DispatchHistory:
     def __init__(self, state_dir: Path) -> None:
         self.path = state_dir / "dispatch-history.json"
 
-    def load(self) -> dict[str, int]:
+    def load(self) -> dict[str, dict[str, int]]:
         if not self.path.exists():
             return {}
         value = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise RunnerError("invalid dispatch history")
-        return {str(key): int(timestamp) for key, timestamp in value.items()}
+        result: dict[str, dict[str, int]] = {}
+        for key, entry in value.items():
+            if isinstance(entry, int):
+                result[str(key)] = {"blocked_until": entry + 86400, "attempts": 1}
+                continue
+            if not isinstance(entry, dict) or set(entry) != {"blocked_until", "attempts"}:
+                raise RunnerError("invalid dispatch history")
+            blocked_until = entry.get("blocked_until")
+            attempts = entry.get("attempts")
+            if not isinstance(blocked_until, int) or not isinstance(attempts, int) or attempts < 1:
+                raise RunnerError("invalid dispatch history")
+            result[str(key)] = {"blocked_until": blocked_until, "attempts": attempts}
+        return result
 
     def contains(self, key: str, now: int) -> bool:
-        return key in {item for item, seen in self.load().items() if seen > now - 86400}
+        entry = self.load().get(key)
+        return entry is not None and entry["blocked_until"] > now
 
-    def add(self, key: str, now: int) -> None:
-        values = {item: seen for item, seen in self.load().items() if seen > now - 86400}
-        values[key] = now
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(values, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self.path)
+    def write(self, values: dict[str, dict[str, int]]) -> None:
+        temporary = self.path.with_name(
+            f".{self.path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        )
+        try:
+            temporary.write_text(json.dumps(values, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def add(self, key: str, now: int) -> int:
+        values = {
+            item: entry for item, entry in self.load().items()
+            if item == key or entry["blocked_until"] > now
+        }
+        attempts = values.get(key, {}).get("attempts", 0) + 1
+        values[key] = {"blocked_until": now + 86400, "attempts": attempts}
+        self.write(values)
+        return attempts
+
+    def retry_after_cooldown(self, key: str, now: int, attempts_hint: int = 1) -> int:
+        values = self.load()
+        entry = values.get(key)
+        if entry is None:
+            entry = {"blocked_until": now, "attempts": max(1, attempts_hint)}
+            values[key] = entry
+        delay = min(
+            DISPATCH_RETRY_BASE_SECONDS * (2 ** min(entry["attempts"] - 1, 10)),
+            DISPATCH_RETRY_MAX_SECONDS,
+        )
+        entry["blocked_until"] = now + delay
+        self.write(values)
+        return delay
 
 
 class GitHubClient:
@@ -272,6 +350,12 @@ class GitHubClient:
             self.request("DELETE", f"{self.repo_path(repo)}/actions/runners/{runner_id}")
         except NotFound:
             return
+
+    def get_job(self, repo: str, job_id: int) -> dict[str, Any]:
+        job = self.request("GET", f"{self.repo_path(repo)}/actions/jobs/{job_id}")
+        if not isinstance(job, dict) or job.get("id") != job_id:
+            raise RunnerError("GitHub returned an invalid job response")
+        return job
 
 
 def validate_repositories(cfg: dict[str, Any]) -> list[str]:
@@ -364,11 +448,20 @@ def with_lock(path: Path):
     return handle
 
 
-def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *, metadata: dict[str, Any] | None = None) -> None:
+def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
+           metadata: dict[str, Any] | None = None,
+           dispatch_history_key: str | None = None) -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
+        now = int(time.time())
+        history = DispatchHistory(Path(cfg["state_dir"]))
+        if dispatch_history_key is not None:
+            if dispatch_history_key in store.pending_dispatch_keys():
+                raise RunnerError("dispatch target has pending cleanup")
+            if history.contains(dispatch_history_key, now):
+                raise RunnerError("dispatch target is still in retry history")
         if store.leases():
             raise RunnerError("maximum concurrency is 1; an active lease already exists")
         inventory = json.loads(helper(cfg, "list").stdout.decode("utf-8"))
@@ -379,10 +472,17 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *, metadat
         failures = capacity_errors(cfg)
         if failures:
             raise RunnerError("; ".join(failures))
-        state = {"lease": lease, "phase": "provisioning", "launched_at": int(time.time())}
+        state = {"lease": lease, "phase": "provisioning", "launched_at": now}
         if metadata:
             state.update(metadata)
+        if dispatch_history_key is not None:
+            if not isinstance(state.get("repo"), str) or not isinstance(state.get("runner_id"), int):
+                raise RunnerError("dispatch launch requires GitHub runner identity")
+            store.write_cleanup_obligation(lease, state, now)
         store.write(lease, state)
+        if dispatch_history_key is not None:
+            state["dispatch_attempts"] = history.add(dispatch_history_key, now)
+            store.write(lease, state)
         LOG.info("launch requested lease=%s", lease)
         try:
             helper(cfg, "launch", lease, stdin=jit)
@@ -395,6 +495,8 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *, metadat
             raise
         state["phase"] = "running"
         store.write(lease, state)
+        if dispatch_history_key is not None:
+            store.remove_cleanup(state)
         LOG.info("launch completed lease=%s", lease)
 
 
@@ -410,6 +512,47 @@ def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any]) ->
     client.delete_runner(repo, runner_id)
 
 
+def has_dispatch_target(state: dict[str, Any]) -> bool:
+    return isinstance(state.get("repo"), str) and isinstance(state.get("job_id"), int)
+
+
+def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
+                           state: dict[str, Any], now: int) -> None:
+    repo = state.get("repo")
+    job_id = state.get("job_id")
+    if client is None or not isinstance(repo, str) or not isinstance(job_id, int):
+        store.defer_handoff_check(state, now)
+        return
+    try:
+        job = client.get_job(repo, job_id)
+    except NotFound:
+        store.remove_cleanup(state)
+        LOG.info("dispatch handoff target no longer exists repo=%s job_id=%s", repo, job_id)
+        return
+    except RunnerError as exc:
+        LOG.warning("dispatch handoff could not be verified repo=%s job_id=%s error=%s",
+                    repo, job_id, exc)
+        store.defer_handoff_check(state, now)
+        return
+    status = job.get("status")
+    if status == "completed":
+        store.remove_cleanup(state)
+        LOG.info("dispatch handoff completed repo=%s job_id=%s", repo, job_id)
+        return
+    if status == "queued":
+        key = f"{repo}:{job_id}"
+        delay = DispatchHistory(store.directory).retry_after_cooldown(
+            key, now, int(state.get("dispatch_attempts", 1))
+        )
+        store.remove_cleanup(state)
+        LOG.info("dispatch handoff queued for retry repo=%s job_id=%s retry_after=%s",
+                 repo, job_id, delay)
+        return
+    store.defer_handoff_check(state, now)
+    LOG.info("dispatch handoff remains pending repo=%s job_id=%s status=%s",
+             repo, job_id, status if isinstance(status, str) else "invalid")
+
+
 def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None) -> None:
     lease = validate_lease_id(lease)
     store = StateStore(Path(cfg["state_dir"]))
@@ -423,8 +566,12 @@ def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None)
             store.defer_cleanup(lease, state, int(time.time()))
             raise
         else:
+            if has_dispatch_target(state):
+                store.write_handoff_obligation(lease, state, int(time.time()))
             store.remove(lease)
-            if isinstance(state.get("repo"), str) and isinstance(state.get("runner_id"), int):
+            if not has_dispatch_target(state) \
+                    and isinstance(state.get("repo"), str) \
+                    and isinstance(state.get("runner_id"), int):
                 store.remove_cleanup(state)
         LOG.info("destroy completed lease=%s", lease)
 
@@ -435,6 +582,10 @@ def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: i
                    if isinstance(state.get("repo"), str) and isinstance(state.get("runner_id"), int)}
     for state in store.cleanup_items():
         lease = validate_lease_id(str(state.get("lease", "")))
+        if state.get("phase") == "handoff_pending":
+            if int(state.get("next_retry_at", 0)) <= now:
+                retry_dispatch_handoff(store, client, state, now)
+            continue
         if state.get("phase") == "registration_pending" and store.cleanup_key(state) in active_keys:
             store.remove_cleanup(state)
             LOG.info("GitHub cleanup obligation transferred to active lease=%s", lease)
@@ -447,8 +598,12 @@ def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: i
             LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
             store.defer_cleanup(lease, state, now)
         else:
-            store.remove_cleanup(state)
-            LOG.info("GitHub runner cleanup completed lease=%s", lease)
+            if has_dispatch_target(state):
+                store.write_handoff_obligation(lease, state, now)
+                LOG.info("GitHub runner cleanup completed; handoff pending lease=%s", lease)
+            else:
+                store.remove_cleanup(state)
+                LOG.info("GitHub runner cleanup completed lease=%s", lease)
 
 
 def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
@@ -476,8 +631,11 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
                 LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
                 store.defer_cleanup(lease, states[lease], now)
             else:
+                if has_dispatch_target(states[lease]):
+                    store.write_handoff_obligation(lease, states[lease], now)
                 store.remove(lease)
-                if isinstance(states[lease].get("repo"), str) \
+                if not has_dispatch_target(states[lease]) \
+                        and isinstance(states[lease].get("repo"), str) \
                         and isinstance(states[lease].get("runner_id"), int):
                     store.remove_cleanup(states[lease])
         for lease in sorted(set(domains) - known):
@@ -492,11 +650,12 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
         return False
     now = int(time.time())
     history = DispatchHistory(Path(cfg["state_dir"]))
+    pending_dispatches = store.pending_dispatch_keys()
     label = str(cfg.get("runner_label", "trusted-heavy"))
     for repo in validate_repositories(cfg):
         for job in client.candidate_jobs(repo, label):
             key = f"{repo}:{job['job_id']}"
-            if history.contains(key, now):
+            if key in pending_dispatches or history.contains(key, now):
                 continue
             response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
             encoded = response.get("encoded_jit_config")
@@ -509,10 +668,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 "run_id": job["run_id"],
                 "job_id": job["job_id"],
             }
-            if isinstance(runner_id, int):
-                store.write_cleanup_obligation(lease, registration, int(time.time()))
             if not isinstance(encoded, str) or not isinstance(runner_id, int):
                 if isinstance(runner_id, int):
+                    store.write_cleanup_obligation(lease, registration, int(time.time()))
                     try:
                         client.delete_runner(repo, runner_id)
                     except RunnerError as exc:
@@ -528,9 +686,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     "runner_id": runner_id,
                     "run_id": job["run_id"],
                     "job_id": job["job_id"],
-                })
-                store.remove_cleanup(registration)
-                history.add(key, now)
+                }, dispatch_history_key=key)
                 LOG.info("dispatched repo=%s run_id=%s job_id=%s", repo, job["run_id"], job["job_id"])
                 return True
             except Exception:

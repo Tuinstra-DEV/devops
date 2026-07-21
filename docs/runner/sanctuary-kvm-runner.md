@@ -19,10 +19,15 @@ marcel-site, and tuinstra-site. This DevOps repository remains hosted-only and
 is intentionally excluded to prevent the runner control plane from executing
 its own changes.
 
-The adapter deduplicates job IDs for 24 hours. It launches at most one VM and
-removes the offline GitHub runner record if VM launch fails. Any malformed API
-response, permission error, transport failure, or rate limit fails closed;
-rate-limit responses honor a bounded retry interval.
+The adapter deduplicates completed job IDs for 24 hours. Repository JIT runners
+are label-scoped, so GitHub may assign a different queued heavy job than the one
+used to name the runner. After runner cleanup, the manager keeps a durable
+handoff tombstone, waits for API consistency, and retries a still-queued target
+with exponential cooldown capped at one hour. Pending handoffs block duplicate
+dispatch even if history is absent. It launches at most one VM and removes the
+offline GitHub runner record if VM launch fails. Any malformed API response,
+permission error, transport failure, or rate limit fails closed; rate-limit
+responses honor a bounded retry interval.
 
 For manual break-glass operation, a single-use JIT value can still be supplied
 to the manager using a mode `0600` file. Delete that host-side file immediately
@@ -151,7 +156,8 @@ Both the guest unit and an independent host timer enforce the 120-minute upper
 bound. The manager persists the repository and GitHub runner ID before launch;
 completed and forced leases delete the runner record idempotently. Failed API
 cleanup is moved to a private retry tombstone with bounded exponential delay and
-does not masquerade as a live VM lease.
+does not masquerade as a live VM lease. Dispatch handoffs use the same durable
+state boundary until the target is terminal or safely scheduled for retry.
 
 ## Audit and retention
 
