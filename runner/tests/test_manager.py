@@ -198,6 +198,63 @@ class ManagerTests(unittest.TestCase):
             self.assertIn(("destroy", "new-job"),
                           [call.args[1:] for call in helper.call_args_list])
 
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(manager, "capacity_errors", return_value=[])
+    @mock.patch.object(manager, "helper")
+    def test_dispatch_launch_records_history_and_lease_under_lifecycle_lock(
+            self, helper, _capacity, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            helper.side_effect = [mock.Mock(stdout=b"{}"), mock.Mock()]
+
+            manager.launch(
+                cfg,
+                "gh-20",
+                base64.b64encode(b"opaque"),
+                metadata={
+                    "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                    "run_id": 10, "job_id": 20,
+                },
+                dispatch_history_key="Tuinstra-DEV/gate:20",
+            )
+
+            store = manager.StateStore(cfg["state_dir"])
+            self.assertEqual(store.leases()[0]["dispatch_attempts"], 1)
+            self.assertEqual(store.leases()[0]["phase"], "running")
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertTrue(
+                manager.DispatchHistory(cfg["state_dir"]).contains("Tuinstra-DEV/gate:20", 1001)
+            )
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(manager, "capacity_errors", return_value=[])
+    @mock.patch.object(manager, "helper")
+    def test_dispatch_launch_rechecks_pending_cleanup_under_lifecycle_lock(
+            self, helper, _capacity, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write_cleanup_state({
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "job_id": 20, "phase": "cleanup_pending", "next_retry_at": 2000,
+            })
+
+            with self.assertRaisesRegex(manager.RunnerError, "pending cleanup"):
+                manager.launch(
+                    cfg,
+                    "gh-20",
+                    base64.b64encode(b"opaque"),
+                    metadata={
+                        "repo": "Tuinstra-DEV/gate", "runner_id": 31,
+                        "run_id": 10, "job_id": 20,
+                    },
+                    dispatch_history_key="Tuinstra-DEV/gate:20",
+                )
+
+            helper.assert_not_called()
+
     def test_candidate_jobs_filter_status_and_label(self):
         client = manager.GitHubClient("secret")
         client.request = mock.Mock(side_effect=[
@@ -233,12 +290,46 @@ class ManagerTests(unittest.TestCase):
         client.request = mock.Mock(side_effect=manager.NotFound("gone"))
         client.delete_runner("Tuinstra-DEV/gate", 30)
 
+    def test_get_job_uses_repository_scoped_actions_endpoint(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(return_value={"id": 20, "status": "queued", "runner_name": ""})
+
+        self.assertEqual(
+            client.get_job("Tuinstra-DEV/gate", 20),
+            {"id": 20, "status": "queued", "runner_name": ""},
+        )
+        client.request.assert_called_once_with("GET", "/repos/Tuinstra-DEV/gate/actions/jobs/20")
+
     def test_dispatch_history_deduplicates_job(self):
         with tempfile.TemporaryDirectory() as directory:
             history = manager.DispatchHistory(Path(directory))
             history.add("Tuinstra-DEV/gate:123", 1000)
             self.assertTrue(history.contains("Tuinstra-DEV/gate:123", 1001))
-            self.assertFalse(history.contains("Tuinstra-DEV/gate:123", 90000))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:123", 87400))
+
+    def test_dispatch_history_retries_unassigned_job_after_bounded_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = manager.DispatchHistory(Path(directory))
+            history.add("Tuinstra-DEV/gate:123", 1000)
+
+            delay = history.retry_after_cooldown("Tuinstra-DEV/gate:123", 1001)
+
+            self.assertEqual(delay, manager.DISPATCH_RETRY_BASE_SECONDS)
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:123", 1060))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:123", 1061))
+
+    def test_dispatch_history_retry_backoff_is_capped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = manager.DispatchHistory(Path(directory))
+            key = "Tuinstra-DEV/gate:123"
+            now = 1000
+            delay = 0
+            for _ in range(20):
+                history.add(key, now)
+                delay = history.retry_after_cooldown(key, now)
+                now += delay
+
+            self.assertEqual(delay, manager.DISPATCH_RETRY_MAX_SECONDS)
 
     @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
     def test_dispatch_deletes_generated_runner_when_launch_fails(self, _launch):
@@ -276,6 +367,7 @@ class ManagerTests(unittest.TestCase):
                 "gh-20",
                 mock.ANY,
                 metadata={"repo": "Tuinstra-DEV/gate", "runner_id": 30, "run_id": 10, "job_id": 20},
+                dispatch_history_key="Tuinstra-DEV/gate:20",
             )
             self.assertEqual(launch.call_args.args[2], base64.b64encode(b"jit"))
             self.assertEqual(list((root / "run").iterdir()), [])
@@ -294,9 +386,11 @@ class ManagerTests(unittest.TestCase):
                    "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
             (root / "run").mkdir()
 
-            def ambiguous_launch(launch_cfg, lease, _jit, *, metadata=None):
+            def ambiguous_launch(launch_cfg, lease, _jit, *, metadata=None,
+                                 dispatch_history_key=None):
                 state = {"lease": lease, "phase": "provisioning_failed", "launched_at": 1}
                 state.update(metadata or {})
+                self.assertEqual(dispatch_history_key, "Tuinstra-DEV/gate:20")
                 manager.StateStore(Path(launch_cfg["state_dir"])).write(lease, state)
                 raise manager.RunnerError("launch failed")
 
@@ -311,7 +405,7 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(store.leases()[0]["phase"], "provisioning_failed")
 
     @mock.patch.object(manager, "launch", side_effect=manager.RunnerError("launch failed"))
-    def test_repeated_failed_job_registrations_keep_distinct_cleanup_obligations(self, _launch):
+    def test_pending_cleanup_blocks_duplicate_job_registration(self, _launch):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             client = mock.Mock()
@@ -325,12 +419,14 @@ class ManagerTests(unittest.TestCase):
                    "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
             (root / "run").mkdir()
 
-            for _ in range(2):
-                with self.assertRaisesRegex(manager.RunnerError, "launch failed"):
-                    manager.dispatch_once(cfg, client)
+            with self.assertRaisesRegex(manager.RunnerError, "launch failed"):
+                manager.dispatch_once(cfg, client)
+
+            self.assertFalse(manager.dispatch_once(cfg, client))
 
             cleanup = manager.StateStore(root / "state").cleanup_items()
-            self.assertEqual({item["runner_id"] for item in cleanup}, {30, 31})
+            self.assertEqual({item["runner_id"] for item in cleanup}, {30})
+            client.generate_jit.assert_called_once()
 
     def test_malformed_jit_cleanup_failure_is_durable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -359,6 +455,27 @@ class ManagerTests(unittest.TestCase):
             client.candidate_jobs.return_value = [{"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
             cfg = {"state_dir": state, "repositories": ["Tuinstra-DEV/gate"], "runner_label": "trusted-heavy"}
             self.assertFalse(manager.dispatch_once(cfg, client))
+            client.generate_jit.assert_not_called()
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_dispatch_skips_job_with_pending_handoff_when_history_is_missing(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            store = manager.StateStore(state)
+            store.write_cleanup_state({
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "job_id": 20, "phase": "handoff_pending", "next_retry_at": 2000,
+            })
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            cfg = {"state_dir": state, "repositories": ["Tuinstra-DEV/gate"],
+                   "runner_label": "trusted-heavy"}
+
+            self.assertFalse(manager.dispatch_once(cfg, client))
+
             client.generate_jit.assert_not_called()
 
     @mock.patch.object(manager, "helper")
@@ -390,6 +507,132 @@ class ManagerTests(unittest.TestCase):
             client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
             self.assertEqual(store.leases(), [])
 
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_manual_destroy_preserves_dispatch_handoff_until_queued_retry(self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            client = mock.Mock()
+            client.get_job.return_value = {"id": 20, "status": "queued", "runner_name": ""}
+
+            manager.destroy(cfg, "gh-20", client)
+
+            helper.assert_called_once_with(cfg, "destroy", "gh-20")
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(store.leases(), [])
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1091))
+
+    @staticmethod
+    def write_finished_dispatch(store, history, *, now=1000):
+        store.write("gh-20", {
+            "lease": "gh-20", "launched_at": 1,
+            "repo": "Tuinstra-DEV/gate", "runner_id": 30, "job_id": 20,
+            "dispatch_attempts": 1,
+        })
+        history.add("Tuinstra-DEV/gate:20", now)
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_reconcile_defers_unassigned_handoff_until_grace_then_cooldown(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.get_job.return_value = {
+                "id": 20, "status": "queued", "runner_name": "stale-runner-name",
+            }
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual(store.leases(), [])
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+            client.get_job.assert_not_called()
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1030))
+
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1090))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1091))
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_reconcile_completed_target_keeps_terminal_history(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.get_job.return_value = {
+                "id": 20, "status": "completed", "conclusion": "cancelled",
+                "runner_name": "sanctuary-20",
+            }
+
+            manager.reconcile(cfg, client)
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1031))
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_reconcile_api_failure_preserves_handoff_for_retry(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.get_job.side_effect = manager.RunnerError("GitHub API unavailable")
+
+            manager.reconcile(cfg, client)
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            pending = store.cleanup_items()[0]
+            self.assertEqual(pending["phase"], "handoff_pending")
+            self.assertGreater(pending["next_retry_at"], 1031)
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1031))
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_reconcile_in_progress_handoff_is_rechecked(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.get_job.return_value = {
+                "id": 20, "status": "in_progress", "runner_name": "another-runner",
+            }
+
+            manager.reconcile(cfg, client)
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1031))
+
     @mock.patch.object(manager, "helper")
     def test_reconcile_moves_failed_github_cleanup_to_tombstone(self, helper):
         with tempfile.TemporaryDirectory() as directory:
@@ -409,6 +652,86 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(store.leases(), [])
             self.assertEqual(store.cleanup_items()[0]["runner_id"], 30)
             self.assertGreater(store.cleanup_items()[0]["next_retry_at"], 0)
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    def test_cleanup_retry_preserves_dispatch_handoff_until_queued_retry(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock", "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            self.write_finished_dispatch(store, history)
+            helper.side_effect = [mock.Mock(stdout=b'{"gh-20":"shut off"}'), mock.Mock()]
+            client = mock.Mock()
+            client.delete_runner.side_effect = [manager.RunnerError("cleanup unavailable"), None]
+            client.get_job.return_value = {"id": 20, "status": "queued", "runner_name": ""}
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual(store.cleanup_items()[0]["phase"], "cleanup_pending")
+            manager.retry_pending_cleanup(store, client, 1031)
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+            manager.retry_pending_cleanup(store, client, 1061)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1121))
+
+    def test_history_write_failure_retains_durable_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            history = manager.DispatchHistory(store.directory)
+            state = {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "job_id": 20, "phase": "handoff_pending", "next_retry_at": 1,
+            }
+            history.add("Tuinstra-DEV/gate:20", 1000)
+            store.write_cleanup_state(state)
+            client = mock.Mock()
+            client.get_job.return_value = {"id": 20, "status": "queued", "runner_name": ""}
+
+            with mock.patch.object(manager.DispatchHistory, "write", side_effect=OSError("disk full")), \
+                    self.assertRaisesRegex(OSError, "disk full"):
+                manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+
+    def test_handoff_recreates_missing_history_with_bounded_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            state = {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "job_id": 20, "dispatch_attempts": 3,
+                "phase": "handoff_pending", "next_retry_at": 1,
+            }
+            store.write_cleanup_state(state)
+            client = mock.Mock()
+            client.get_job.return_value = {"id": 20, "status": "queued", "runner_name": ""}
+
+            manager.retry_pending_cleanup(store, client, 1000)
+
+            history = manager.DispatchHistory(store.directory)
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1239))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1240))
+            self.assertEqual(store.cleanup_items(), [])
+
+    def test_missing_github_job_finishes_handoff_without_retry_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = manager.StateStore(Path(directory))
+            history = manager.DispatchHistory(store.directory)
+            state = {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "job_id": 20, "phase": "handoff_pending", "next_retry_at": 1,
+            }
+            history.add("Tuinstra-DEV/gate:20", 1000)
+            store.write_cleanup_state(state)
+            client = mock.Mock()
+            client.get_job.side_effect = manager.NotFound("gone")
+
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1031))
 
     def test_due_cleanup_tombstone_is_retried_and_removed(self):
         with tempfile.TemporaryDirectory() as directory:
