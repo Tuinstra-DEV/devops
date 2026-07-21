@@ -46,9 +46,16 @@ ansible-playbook --check --diff --limit sanctuary site.yml \
 sudo kvm-ok
 sudo virsh net-info sanctuary-ci
 sudo nft list table inet sanctuary_ci
-sudo systemctl status ci-runner-manager libvirtd sanctuary-ci-firewall
-sudo -u ci-runner-manager /usr/local/bin/ci-runner-manager reconcile
+sudo systemctl status ci-runner-manager ci-runner-host-helper.socket libvirtd sanctuary-ci-firewall
+sudo systemctl show ci-runner-manager -p NoNewPrivileges
+sudo stat -c '%U:%G %a %n' /run/ci-runner-host-helper.sock
+sudo journalctl -u ci-runner-manager -u 'ci-runner-host-helper@*' --since '-5 minutes'
 ```
+
+The manager must report `NoNewPrivileges=yes`; `/etc/sudoers.d/ci-runner-manager`
+must not exist. The helper socket must be owned by `ci-runner-manager`, mode
+`0600`, and the broker must reject every other peer UID. Do not weaken this
+boundary to a group-writable socket or a wildcard sudo rule.
 
 Launch a non-production canary and verify: exact `trusted-heavy` routing; 8
 vCPU, 12 GiB RAM and 120 GiB disk; rejection of a second launch; public GitHub
@@ -58,7 +65,8 @@ the JIT payload.
 
 Repeat a failure canary with the manager stopped. Confirm the guest and host
 timer power the VM off at the configured upper bound, then restart the manager
-and confirm the local lease, overlay, seed and GitHub runner record are removed.
+and confirm its normal reconciliation removes the local lease, overlay, seed
+and GitHub runner record.
 Simulate one failed GitHub deletion and verify a private cleanup tombstone is
 retried without blocking the next VM admission.
 
@@ -70,9 +78,10 @@ and all non-`sanctuary_ci` nftables tables unchanged.
 
 Disable the runner group first. Preserve the audit log and job identifiers, but
 never copy a seed ISO or JIT value into a ticket. Stop the listener, allow the
-current job to finish unless containment requires termination, run
-`ci-runner-manager reconcile`, and confirm that no `sanctuary-ci-*` domain or
-lease directory remains.
+current job to finish unless containment requires termination, restart the
+manager to run reconciliation through its systemd credential and socket
+boundaries, and confirm that no `sanctuary-ci-*` domain or lease directory
+remains.
 
 ## Hosted rollback
 

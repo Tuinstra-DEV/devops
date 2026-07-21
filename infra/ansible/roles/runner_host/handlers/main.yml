@@ -1,4 +1,10 @@
 ---
+- name: Restart runner host helper socket
+  ansible.builtin.systemd:
+    name: ci-runner-host-helper.socket
+    state: restarted
+    daemon_reload: true
+
 - name: Restart runner manager
   ansible.builtin.systemd:
     name: ci-runner-manager.service

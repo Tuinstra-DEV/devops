@@ -170,18 +170,18 @@
     - { src: runner/host-helper/ci_runner_host_helper.py, dest: /usr/local/libexec/ci-runner-host-helper, mode: '0755' }
     - { src: runner/config/manager.toml, dest: /etc/ci-runner/manager.toml, group: ci-runner-manager, mode: '0640' }
     - { src: runner/systemd/ci-runner-manager.service, dest: /etc/systemd/system/ci-runner-manager.service, mode: '0644' }
+    - { src: runner/systemd/ci-runner-host-helper.socket, dest: /etc/systemd/system/ci-runner-host-helper.socket, mode: '0644' }
+    - { src: runner/systemd/ci-runner-host-helper@.service, dest: /etc/systemd/system/ci-runner-host-helper@.service, mode: '0644' }
     - { src: runner/systemd/sanctuary-ci-firewall.service, dest: /etc/systemd/system/sanctuary-ci-firewall.service, mode: '0644' }
     - { src: runner/logrotate/ci-runner-audit, dest: /etc/logrotate.d/ci-runner-audit, mode: '0644' }
-  notify: Restart runner manager
+  notify:
+    - Restart runner host helper socket
+    - Restart runner manager
 
-- name: Install validated sudo policy
-  ansible.builtin.template:
-    src: ci-runner-manager.sudoers.j2
+- name: Remove obsolete runner manager sudo policy
+  ansible.builtin.file:
     dest: /etc/sudoers.d/ci-runner-manager
-    owner: root
-    group: root
-    mode: '0440'
-    validate: /usr/sbin/visudo -cf %s
+    state: absent
 
 - name: Install isolated network definition
   ansible.builtin.template:
@@ -278,4 +278,5 @@
   loop:
     - libvirtd.service
     - sanctuary-ci-firewall.service
+    - ci-runner-host-helper.socket
     - ci-runner-manager.service

@@ -1,0 +1,13 @@
+[Unit]
+Description=Sanctuary CI root helper socket
+
+[Socket]
+ListenSequentialPacket=/run/ci-runner-host-helper.sock
+Accept=yes
+MaxConnections=4
+SocketUser=ci-runner-manager
+SocketMode=0600
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

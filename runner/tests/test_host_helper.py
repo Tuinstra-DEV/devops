@@ -1,4 +1,9 @@
+import base64
+import contextlib
+import io
+import json
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -7,6 +12,18 @@ import ci_runner_host_helper as helper
 
 
 class HostHelperTests(unittest.TestCase):
+    request_id = "a" * 32
+
+    @staticmethod
+    def decoded_response(connection):
+        return json.loads(connection.sendall.call_args.args[0])
+
+    @staticmethod
+    def connection_for_uid(uid):
+        connection = mock.Mock()
+        connection.getsockopt.return_value = struct.pack("3i", 123, uid, 456)
+        return connection
+
     def test_domain_name_is_namespaced(self):
         self.assertEqual(helper.name("job-9"), "sanctuary-ci-job-9")
 
@@ -18,11 +35,11 @@ class HostHelperTests(unittest.TestCase):
     @mock.patch.object(helper, "run")
     @mock.patch.object(helper, "resolved_base_image")
     @mock.patch.object(helper.os, "geteuid", return_value=0)
-    def test_launch_rejects_existing_domain_before_reading_secret(self, _euid, image, run):
+    def test_launch_rejects_existing_domain_before_mutation(self, _euid, image, run):
         image.return_value = mock.Mock()
         run.return_value = mock.Mock(stdout="sanctuary-ci-existing\n")
         with self.assertRaisesRegex(RuntimeError, "domain already exists"):
-            helper.launch("new")
+            helper.launch("new", b"aml0")
 
     @mock.patch.object(helper.Path, "is_file", return_value=True)
     @mock.patch.object(helper.Path, "resolve")
@@ -50,8 +67,115 @@ class HostHelperTests(unittest.TestCase):
         self.assertIn(mock.call([
             "systemd-run", "--unit", "sanctuary-ci-expire-lease",
             "--on-active", "7200s", "--timer-property", "AccuracySec=30s",
+            "--property=NoNewPrivileges=yes", "--property=ProtectSystem=strict",
+            "--property=ProtectHome=yes", "--property=PrivateTmp=yes",
+            "--property=ReadWritePaths=/mnt/ssd1000-01/ci-runner /run/lock",
+            "--property=RestrictAddressFamilies=AF_UNIX",
             "/usr/local/libexec/ci-runner-host-helper", "destroy", "lease",
         ]), run.call_args_list)
+
+    def test_serve_rejects_untrusted_peer_before_reading_request(self):
+        connection = self.connection_for_uid(1001)
+
+        helper.serve_connection(connection, expected_uid=1002)
+
+        connection.recv.assert_not_called()
+        self.assertEqual(self.decoded_response(connection)["error"], "unauthorized")
+
+    def test_parse_request_enforces_exact_operation_schemas(self):
+        valid = [
+            {"v": 1, "id": self.request_id, "op": "list"},
+            {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1"},
+            {"v": 1, "id": self.request_id, "op": "destroy", "lease": "job-1"},
+        ]
+        for request in valid:
+            with self.subTest(request=request):
+                self.assertEqual(helper.parse_request(json.dumps(request).encode()), request)
+
+        invalid = [
+            {"v": True, "id": self.request_id, "op": "list"},
+            {"v": 1, "id": self.request_id.upper(), "op": "list"},
+            {"v": 1, "id": self.request_id, "op": "unknown"},
+            {"v": 1, "id": self.request_id, "op": "list", "lease": "extra"},
+            {"v": 1, "id": self.request_id, "op": "destroy"},
+            {"v": 1, "id": self.request_id, "op": "launch", "lease": "../escape"},
+            {"v": 1, "id": self.request_id, "op": "list", "extra": False},
+        ]
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(helper.ProtocolError):
+                helper.parse_request(json.dumps(request).encode())
+        duplicate = ('{"v":1,"id":"' + self.request_id +
+                     '","op":"list","op":"list"}').encode()
+        with self.assertRaises(helper.ProtocolError):
+            helper.parse_request(duplicate)
+
+    def test_request_and_jit_packets_are_size_limited(self):
+        with self.assertRaises(helper.ProtocolError):
+            helper.parse_request(b"x" * (helper.MAX_REQUEST_BYTES + 1))
+        with self.assertRaises(helper.ProtocolError):
+            helper.validate_jit_payload(b"Y" * (helper.MAX_JIT_BYTES + 1))
+
+    @mock.patch.object(helper, "launch")
+    def test_serve_passes_validated_raw_jit_packet_to_launch(self, launch):
+        connection = self.connection_for_uid(1002)
+        request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1"}
+        jit = base64.b64encode(b"ephemeral registration material")
+        connection.recv.side_effect = [json.dumps(request).encode(), jit]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(helper, "HELPER_LOCK", Path(directory) / "helper.lock"):
+            helper.serve_connection(connection, expected_uid=1002)
+
+        launch.assert_called_once_with("job-1", jit)
+        self.assertEqual(connection.settimeout.call_args_list, [mock.call(5.0), mock.call(None)])
+        self.assertEqual(self.decoded_response(connection), {
+            "v": 1, "id": self.request_id, "ok": True, "result": None,
+        })
+
+    @mock.patch.object(helper, "launch")
+    def test_serve_validates_jit_before_launch_mutation(self, launch):
+        connection = self.connection_for_uid(1002)
+        request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1"}
+        connection.recv.side_effect = [json.dumps(request).encode(), b"not base64!!"]
+
+        helper.serve_connection(connection, expected_uid=1002)
+
+        launch.assert_not_called()
+        self.assertEqual(self.decoded_response(connection)["error"], "invalid_request")
+        self.assertEqual(self.decoded_response(connection)["id"], self.request_id)
+
+    @mock.patch.object(helper, "launch")
+    def test_operation_errors_are_sanitized_in_response(self, launch):
+        connection = self.connection_for_uid(1002)
+        request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1"}
+        secret = "sensitive-jit-material"
+        connection.recv.side_effect = [json.dumps(request).encode(), base64.b64encode(b"jit")]
+        launch.side_effect = RuntimeError(secret)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(helper, "HELPER_LOCK", Path(directory) / "helper.lock"), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            helper.serve_connection(connection, expected_uid=1002)
+
+        encoded = connection.sendall.call_args.args[0]
+        self.assertNotIn(secret.encode(), encoded)
+        self.assertNotIn(secret, stderr.getvalue())
+        self.assertIn("RuntimeError", stderr.getvalue())
+        self.assertEqual(json.loads(encoded)["error"], "operation_failed")
+
+    @mock.patch.object(helper, "run")
+    def test_libvirt_commands_use_explicit_system_uri(self, run):
+        run.return_value = mock.Mock(stdout="")
+        helper.list_leases()
+        helper.destroy("lease")
+
+        for call in run.call_args_list:
+            command = call.args[0]
+            if command[0] == "virsh":
+                self.assertEqual(command[1:3], ["--connect", "qemu:///system"])
+
+    def test_response_falls_back_when_result_exceeds_packet_limit(self):
+        encoded = helper.encode_response(self.request_id, result="x" * helper.MAX_RESPONSE_BYTES)
+        self.assertLessEqual(len(encoded), helper.MAX_RESPONSE_BYTES)
+        self.assertEqual(json.loads(encoded)["error"], "operation_failed")
 
 
 if __name__ == "__main__":
