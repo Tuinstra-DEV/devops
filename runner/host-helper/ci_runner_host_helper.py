@@ -140,6 +140,10 @@ bootcmd:
   - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.runner]
   - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials]
   - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials_rsaparams]
+  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.runner_migrated]
+  - [install, -o, ci-runner, -g, ci-runner, -m, '0600', /dev/null, /opt/actions-runner/.credentials_migrated]
+  - [chown, root:ci-runner, /opt/actions-runner]
+  - [chmod, '1770', /opt/actions-runner]
 write_files:
   - path: /run/ci-runner/jit.config
     owner: ci-runner:ci-runner
@@ -151,7 +155,8 @@ write_files:
     permissions: '0644'
     content: |
       [Service]
-      ReadWritePaths=/opt/actions-runner/.runner /opt/actions-runner/.credentials /opt/actions-runner/.credentials_rsaparams
+      ReadWritePaths=/opt/actions-runner
+      UMask=0077
 runcmd:
   - [systemctl, daemon-reload]
   - [systemctl, start, --no-block, ci-runner-job.service]

@@ -68,6 +68,10 @@ fork pull requests select this machine.
 - The base image is root-owned and mode `0444`. The overlay root and per-job
   lease directories are root-owned, group `kvm`, and mode `0710`. Only the
   isolated `libvirt-qemu` account owns the mode `0600` overlay and seed images.
+- Inside each one-job guest, existing runner files remain root-owned and
+  non-writable. Cloud-init makes only the top-level runner directory sticky and
+  group-writable so upstream JIT configuration can atomically replace its own
+  mode `0600` runtime files; the entire overlay is destroyed after the job.
 - A running lease older than `max_lease_seconds` (default 7,200 seconds) is
   destroyed by reconciliation even if libvirt still reports it running.
 

@@ -29,9 +29,13 @@ class HostHelperTests(unittest.TestCase):
 
     def test_cloud_init_queues_runner_after_cloud_final_without_deadlock(self):
         user_data = helper.cloud_init_user_data(base64.b64encode(b"opaque-jit"))
-        for filename in (".runner", ".credentials", ".credentials_rsaparams"):
+        for filename in (".runner", ".credentials", ".credentials_rsaparams",
+                         ".runner_migrated", ".credentials_migrated"):
             self.assertIn(f"/opt/actions-runner/{filename}", user_data)
-        self.assertIn("ReadWritePaths=/opt/actions-runner/.runner /opt/actions-runner/.credentials /opt/actions-runner/.credentials_rsaparams", user_data)
+        self.assertIn("- [chown, root:ci-runner, /opt/actions-runner]", user_data)
+        self.assertIn("- [chmod, '1770', /opt/actions-runner]", user_data)
+        self.assertIn("ReadWritePaths=/opt/actions-runner", user_data)
+        self.assertIn("UMask=0077", user_data)
         self.assertIn("- [systemctl, daemon-reload]", user_data)
         self.assertIn("- [systemctl, start, --no-block, ci-runner-job.service]", user_data)
         self.assertNotIn("- [systemctl, start, ci-runner-job.service]", user_data)
