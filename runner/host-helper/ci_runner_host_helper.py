@@ -29,8 +29,9 @@ BASE_IMAGE = IMAGE_ROOT / "ubuntu-24.04-runner.qcow2"
 IMAGE_RE = re.compile(r"^ubuntu-24\.04-runner-[a-f0-9]{64}\.qcow2$")
 NETWORK = "sanctuary-ci"
 LIBVIRT_URI = "qemu:///system"
-VCPUS = "8"
-MEMORY_MIB = "12288"
+MAX_CONCURRENCY = 2
+VCPUS = 4
+MEMORY_MIB = 6144
 DISK_GIB = "120G"
 MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
@@ -131,6 +132,15 @@ def validate_jit_payload(encoded_jit: bytes) -> bytes:
     return encoded_jit
 
 
+def validate_resources(vcpus: Any, memory_mib: Any) -> tuple[int, int]:
+    if not isinstance(vcpus, int) or isinstance(vcpus, bool) or vcpus != VCPUS:
+        raise ProtocolError(f"vcpus must be exactly {VCPUS}")
+    if not isinstance(memory_mib, int) or isinstance(memory_mib, bool) \
+            or memory_mib != MEMORY_MIB:
+        raise ProtocolError(f"memory_mib must be exactly {MEMORY_MIB}")
+    return vcpus, memory_mib
+
+
 def cloud_init_user_data(encoded_jit: bytes) -> str:
     encoded_jit = validate_jit_payload(encoded_jit)
     return """#cloud-config
@@ -178,17 +188,24 @@ runcmd:
 """ % base64.b64encode(encoded_jit).decode("ascii")
 
 
-def launch(lease: str, encoded_jit: bytes | None = None) -> None:
+def launch(lease: str, encoded_jit: bytes | None = None, *,
+           vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB) -> None:
     if os.geteuid() != 0:
         raise PermissionError("helper must run as root")
     validate_lease(lease)
     if encoded_jit is None:
         encoded_jit = sys.stdin.buffer.read(MAX_JIT_BYTES + 1).strip()
     encoded_jit = validate_jit_payload(encoded_jit)
+    vcpus, memory_mib = validate_resources(vcpus, memory_mib)
     base_image = resolved_base_image()
     existing = run(["virsh", "--connect", LIBVIRT_URI, "list", "--all", "--name"])
-    if any(line.startswith(PREFIX) for line in existing.stdout.splitlines()):
-        raise RuntimeError("a sanctuary CI domain already exists")
+    runner_domains = [
+        line for line in existing.stdout.splitlines() if line.startswith(PREFIX)
+    ]
+    if len(runner_domains) >= MAX_CONCURRENCY:
+        raise RuntimeError("all sanctuary CI domain slots are occupied")
+    if name(lease) in runner_domains:
+        raise RuntimeError("sanctuary CI domain already exists")
     directory = lease_dir(lease)
     if directory.exists():
         raise FileExistsError("lease directory already exists")
@@ -210,7 +227,7 @@ def launch(lease: str, encoded_jit: bytes | None = None) -> None:
             run(["cloud-localds", str(seed), str(temp / "user-data"), str(temp / "meta-data")])
         set_qemu_access(seed, qemu_uid, qemu_gid, 0o600)
         run(["virt-install", "--connect", LIBVIRT_URI,
-             "--name", name(lease), "--memory", MEMORY_MIB, "--vcpus", VCPUS,
+             "--name", name(lease), "--memory", str(memory_mib), "--vcpus", str(vcpus),
              "--cpu", "host-passthrough", "--import", "--noautoconsole", "--os-variant", "ubuntu24.04",
              "--disk", f"path={overlay},format=qcow2,bus=virtio,cache=none,discard=unmap",
              "--disk", f"path={seed},device=cdrom,readonly=on",
@@ -266,7 +283,10 @@ def parse_request(packet: bytes) -> dict[str, Any]:
         if set(request) != {"v", "id", "op"}:
             raise ProtocolError("invalid list request schema")
     elif operation in {"launch", "destroy"}:
-        if set(request) != {"v", "id", "op", "lease"}:
+        expected = {"v", "id", "op", "lease"}
+        if operation == "launch":
+            expected.update({"vcpus", "memory_mib"})
+        if set(request) != expected:
             raise ProtocolError("invalid mutation request schema")
         lease = request.get("lease")
         if not isinstance(lease, str):
@@ -275,6 +295,8 @@ def parse_request(packet: bytes) -> dict[str, Any]:
             validate_lease(lease)
         except ValueError as exc:
             raise ProtocolError("invalid lease") from exc
+        if operation == "launch":
+            validate_resources(request.get("vcpus"), request.get("memory_mib"))
     else:
         raise ProtocolError("invalid operation")
     return request
@@ -346,7 +368,10 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
             if request["op"] == "list":
                 result: Any = list_leases()
             elif request["op"] == "launch":
-                launch(request["lease"], jit_payload)
+                launch(
+                    request["lease"], jit_payload,
+                    vcpus=request["vcpus"], memory_mib=request["memory_mib"],
+                )
                 result = None
             else:
                 destroy(request["lease"])

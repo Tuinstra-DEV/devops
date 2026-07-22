@@ -23,6 +23,28 @@ class ManagerTests(unittest.TestCase):
         )
         return connection, packets
 
+    def test_config_enforces_exact_runner_resource_contract(self):
+        source_path = Path(__file__).parents[1] / "config" / "manager.toml"
+        source = source_path.read_text(encoding="utf-8")
+        cfg = manager.load_config(source_path)
+        self.assertEqual(
+            (cfg["max_concurrency"], cfg["runner_vcpus"], cfg["runner_memory_mib"]),
+            (2, 4, 6144),
+        )
+
+        replacements = (
+            ("max_concurrency = 2", "max_concurrency = 3"),
+            ("runner_vcpus = 4", "runner_vcpus = true"),
+            ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
+            ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
+        )
+        for expected, invalid in replacements:
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "manager.toml"
+                path.write_text(source.replace(expected, invalid), encoding="utf-8")
+                with self.assertRaises(manager.RunnerError):
+                    manager.load_config(path)
+
     @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)
     @mock.patch.object(manager.socket, "socket")
     def test_helper_list_uses_bounded_seqpacket_protocol(self, socket_factory, _token):
@@ -47,6 +69,12 @@ class ManagerTests(unittest.TestCase):
         manager.helper({"helper_socket": "/run/helper.sock"}, "launch", "lease-1", stdin=jit)
         self.assertEqual(packets[1], jit)
         self.assertNotIn(jit, packets[0])
+        request = json.loads(packets[0])
+        self.assertEqual(request["vcpus"], 4)
+        self.assertEqual(request["memory_mib"], 6144)
+        self.assertEqual(
+            set(request), {"v", "id", "op", "lease", "vcpus", "memory_mib"}
+        )
 
     @mock.patch.object(manager.secrets, "token_hex", return_value="c" * 32)
     @mock.patch.object(manager.socket, "socket")
@@ -138,12 +166,50 @@ class ManagerTests(unittest.TestCase):
 
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
     @mock.patch.object(manager.os, "cpu_count", return_value=4)
+    @mock.patch.object(manager, "memory_total_mib", return_value=20000)
     @mock.patch.object(manager, "memory_available_mib", return_value=20000)
     @mock.patch.object(manager.shutil, "disk_usage")
-    def test_capacity_rejects_small_cpu_host(self, disk, _memory, _cpu, _load):
+    def test_capacity_rejects_small_cpu_host(
+            self, disk, _available, _total, _cpu, _load):
         disk.return_value = mock.Mock(free=200 * 1024**3)
-        cfg = {"min_free_memory_mib": 14000, "min_free_disk_gib": 140, "max_load_1m": 8, "overlay_root": "/x"}
-        self.assertIn("host has fewer than 8 logical CPUs", manager.capacity_errors(cfg))
+        cfg = {"host_memory_reserve_mib": 4000, "min_free_disk_gib": 140,
+               "max_load_1m": 8, "overlay_root": "/x"}
+        self.assertIn(
+            "host has fewer than 8 logical CPUs required for projected runners",
+            manager.capacity_errors(cfg, 2),
+        )
+
+    @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
+    @mock.patch.object(manager.os, "cpu_count", return_value=8)
+    @mock.patch.object(manager, "memory_total_mib", return_value=20000)
+    @mock.patch.object(manager, "memory_available_mib", return_value=10000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_capacity_blocks_second_launch_when_projected_memory_breaches_reserve(
+            self, disk, _available, _total, _cpu, _load):
+        disk.return_value = mock.Mock(free=200 * 1024**3)
+        cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 140,
+               "max_load_1m": 8, "overlay_root": "/x"}
+
+        self.assertIn(
+            "host projected free memory is below the configured reserve",
+            manager.capacity_errors(cfg, 2),
+        )
+
+    @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
+    @mock.patch.object(manager.os, "cpu_count", return_value=8)
+    @mock.patch.object(manager, "memory_total_mib", return_value=16000)
+    @mock.patch.object(manager, "memory_available_mib", return_value=15000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_capacity_rejects_projected_total_memory_oversubscription(
+            self, disk, _available, _total, _cpu, _load):
+        disk.return_value = mock.Mock(free=200 * 1024**3)
+        cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 140,
+               "max_load_1m": 8, "overlay_root": "/x"}
+
+        self.assertIn(
+            "host memory cannot fit projected runners and reserve",
+            manager.capacity_errors(cfg, 2),
+        )
 
     @mock.patch.object(manager, "helper")
     def test_reconcile_destroys_powered_off_and_orphan_domains(self, helper):
@@ -170,8 +236,31 @@ class ManagerTests(unittest.TestCase):
             os.chmod(jit, 0o600)
             helper.return_value = mock.Mock(stdout=b'{"orphan":"running"}')
             cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
-            with self.assertRaisesRegex(manager.RunnerError, "domain already exists"):
+            with self.assertRaisesRegex(manager.RunnerError, "requires reconciliation"):
                 manager.launch(cfg, "new-job", jit)
+
+    @mock.patch.object(manager, "capacity_errors", return_value=[])
+    @mock.patch.object(manager, "helper")
+    def test_launch_allows_two_active_leases_and_rejects_third(self, helper, capacity):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            helper.side_effect = [
+                mock.Mock(stdout=b"{}"), mock.Mock(),
+                mock.Mock(stdout=b'{"one":"running"}'), mock.Mock(),
+                mock.Mock(stdout=b'{"one":"running","two":"running"}'),
+            ]
+
+            manager.launch(cfg, "one", base64.b64encode(b"opaque-one"))
+            manager.launch(cfg, "two", base64.b64encode(b"opaque-two"))
+            with self.assertRaisesRegex(manager.RunnerError, "all runner slots are occupied"):
+                manager.launch(cfg, "three", base64.b64encode(b"opaque-three"))
+
+            self.assertEqual(
+                {state["lease"] for state in manager.StateStore(cfg["state_dir"]).leases()},
+                {"one", "two"},
+            )
+            self.assertEqual(capacity.call_args_list, [mock.call(cfg, 1), mock.call(cfg, 2)])
 
     @mock.patch.object(manager, "capacity_errors", return_value=[])
     @mock.patch.object(manager, "helper")
@@ -487,6 +576,32 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(list((root / "run").iterdir()), [])
 
     @mock.patch.object(manager, "launch")
+    def test_dispatch_fills_both_free_slots_in_one_poll(self, launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20},
+                {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 21},
+            ]
+            client.generate_jit.side_effect = [
+                {"encoded_jit_config": base64.b64encode(b"jit-20").decode(),
+                 "runner": {"id": 30}},
+                {"encoded_jit_config": base64.b64encode(b"jit-21").decode(),
+                 "runner": {"id": 31}},
+            ]
+            cfg = {"state_dir": root / "state",
+                   "repositories": ["Tuinstra-DEV/gate"],
+                   "runner_label": "trusted-heavy"}
+
+            self.assertTrue(manager.dispatch_once(cfg, client))
+
+            self.assertEqual(launch.call_count, 2)
+            self.assertEqual(
+                [call.args[1] for call in launch.call_args_list], ["gh-20", "gh-21"]
+            )
+
+    @mock.patch.object(manager, "launch")
     def test_dispatch_rejects_conflicting_reported_runner_name(self, launch):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -625,6 +740,56 @@ class ManagerTests(unittest.TestCase):
             helper.side_effect = [mock.Mock(stdout=b'{"expired":"running"}'), mock.Mock()]
             manager.reconcile(cfg)
             self.assertIn(("destroy", "expired"), [call.args[1:] for call in helper.call_args_list])
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=10000)
+    def test_reconcile_cleans_multiple_expired_leases(self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            for lease in ("expired-one", "expired-two"):
+                store.write(lease, {
+                    "lease": lease, "phase": "running", "launched_at": 1,
+                })
+            helper.side_effect = [
+                mock.Mock(stdout=b'{"expired-one":"running","expired-two":"running"}'),
+                mock.Mock(), mock.Mock(),
+            ]
+
+            manager.reconcile(cfg)
+
+            destroyed = {call.args[2] for call in helper.call_args_list[1:]}
+            self.assertEqual(destroyed, {"expired-one", "expired-two"})
+            self.assertEqual(store.leases(), [])
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_preserves_healthy_lease_while_destroying_orphan(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("healthy", {
+                "lease": "healthy", "phase": "running", "launched_at": 1000,
+            })
+            helper.side_effect = [
+                mock.Mock(stdout=b'{"healthy":"running","orphan":"running"}'),
+                mock.Mock(),
+            ]
+
+            manager.reconcile(cfg)
+
+            self.assertEqual([state["lease"] for state in store.leases()], ["healthy"])
+            self.assertIn(("destroy", "orphan"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            self.assertNotIn(("destroy", "healthy"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
 
     @mock.patch.object(manager, "helper")
     def test_reconcile_deletes_persisted_github_runner_before_state(self, helper):

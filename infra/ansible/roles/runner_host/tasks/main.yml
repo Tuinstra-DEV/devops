@@ -8,6 +8,18 @@
       - (runner_blocked_production_ipv4_cidrs | length) + (runner_blocked_production_ipv6_cidrs | length) > 0
     fail_msg: Pin the image and explicitly configure at least one production deny CIDR.
 
+- name: Assert runner capacity contract
+  ansible.builtin.assert:
+    that:
+      - runner_max_concurrency | int == 2
+      - runner_vcpus | int == 4
+      - runner_memory_mib | int == 6144
+      - runner_host_memory_reserve_mib | int >= 1024
+      - runner_host_memory_reserve_mib | int <= 65536
+      - ansible_processor_vcpus | int >= (runner_max_concurrency | int) * (runner_vcpus | int)
+      - ansible_memtotal_mb | int >= ((runner_max_concurrency | int) * (runner_memory_mib | int)) + (runner_host_memory_reserve_mib | int)
+    fail_msg: Host capacity must fit two 4-vCPU, 6144-MiB runners plus the memory reserve.
+
 - name: Check KVM device
   ansible.builtin.stat:
     path: /dev/kvm
@@ -168,7 +180,6 @@
   loop:
     - { src: runner/manager/ci_runner_manager.py, dest: /usr/local/bin/ci-runner-manager, mode: '0755' }
     - { src: runner/host-helper/ci_runner_host_helper.py, dest: /usr/local/libexec/ci-runner-host-helper, mode: '0755' }
-    - { src: runner/config/manager.toml, dest: /etc/ci-runner/manager.toml, group: ci-runner-manager, mode: '0640' }
     - { src: runner/systemd/ci-runner-manager.service, dest: /etc/systemd/system/ci-runner-manager.service, mode: '0644' }
     - { src: runner/systemd/ci-runner-host-helper.socket, dest: /etc/systemd/system/ci-runner-host-helper.socket, mode: '0644' }
     - { src: runner/systemd/ci-runner-host-helper@.service, dest: /etc/systemd/system/ci-runner-host-helper@.service, mode: '0644' }
@@ -177,6 +188,15 @@
   notify:
     - Restart runner host helper socket
     - Restart runner manager
+
+- name: Install runner manager configuration
+  ansible.builtin.template:
+    src: manager.toml.j2
+    dest: /etc/ci-runner/manager.toml
+    owner: root
+    group: ci-runner-manager
+    mode: '0640'
+  notify: Restart runner manager
 
 - name: Remove obsolete runner manager sudo policy
   ansible.builtin.file:
