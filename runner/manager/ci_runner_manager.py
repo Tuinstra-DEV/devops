@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Admission and lifecycle boundary for the single sanctuary CI worker."""
+"""Admission and lifecycle boundary for sanctuary CI workers."""
 
 from __future__ import annotations
 
@@ -38,6 +38,9 @@ HELPER_JIT_MAX = 131072
 HELPER_ERROR_CODES = {"invalid_request", "unauthorized", "operation_failed", "busy"}
 HELPER_QUERY_TIMEOUT_SECONDS = 120
 HELPER_MUTATION_TIMEOUT_SECONDS = 330
+MAX_CONCURRENCY = 2
+RUNNER_VCPUS = 4
+RUNNER_MEMORY_MIB = 6144
 
 
 class RunnerError(RuntimeError):
@@ -76,10 +79,27 @@ def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_config(path: Path) -> dict[str, Any]:
     with path.open("rb") as handle:
         cfg = tomllib.load(handle)
-    required = {"state_dir", "lock_file", "audit_log", "helper_socket", "min_free_memory_mib", "min_free_disk_gib", "max_load_1m", "max_lease_seconds", "github_token_file", "repositories", "runner_label"}
+    required = {
+        "state_dir", "lock_file", "audit_log", "helper_socket",
+        "max_concurrency", "runner_vcpus", "runner_memory_mib",
+        "host_memory_reserve_mib", "min_free_disk_gib", "max_load_1m",
+        "max_lease_seconds", "github_token_file", "repositories", "runner_label",
+    }
     missing = required.difference(cfg)
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
+    exact_resources = {
+        "max_concurrency": MAX_CONCURRENCY,
+        "runner_vcpus": RUNNER_VCPUS,
+        "runner_memory_mib": RUNNER_MEMORY_MIB,
+    }
+    for key, expected in exact_resources.items():
+        value = cfg[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value != expected:
+            raise RunnerError(f"{key} must be exactly {expected}")
+    reserve = cfg["host_memory_reserve_mib"]
+    if not isinstance(reserve, int) or isinstance(reserve, bool) or not 1024 <= reserve <= 65536:
+        raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")
     return cfg
 
 
@@ -107,25 +127,64 @@ def read_jit_config(path: Path) -> bytes:
     return validate_jit_config(path.read_bytes())
 
 
-def memory_available_mib() -> int:
+def memory_value_mib(field: str) -> int:
     for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-        if line.startswith("MemAvailable:"):
+        if line.startswith(f"{field}:"):
             return int(line.split()[1]) // 1024
-    raise RunnerError("cannot determine available memory")
+    raise RunnerError(f"cannot determine {field} memory")
 
 
-def capacity_errors(cfg: dict[str, Any]) -> list[str]:
+def memory_available_mib() -> int:
+    return memory_value_mib("MemAvailable")
+
+
+def memory_total_mib() -> int:
+    return memory_value_mib("MemTotal")
+
+
+def configured_resource(cfg: dict[str, Any], key: str, expected: int) -> int:
+    value = cfg.get(key, expected)
+    if not isinstance(value, int) or isinstance(value, bool) or value != expected:
+        raise RunnerError(f"{key} must be exactly {expected}")
+    return value
+
+
+def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> list[str]:
     errors: list[str] = []
-    if (os.cpu_count() or 0) < 8:
-        errors.append("host has fewer than 8 logical CPUs")
-    if memory_available_mib() < int(cfg["min_free_memory_mib"]):
-        errors.append("host free memory is below admission threshold")
+    concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+    vcpus = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
+    memory_mib = configured_resource(cfg, "runner_memory_mib", RUNNER_MEMORY_MIB)
+    if not isinstance(projected_runner_count, int) or isinstance(projected_runner_count, bool) \
+            or not 1 <= projected_runner_count <= concurrency:
+        raise RunnerError("projected runner count is outside the configured concurrency limit")
+    projected_vcpus = projected_runner_count * vcpus
+    if (os.cpu_count() or 0) < projected_vcpus:
+        errors.append(
+            f"host has fewer than {projected_vcpus} logical CPUs required for projected runners"
+        )
+    reserve_mib = int(cfg.get("host_memory_reserve_mib", cfg.get("min_free_memory_mib", 0)))
+    if memory_total_mib() < projected_runner_count * memory_mib + reserve_mib:
+        errors.append("host memory cannot fit projected runners and reserve")
+    projected_available_mib = memory_available_mib() - memory_mib
+    if projected_available_mib < reserve_mib:
+        errors.append("host projected free memory is below the configured reserve")
     disk = shutil.disk_usage(str(cfg.get("overlay_root", "/mnt/ssd1000-01/ci-runner")))
     if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
         errors.append("overlay filesystem free space is below admission threshold")
     if os.getloadavg()[0] > float(cfg["max_load_1m"]):
         errors.append("host one-minute load is above admission threshold")
     return errors
+
+
+def validate_inventory(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise RunnerError("helper returned invalid domain inventory")
+    inventory: dict[str, str] = {}
+    for lease, state in value.items():
+        if not isinstance(lease, str) or not isinstance(state, str) or not state:
+            raise RunnerError("helper returned invalid domain inventory")
+        inventory[validate_lease_id(lease)] = state
+    return inventory
 
 
 class StateStore:
@@ -447,6 +506,10 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     if operation == "launch":
         if stdin is None:
             raise RunnerError("launch requires JIT configuration")
+        request["vcpus"] = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
+        request["memory_mib"] = configured_resource(
+            cfg, "runner_memory_mib", RUNNER_MEMORY_MIB
+        )
         stdin = validate_jit_config(stdin)
     elif stdin is not None:
         raise RunnerError("host helper payload is only valid for launch")
@@ -511,14 +574,27 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
                 raise RunnerError("dispatch target has pending cleanup")
             if history.contains(dispatch_history_key, now):
                 raise RunnerError("dispatch target is still in retry history")
-        if store.leases():
-            raise RunnerError("maximum concurrency is 1; an active lease already exists")
-        inventory = json.loads(helper(cfg, "list").stdout.decode("utf-8"))
-        if not isinstance(inventory, dict):
-            raise RunnerError("helper returned invalid domain inventory")
-        if inventory:
-            raise RunnerError("maximum concurrency is 1; a runner domain already exists")
-        failures = capacity_errors(cfg)
+        states = store.leases()
+        state_by_lease: dict[str, dict[str, Any]] = {}
+        for item in states:
+            state_lease = item.get("lease")
+            if not isinstance(state_lease, str) or state_lease in state_by_lease:
+                raise RunnerError("runner lifecycle state requires reconciliation")
+            state_by_lease[validate_lease_id(state_lease)] = item
+        inventory = validate_inventory(
+            json.loads(helper(cfg, "list").stdout.decode("utf-8"))
+        )
+        if set(state_by_lease) != set(inventory) or any(
+            item.get("phase") != "running" or inventory[state_lease] != "running"
+            for state_lease, item in state_by_lease.items()
+        ):
+            raise RunnerError("runner lifecycle state requires reconciliation")
+        concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+        if len(state_by_lease) >= concurrency:
+            raise RunnerError(f"maximum concurrency is {concurrency}; all runner slots are occupied")
+        if lease in state_by_lease or lease in inventory:
+            raise RunnerError("lease already exists")
+        failures = capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
             raise RunnerError("; ".join(failures))
         state = {"lease": lease, "phase": "provisioning", "launched_at": now}
@@ -710,9 +786,7 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         result = helper(cfg, "list", check=True)
-        domains = json.loads(result.stdout.decode("utf-8"))
-        if not isinstance(domains, dict):
-            raise RunnerError("helper returned invalid domain inventory")
+        domains = validate_inventory(json.loads(result.stdout.decode("utf-8")))
         known = {item["lease"] for item in store.leases() if "lease" in item}
         now = int(time.time())
         states = {item["lease"]: item for item in store.leases() if "lease" in item}
@@ -750,14 +824,21 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
 
 def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
     store = StateStore(Path(cfg["state_dir"]))
-    if store.leases():
+    concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+    available_slots = concurrency - len(store.leases())
+    if available_slots <= 0:
         return False
     now = int(time.time())
     history = DispatchHistory(Path(cfg["state_dir"]))
     pending_dispatches = store.pending_dispatch_keys()
     label = str(cfg.get("runner_label", "trusted-heavy"))
+    launched = 0
     for repo in validate_repositories(cfg):
+        if launched >= available_slots:
+            break
         for job in client.candidate_jobs(repo, label):
+            if launched >= available_slots:
+                break
             key = f"{repo}:{job['job_id']}"
             if key in pending_dispatches or history.contains(key, now):
                 continue
@@ -803,7 +884,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     "trigger_job_id=%s assignment=unverified",
                     lease, repo, runner_id, job["run_id"], job["job_id"],
                 )
-                return True
+                launched += 1
             except Exception:
                 try:
                     client.delete_runner(repo, runner_id)
@@ -821,7 +902,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 else:
                     store.remove_cleanup(registration)
                 raise
-    return False
+    return launched > 0
 
 
 def configure_logging(path: Path) -> None:

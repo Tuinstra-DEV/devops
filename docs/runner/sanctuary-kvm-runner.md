@@ -2,10 +2,10 @@
 
 ## Decision
 
-Sanctuary runs at most one untrusted CI job in an ephemeral Ubuntu 24.04 KVM
-guest. The host is provisioned with Ansible, the guest root disk is a qcow2
-overlay backed by a checksum-pinned immutable Packer image, and the VM is
-deleted after its single JIT job.
+Sanctuary runs at most two untrusted CI jobs concurrently in separate ephemeral
+Ubuntu 24.04 KVM guests. The host is provisioned with Ansible, each guest root
+disk is a qcow2 overlay backed by a checksum-pinned immutable Packer image, and
+each VM is deleted after its single JIT job.
 
 The manager includes a small GitHub REST polling adapter because an organization
 scale-set listener is not available with repository-scoped administration. It
@@ -34,8 +34,9 @@ serial ephemeral jobs while retaining completed-job runner metadata.
 After runner cleanup, the manager keeps a durable handoff tombstone, waits for
 API consistency, and retries a still-queued trigger with exponential cooldown
 capped at one hour. Pending handoffs block
-duplicate dispatch even if history is absent. It launches at most one VM and
-removes the offline GitHub runner record if VM launch fails. Any malformed API
+duplicate dispatch even if history is absent. Each poll fills all available
+slots, up to two VMs, and removes an offline GitHub runner record if VM launch
+fails. Any malformed API
 response, permission error, transport failure, or rate limit fails closed;
 rate-limit responses honor a bounded retry interval.
 
@@ -51,7 +52,9 @@ sudo -u ci-runner-manager /usr/local/bin/ci-runner-manager launch \
 The manager keeps `NoNewPrivileges=yes` and sends the value as a separate,
 bounded packet to a root-owned systemd socket-activated helper. The helper
 accepts only the exact manager UID (socket mode plus `SO_PEERCRED`) and a strict
-`list`, `launch`, or `destroy` protocol. Neither layer logs the JIT value or
+`list`, `launch`, or `destroy` protocol. Launch requests carry exact integer
+vCPU and memory fields; the helper rejects missing, extra, boolean, or
+out-of-contract resource values before mutation. Neither layer logs the JIT value or
 includes it in a host process argument. Normal GitHub dispatch sends the value
 directly from memory without a manager-side temporary file. The guest uses the
 JIT value for one job, powers off after the runner exits, and the reconciler
@@ -75,11 +78,18 @@ fork pull requests select this machine.
 
 ## Resource and admission policy
 
-- Maximum concurrency is 1, enforced under a filesystem lock.
-- Each guest receives 8 vCPU, 12 GiB RAM, and a 120 GiB grow-on-write disk.
-- Admission requires at least 8 host logical CPUs, 14 GiB available memory,
-  140 GiB free on `/mnt/ssd1000-01/ci-runner`, and one-minute load no higher
-  than 8. Thresholds are configurable; VM dimensions are root-helper constants.
+- Maximum concurrency is 2. The manager keeps one global lifecycle filesystem
+  lock, and the root helper independently serializes libvirt mutations.
+- Each guest receives exactly 4 vCPU, 6,144 MiB RAM, and a 120 GiB
+  grow-on-write disk.
+- Admission projects the new slot before launch: projected guest vCPUs must not
+  exceed host logical CPUs, total memory must fit all projected guests plus the
+  reserve, and `MemAvailable` after subtracting the new 6,144-MiB guest must
+  retain the configured 4,096-MiB host reserve. Admission
+  also requires 140 GiB free on `/mnt/ssd1000-01/ci-runner` and one-minute load
+  no higher than 8. Ansible refuses hosts that cannot fit both guests plus the
+  reserve. Manager and helper independently enforce the exact concurrency and
+  VM resource contract, so a configuration mismatch fails closed.
 - The base image is root-owned and mode `0444`. The overlay root and per-job
   lease directories are root-owned, group `kvm`, and mode `0710`. Only the
   isolated `libvirt-qemu` account owns the mode `0600` overlay and seed images.
@@ -100,6 +110,9 @@ fork pull requests select this machine.
   traversable by unrelated guest accounts.
 - A running lease older than `max_lease_seconds` (default 7,200 seconds) is
   destroyed by reconciliation even if libvirt still reports it running.
+- Reconciliation evaluates every lease and domain independently: it can retain
+  a healthy guest while removing orphans and can clean multiple expired leases
+  in the same pass.
 
 ## Network boundary
 

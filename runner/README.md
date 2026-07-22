@@ -1,7 +1,7 @@
 # Sanctuary ephemeral CI runner
 
-This directory contains the host-side boundary for one ephemeral GitHub Actions
-runner. It is intentionally smaller than a runner scale-set client: a
+This directory contains the host-side boundary for up to two ephemeral GitHub
+Actions runners. It is intentionally smaller than a runner scale-set client: a
 repository-scoped polling adapter owns job acquisition and JIT configuration,
 while `ci-runner-manager` owns local admission, VM launch, and cleanup.
 It remains unprivileged and communicates with the root-only lifecycle helper

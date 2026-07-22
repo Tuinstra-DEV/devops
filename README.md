@@ -71,5 +71,5 @@ Reusable Nuxt SSG CD workflow documentation is available at
 
 ## Ephemeral heavy CI
 
-The production design and host automation for the single-concurrency Sanctuary
+The production design and host automation for the two-slot Sanctuary
 KVM runner are documented in `docs/runner/sanctuary-kvm-runner.md`.

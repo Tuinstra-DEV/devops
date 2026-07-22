@@ -10,8 +10,9 @@
 5. Set `runner_base_image_source`, `runner_base_image_sha256`, production IPv4
    and IPv6 deny lists, and `runner_production_networks_reviewed=true` in
    protected Ansible inventory, then run `ansible-playbook infra/ansible/site.yml`.
-6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1, and
-   120-minute lease limit in `/etc/ci-runner/manager.toml`.
+6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1,
+   concurrency 2, 4 vCPU / 6,144 MiB guest dimensions, 4,096 MiB host memory
+   reserve, and 120-minute lease limit in `/etc/ci-runner/manager.toml`.
 
 Image activation is fail-closed: Ansible stops new admission, refuses to switch
 the digest symlink while any `sanctuary-ci-*` domain or overlay entry exists,
@@ -57,11 +58,12 @@ must not exist. The helper socket must be owned by `ci-runner-manager`, mode
 `0600`, and the broker must reject every other peer UID. Do not weaken this
 boundary to a group-writable socket or a wildcard sudo rule.
 
-Launch a non-production canary and verify: exact `trusted-heavy` routing; 8
-vCPU, 12 GiB RAM and 120 GiB disk; rejection of a second launch; public GitHub
-reachability while host, private and production ranges are blocked; one-job
-poweroff; complete reconciliation within 30 seconds; and audit events without
-the JIT payload.
+Launch two non-production canaries and verify: exact `trusted-heavy` routing;
+4 vCPU, 6,144 MiB RAM and 120 GiB disk per guest; rejection of a third launch;
+public GitHub reachability while host, private and production ranges are
+blocked; one-job poweroff; complete multi-lease reconciliation within 30
+seconds; and audit events without the JIT payload. Repeat with projected free
+memory below the configured reserve and confirm the second launch is rejected.
 
 Repeat a failure canary with the manager stopped. Confirm the guest and host
 timer power the VM off at the configured upper bound, then restart the manager
@@ -88,7 +90,7 @@ remains.
 1. Disable repository access to the trusted-heavy runner group.
 2. Route jobs back to GitHub-hosted labels through the normal reviewed workflow
    change; do not broaden which untrusted jobs can execute.
-3. Allow the current single job to finish, or cancel it for containment.
+3. Allow current jobs to finish, or cancel them for containment.
 4. Stop the listener and `ci-runner-manager.service`.
 5. Run one reconciliation and verify no domain, overlay, seed, or state remains.
 6. Retain audit logs for 30 days and record the rollback evidence.
