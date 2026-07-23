@@ -188,6 +188,18 @@ runcmd:
 """ % base64.b64encode(encoded_jit).decode("ascii")
 
 
+def cloud_init_network_config() -> str:
+    """Enable DHCP without depending on a hypervisor-specific interface name."""
+    return """version: 2
+ethernets:
+  runner:
+    match:
+      name: "en*"
+    dhcp4: true
+    dhcp6: false
+"""
+
+
 def launch(lease: str, encoded_jit: bytes | None = None, *,
            vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB) -> None:
     if os.geteuid() != 0:
@@ -223,8 +235,16 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
             temp = Path(temporary)
             (temp / "user-data").write_text(user_data, encoding="utf-8")
             (temp / "meta-data").write_text(meta_data, encoding="utf-8")
+            (temp / "network-config").write_text(
+                cloud_init_network_config(), encoding="utf-8"
+            )
             os.chmod(temp / "user-data", 0o600)
-            run(["cloud-localds", str(seed), str(temp / "user-data"), str(temp / "meta-data")])
+            os.chmod(temp / "network-config", 0o600)
+            run([
+                "cloud-localds",
+                f"--network-config={temp / 'network-config'}",
+                str(seed), str(temp / "user-data"), str(temp / "meta-data"),
+            ])
         set_qemu_access(seed, qemu_uid, qemu_gid, 0o600)
         run(["virt-install", "--connect", LIBVIRT_URI,
              "--name", name(lease), "--memory", str(memory_mib), "--vcpus", str(vcpus),

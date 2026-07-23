@@ -56,6 +56,14 @@ class HostHelperTests(unittest.TestCase):
         runcmd = user_data.split("runcmd:\n", 1)[1]
         self.assertEqual(runcmd, "  - [/usr/local/sbin/ci-runner-prepare-docker]\n")
 
+    def test_cloud_init_network_uses_name_independent_dhcp(self):
+        network_config = helper.cloud_init_network_config()
+
+        self.assertIn('name: "en*"', network_config)
+        self.assertIn("dhcp4: true", network_config)
+        self.assertIn("dhcp6: false", network_config)
+        self.assertNotIn("ens3", network_config)
+
     def test_lease_directory_cannot_escape_overlay_root(self):
         for value in ("../etc", "a/b", "white space", ""):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -113,6 +121,13 @@ class HostHelperTests(unittest.TestCase):
         )
         self.assertEqual(
             virt_install[virt_install.index("--memory") + 1], str(helper.MEMORY_MIB)
+        )
+        cloud_localds = next(
+            call.args[0] for call in run.call_args_list
+            if call.args[0][0] == "cloud-localds"
+        )
+        self.assertTrue(
+            any(argument.startswith("--network-config=") for argument in cloud_localds)
         )
 
         self.assertIn(mock.call([
