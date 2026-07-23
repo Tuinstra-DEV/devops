@@ -890,6 +890,35 @@ class ManagerTests(unittest.TestCase):
             client.delete_runner.assert_not_called()
 
     @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_preserves_in_progress_trigger_when_ephemeral_registration_disappears(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.return_value = mock.Mock(stdout=b'{"gh-20":"running"}')
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.return_value = {"id": 20, "status": "in_progress"}
+            client.get_runner.side_effect = manager.NotFound("ephemeral registration gone")
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual([state["lease"] for state in store.leases()], ["gh-20"])
+            self.assertNotIn(("destroy", "gh-20"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            client.delete_runner.assert_not_called()
+
+    @mock.patch.object(manager, "helper")
     @mock.patch.object(manager.time, "time", return_value=1100)
     def test_reconcile_destroys_unassigned_runner_when_trigger_is_completed(
             self, _time, helper):

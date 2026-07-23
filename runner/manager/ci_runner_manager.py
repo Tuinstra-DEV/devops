@@ -733,6 +733,11 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
             lease, repo, runner_id, trigger_id,
         )
         return True
+    if job_status == "in_progress":
+        # GitHub may remove an ephemeral runner registration from the runner
+        # endpoint as soon as it accepts work. The active trigger is the
+        # authoritative liveness signal until assignment audit catches up.
+        return False
     launched_at = state.get("launched_at")
     if not isinstance(launched_at, int) \
             or launched_at + REGISTRATION_GRACE_SECONDS >= now:
