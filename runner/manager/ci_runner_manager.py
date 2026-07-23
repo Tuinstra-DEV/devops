@@ -418,10 +418,39 @@ class GitHubClient:
 
     def find_assigned_job(self, repo: str, runner_id: int,
                           runner_name: str, *,
+                          preferred_run_id: int | None = None,
                           include_completed: bool = True) -> dict[str, Any] | None:
         if not runner_name or runner_id < 1:
             return None
         id_matches: dict[tuple[int, int], dict[str, Any]] = {}
+
+        def inspect_run(run_id: int) -> None:
+            jobs = self.request(
+                "GET", f"{self.repo_path(repo)}/actions/runs/{run_id}"
+                "/jobs?filter=latest&per_page=100&page=1"
+            )
+            for job in jobs.get("jobs", []):
+                job_id = job.get("id")
+                if not isinstance(job_id, int):
+                    continue
+                reported_runner_id = job.get("runner_id")
+                reported_runner_name = job.get("runner_name")
+                assignment = {"repo": repo, "run_id": run_id, "job_id": job_id}
+                key = (run_id, job_id)
+                if not isinstance(reported_runner_id, int) \
+                        or reported_runner_id != runner_id:
+                    continue
+                if reported_runner_name not in (None, "", runner_name):
+                    raise RunnerError("GitHub returned a conflicting runner assignment")
+                id_matches[key] = assignment
+
+        if isinstance(preferred_run_id, int) and preferred_run_id > 0:
+            inspect_run(preferred_run_id)
+            if len(id_matches) > 1:
+                raise RunnerError("GitHub returned an ambiguous runner assignment")
+            if id_matches:
+                return next(iter(id_matches.values()))
+
         statuses = ("in_progress", "completed", "queued") \
             if include_completed else ("in_progress",)
         for status in statuses:
@@ -431,24 +460,8 @@ class GitHubClient:
             )
             for run in runs.get("workflow_runs", []):
                 run_id = int(run["id"])
-                jobs = self.request(
-                    "GET", f"{self.repo_path(repo)}/actions/runs/{run_id}"
-                    "/jobs?filter=latest&per_page=100&page=1"
-                )
-                for job in jobs.get("jobs", []):
-                    job_id = job.get("id")
-                    if not isinstance(job_id, int):
-                        continue
-                    reported_runner_id = job.get("runner_id")
-                    reported_runner_name = job.get("runner_name")
-                    assignment = {"repo": repo, "run_id": run_id, "job_id": job_id}
-                    key = (run_id, job_id)
-                    if not isinstance(reported_runner_id, int) \
-                            or reported_runner_id != runner_id:
-                        continue
-                    if reported_runner_name not in (None, "", runner_name):
-                        raise RunnerError("GitHub returned a conflicting runner assignment")
-                    id_matches[key] = assignment
+                if run_id != preferred_run_id:
+                    inspect_run(run_id)
         if len(id_matches) > 1:
             raise RunnerError("GitHub returned an ambiguous runner assignment")
         return next(iter(id_matches.values())) if id_matches else None
@@ -661,13 +674,18 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
     lease = state.get("lease")
     runner_id = state.get("runner_id")
     trigger_id = trigger_job_id(state)
+    trigger_run_id = state.get("trigger_run_id", state.get("run_id"))
     if not isinstance(repo, str) or not isinstance(runner_name, str) \
             or not isinstance(lease, str) or not isinstance(runner_id, int) \
             or trigger_id is None:
         return state
     try:
         assignment = client.find_assigned_job(
-            repo, runner_id, runner_name, include_completed=include_completed
+            repo,
+            runner_id,
+            runner_name,
+            preferred_run_id=trigger_run_id if isinstance(trigger_run_id, int) else None,
+            include_completed=include_completed,
         )
     except RunnerError as exc:
         LOG.warning(
@@ -695,10 +713,13 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
 
 def unassigned_lease_is_stale(client: GitHubClient | None,
                               state: dict[str, Any], now: int) -> bool:
-    """Identify a terminal trigger or a runner that never registered.
+    """Identify an unassigned runner with positive offline evidence.
 
-    API failures preserve the lease. A completed trigger is terminal immediately;
-    an offline runner gets a bounded boot/registration grace period first.
+    Trigger identity is only an admission hint: a JIT runner can accept another
+    same-label job. API failures and missing ephemeral registrations therefore
+    preserve the lease. After the boot grace period, only a present, offline,
+    non-busy registration is safe to reap before the local domain stops or its
+    hard TTL expires.
     """
     if client is None or isinstance(state.get("actual_job_id"), int):
         return False
@@ -726,18 +747,6 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
             lease, repo, runner_id, trigger_id,
         )
         return False
-    if job_status == "completed":
-        LOG.info(
-            "unassigned runner trigger completed lease=%s repo=%s runner_id=%s "
-            "trigger_job_id=%s",
-            lease, repo, runner_id, trigger_id,
-        )
-        return True
-    if job_status == "in_progress":
-        # GitHub may remove an ephemeral runner registration from the runner
-        # endpoint as soon as it accepts work. The active trigger is the
-        # authoritative liveness signal until assignment audit catches up.
-        return False
     launched_at = state.get("launched_at")
     if not isinstance(launched_at, int) \
             or launched_at + REGISTRATION_GRACE_SECONDS >= now:
@@ -746,11 +755,11 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
         runner = client.get_runner(repo, runner_id)
     except NotFound:
         LOG.info(
-            "unassigned runner registration disappeared lease=%s repo=%s "
-            "runner_id=%s trigger_job_id=%s",
+            "preserving unassigned lease with missing ephemeral registration "
+            "lease=%s repo=%s runner_id=%s trigger_job_id=%s",
             lease, repo, runner_id, trigger_id,
         )
-        return True
+        return False
     except RunnerError as exc:
         LOG.warning(
             "runner registration status could not be verified lease=%s repo=%s "

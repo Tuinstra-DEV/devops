@@ -372,6 +372,31 @@ class ManagerTests(unittest.TestCase):
             {"repo": "Tuinstra-DEV/gate", "run_id": 11, "job_id": 83},
         )
 
+    def test_find_assigned_job_checks_trigger_run_before_bounded_status_scan(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(return_value={
+            "jobs": [
+                {"id": 83, "status": "in_progress", "runner_id": 30,
+                 "runner_name": "sanctuary-20"},
+            ],
+        })
+
+        self.assertEqual(
+            client.find_assigned_job(
+                "Tuinstra-DEV/gate",
+                30,
+                "sanctuary-20",
+                preferred_run_id=10,
+                include_completed=False,
+            ),
+            {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 83},
+        )
+        client.request.assert_called_once_with(
+            "GET",
+            "/repos/Tuinstra-DEV/gate/actions/runs/10/jobs"
+            "?filter=latest&per_page=100&page=1",
+        )
+
     def test_find_assigned_job_captures_fast_completed_job_by_runner_id(self):
         client = manager.GitHubClient("secret")
         client.request = mock.Mock(side_effect=[
@@ -919,8 +944,8 @@ class ManagerTests(unittest.TestCase):
             client.delete_runner.assert_not_called()
 
     @mock.patch.object(manager, "helper")
-    @mock.patch.object(manager.time, "time", return_value=1100)
-    def test_reconcile_destroys_unassigned_runner_when_trigger_is_completed(
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_preserves_unassigned_runner_when_completed_trigger_is_ambiguous(
             self, _time, helper):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -942,12 +967,68 @@ class ManagerTests(unittest.TestCase):
             client.get_job.return_value = {
                 "id": 20, "status": "completed", "conclusion": "cancelled",
             }
+            client.get_runner.side_effect = manager.NotFound(
+                "ephemeral registration may already be assigned"
+            )
 
             manager.reconcile(cfg, client)
 
-            self.assertEqual(store.leases(), [])
-            client.get_runner.assert_not_called()
-            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual([state["lease"] for state in store.leases()], ["gh-20"])
+            self.assertNotIn(("destroy", "gh-20"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            client.get_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            client.delete_runner.assert_not_called()
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_cross_assignment_never_reaps_ambiguous_running_lease(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            store.write("gh-21", {
+                "lease": "gh-21", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 31,
+                "runner_name": "sanctuary-21", "trigger_run_id": 10,
+                "trigger_job_id": 21,
+            })
+            helper.side_effect = [
+                mock.Mock(stdout=b'{"gh-20":"running","gh-21":"shut off"}'),
+                mock.Mock(),
+            ]
+            client = mock.Mock()
+            client.find_assigned_job.side_effect = [
+                None,
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20},
+            ]
+            client.get_job.return_value = {
+                "id": 20, "status": "completed", "conclusion": "success",
+            }
+            client.get_runner.side_effect = manager.NotFound(
+                "ephemeral registration may already be assigned"
+            )
+
+            manager.reconcile(cfg, client)
+
+            leases = {state["lease"]: state for state in store.leases()}
+            self.assertEqual(set(leases), {"gh-20"})
+            self.assertNotIn("actual_job_id", leases["gh-20"])
+            self.assertNotIn(("destroy", "gh-20"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            self.assertIn(("destroy", "gh-21"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 31)
 
     @mock.patch.object(manager, "helper")
     @mock.patch.object(manager.time, "time", return_value=2000)
@@ -1025,7 +1106,11 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(state["lease"], "gh-20")
             self.assertIn("trigger_job_id=20 actual_job_id=83", "\n".join(logs.output))
             client.find_assigned_job.assert_called_once_with(
-                "Tuinstra-DEV/gate", 30, "sanctuary-20", include_completed=False
+                "Tuinstra-DEV/gate",
+                30,
+                "sanctuary-20",
+                preferred_run_id=10,
+                include_completed=False,
             )
 
     @mock.patch.object(manager.time, "time", return_value=1001)
@@ -1062,7 +1147,11 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(pending["runner_id"], 30)
             self.assertEqual(pending["lease"], "gh-20")
             client.find_assigned_job.assert_called_once_with(
-                "Tuinstra-DEV/gate", 30, "sanctuary-20", include_completed=True
+                "Tuinstra-DEV/gate",
+                30,
+                "sanctuary-20",
+                preferred_run_id=10,
+                include_completed=True,
             )
             manager.retry_pending_cleanup(store, client, 1031)
 
