@@ -494,6 +494,20 @@ class ManagerTests(unittest.TestCase):
         )
         client.request.assert_called_once_with("GET", "/repos/Tuinstra-DEV/gate/actions/jobs/20")
 
+    def test_get_runner_validates_repository_runner_status(self):
+        client = manager.GitHubClient("secret")
+        client.request = mock.Mock(
+            return_value={"id": 30, "status": "offline", "busy": False}
+        )
+
+        self.assertEqual(
+            client.get_runner("Tuinstra-DEV/gate", 30),
+            {"id": 30, "status": "offline", "busy": False},
+        )
+        client.request.assert_called_once_with(
+            "GET", "/repos/Tuinstra-DEV/gate/actions/runners/30"
+        )
+
     def test_dispatch_history_deduplicates_job(self):
         with tempfile.TemporaryDirectory() as directory:
             history = manager.DispatchHistory(Path(directory))
@@ -790,6 +804,147 @@ class ManagerTests(unittest.TestCase):
             self.assertNotIn(("destroy", "healthy"), [
                 call.args[1:] for call in helper.call_args_list
             ])
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_destroys_unassigned_offline_runner_after_registration_grace(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.side_effect = [
+                mock.Mock(stdout=b'{"gh-20":"running"}'),
+                mock.Mock(),
+            ]
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.return_value = {"id": 20, "status": "queued"}
+            client.get_runner.return_value = {"id": 30, "status": "offline", "busy": False}
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual(store.leases(), [])
+            self.assertIn(("destroy", "gh-20"), [
+                call.args[1:] for call in helper.call_args_list
+            ])
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1100)
+    def test_reconcile_preserves_offline_runner_during_registration_grace(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.return_value = mock.Mock(stdout=b'{"gh-20":"running"}')
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.return_value = {"id": 20, "status": "queued"}
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual([state["lease"] for state in store.leases()], ["gh-20"])
+            client.get_runner.assert_not_called()
+            client.delete_runner.assert_not_called()
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_preserves_unassigned_online_runner_after_registration_grace(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.return_value = mock.Mock(stdout=b'{"gh-20":"running"}')
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.return_value = {"id": 20, "status": "queued"}
+            client.get_runner.return_value = {"id": 30, "status": "online", "busy": False}
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual([state["lease"] for state in store.leases()], ["gh-20"])
+            client.delete_runner.assert_not_called()
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=1100)
+    def test_reconcile_destroys_unassigned_runner_when_trigger_is_completed(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.side_effect = [
+                mock.Mock(stdout=b'{"gh-20":"running"}'),
+                mock.Mock(),
+            ]
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.return_value = {
+                "id": 20, "status": "completed", "conclusion": "cancelled",
+            }
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual(store.leases(), [])
+            client.get_runner.assert_not_called()
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+
+    @mock.patch.object(manager, "helper")
+    @mock.patch.object(manager.time, "time", return_value=2000)
+    def test_reconcile_preserves_unassigned_runner_when_github_status_is_unavailable(
+            self, _time, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "max_lease_seconds": 7200}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "phase": "running", "launched_at": 1000,
+                "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "runner_name": "sanctuary-20", "trigger_run_id": 10,
+                "trigger_job_id": 20,
+            })
+            helper.return_value = mock.Mock(stdout=b'{"gh-20":"running"}')
+            client = mock.Mock()
+            client.find_assigned_job.return_value = None
+            client.get_job.side_effect = manager.RunnerError("GitHub API unavailable")
+
+            manager.reconcile(cfg, client)
+
+            self.assertEqual([state["lease"] for state in store.leases()], ["gh-20"])
+            client.get_runner.assert_not_called()
+            client.delete_runner.assert_not_called()
 
     @mock.patch.object(manager, "helper")
     def test_reconcile_deletes_persisted_github_runner_before_state(self, helper):

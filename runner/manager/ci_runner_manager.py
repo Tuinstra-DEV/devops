@@ -459,6 +459,16 @@ class GitHubClient:
         except NotFound:
             return
 
+    def get_runner(self, repo: str, runner_id: int) -> dict[str, Any]:
+        runner = self.request(
+            "GET", f"{self.repo_path(repo)}/actions/runners/{runner_id}"
+        )
+        if not isinstance(runner, dict) or runner.get("id") != runner_id \
+                or runner.get("status") not in {"online", "offline"} \
+                or not isinstance(runner.get("busy"), bool):
+            raise RunnerError("GitHub returned an invalid runner response")
+        return runner
+
     def get_job(self, repo: str, job_id: int) -> dict[str, Any]:
         job = self.request("GET", f"{self.repo_path(repo)}/actions/jobs/{job_id}")
         if not isinstance(job, dict) or job.get("id") != job_id:
@@ -683,6 +693,76 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
     return updated
 
 
+def unassigned_lease_is_stale(client: GitHubClient | None,
+                              state: dict[str, Any], now: int) -> bool:
+    """Identify a terminal trigger or a runner that never registered.
+
+    API failures preserve the lease. A completed trigger is terminal immediately;
+    an offline runner gets a bounded boot/registration grace period first.
+    """
+    if client is None or isinstance(state.get("actual_job_id"), int):
+        return False
+    repo = state.get("repo")
+    runner_id = state.get("runner_id")
+    lease = state.get("lease")
+    trigger_id = trigger_job_id(state)
+    if not isinstance(repo, str) or not isinstance(runner_id, int) \
+            or not isinstance(lease, str) or trigger_id is None:
+        return False
+    try:
+        job = client.get_job(repo, trigger_id)
+    except (NotFound, RunnerError) as exc:
+        LOG.warning(
+            "runner trigger status could not be verified lease=%s repo=%s "
+            "runner_id=%s trigger_job_id=%s error=%s",
+            lease, repo, runner_id, trigger_id, exc,
+        )
+        return False
+    job_status = job.get("status")
+    if job_status not in {"queued", "in_progress", "completed"}:
+        LOG.warning(
+            "runner trigger returned invalid status lease=%s repo=%s "
+            "runner_id=%s trigger_job_id=%s",
+            lease, repo, runner_id, trigger_id,
+        )
+        return False
+    if job_status == "completed":
+        LOG.info(
+            "unassigned runner trigger completed lease=%s repo=%s runner_id=%s "
+            "trigger_job_id=%s",
+            lease, repo, runner_id, trigger_id,
+        )
+        return True
+    launched_at = state.get("launched_at")
+    if not isinstance(launched_at, int) \
+            or launched_at + REGISTRATION_GRACE_SECONDS >= now:
+        return False
+    try:
+        runner = client.get_runner(repo, runner_id)
+    except NotFound:
+        LOG.info(
+            "unassigned runner registration disappeared lease=%s repo=%s "
+            "runner_id=%s trigger_job_id=%s",
+            lease, repo, runner_id, trigger_id,
+        )
+        return True
+    except RunnerError as exc:
+        LOG.warning(
+            "runner registration status could not be verified lease=%s repo=%s "
+            "runner_id=%s trigger_job_id=%s error=%s",
+            lease, repo, runner_id, trigger_id, exc,
+        )
+        return False
+    if runner["status"] == "offline" and runner["busy"] is False:
+        LOG.warning(
+            "unassigned runner stayed offline beyond registration grace "
+            "lease=%s repo=%s runner_id=%s trigger_job_id=%s",
+            lease, repo, runner_id, trigger_id,
+        )
+        return True
+    return False
+
+
 def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
                            state: dict[str, Any], now: int) -> None:
     repo = state.get("repo")
@@ -800,6 +880,11 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
             states[lease] = record_verified_assignment(
                 store, client, state, include_completed=lease not in healthy
             )
+        stale_unassigned = {
+            lease for lease in healthy
+            if unassigned_lease_is_stale(client, states[lease], now)
+        }
+        healthy -= stale_unassigned
         for lease in sorted(known - healthy):
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
