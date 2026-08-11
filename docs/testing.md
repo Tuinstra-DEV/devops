@@ -6,3 +6,7 @@ All story branches must pass the local hard gates before commit:
 - `make test`
 
 The local test gate validates required repository structure and baseline docs.
+
+`make test` also validates the heavy CI v2 public inputs and outputs, trust/cache negative cases, immutable artifact checks, action pinning, and the WODIQ- and Tracker-shaped fixtures. `.github/workflows/heavy-ci-v2-integration.yml` exercises both shapes on hosted GitHub runners when the contract or fixtures change.
+
+The integration workflow records per-stage NDJSON evidence. Consumer speed improvements require a separate hosted A/B canary with cold and warm cache runs; the contract test proves correctness and isolation, not performance.

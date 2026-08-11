@@ -1,0 +1,9 @@
+contract-id: tracker-shape
+toolchain: node24-pnpm10-php83
+lockfile: tests/fixtures/heavy-ci-v2/tracker/pnpm-lock.yaml
+entrypoint: tests/fixtures/heavy-ci-v2/tracker/entrypoint.sh
+artifact-path: .heavy-ci/payload
+stages:
+  - unit
+  - integration
+  - browser

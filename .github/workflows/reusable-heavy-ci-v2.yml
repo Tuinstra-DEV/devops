@@ -1,0 +1,449 @@
+name: Reusable Heavy CI v2
+
+on:
+  workflow_call:
+    inputs:
+      contract-id:
+        description: Unique identifier when a caller invokes the contract more than once
+        required: false
+        default: default
+        type: string
+      execution-class:
+        description: "Execution class: hosted or trusted-heavy"
+        required: false
+        default: hosted
+        type: string
+      cache-policy:
+        description: "Dependency cache policy: off, restore-only, or trusted-write"
+        required: false
+        default: restore-only
+        type: string
+      cache-path:
+        description: Repository-relative tool download cache; installed dependencies and build output are forbidden
+        required: false
+        default: .cache/heavy-ci
+        type: string
+      cache-schema:
+        description: Caller-controlled cache schema version
+        required: false
+        default: v1
+        type: string
+      toolchain:
+        description: Stable toolchain identifier included in the cache key
+        required: true
+        type: string
+      lockfile:
+        description: Repository-relative lockfile used in the cache key
+        required: true
+        type: string
+      entrypoint:
+        description: Repository-relative Bash adapter accepting a fixed stage name
+        required: false
+        default: .github/ci/heavy-ci
+        type: string
+      artifact-path:
+        description: Repository-relative build payload produced by the build stage
+        required: false
+        default: .heavy-ci/payload
+        type: string
+      run-unit:
+        required: false
+        default: true
+        type: boolean
+      run-integration:
+        required: false
+        default: false
+        type: boolean
+      run-browser:
+        required: false
+        default: false
+        type: boolean
+      run-live-smoke:
+        required: false
+        default: false
+        type: boolean
+      artifact-retention-days:
+        required: false
+        default: 14
+        type: number
+    outputs:
+      contract-version:
+        value: ${{ jobs.preflight.outputs.contract-version }}
+      artifact-name:
+        value: ${{ jobs.preflight.outputs.artifact-name }}
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+      artifact-digest:
+        value: ${{ jobs.build.outputs.artifact-digest }}
+      payload-sha256:
+        value: ${{ jobs.build.outputs.payload-sha256 }}
+      effective-execution-class:
+        value: ${{ jobs.preflight.outputs.effective-execution-class }}
+      cache-key:
+        value: ${{ jobs.build.outputs.cache-key }}
+      cache-hit:
+        value: ${{ jobs.build.outputs.cache-hit }}
+      metrics-artifact:
+        value: ${{ jobs.summary.outputs.metrics-artifact }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      contract-version: ${{ steps.contract.outputs.contract-version }}
+      artifact-name: ${{ steps.contract.outputs.artifact-name }}
+      metrics-artifact: ${{ steps.contract.outputs.metrics-artifact }}
+      runner: ${{ steps.contract.outputs.runner }}
+      trust-tier: ${{ steps.contract.outputs.trust-tier }}
+      can-write-cache: ${{ steps.contract.outputs.can-write-cache }}
+      effective-execution-class: ${{ steps.contract.outputs.effective-execution-class }}
+      matrix: ${{ steps.contract.outputs.matrix }}
+      has-fanout: ${{ steps.contract.outputs.has-fanout }}
+    steps:
+      - name: Validate contract and route trust
+        id: contract
+        shell: bash
+        env:
+          CONTRACT_ID: ${{ inputs.contract-id }}
+          EXECUTION_CLASS: ${{ inputs.execution-class }}
+          CACHE_POLICY: ${{ inputs.cache-policy }}
+          CACHE_PATH: ${{ inputs.cache-path }}
+          CACHE_SCHEMA: ${{ inputs.cache-schema }}
+          TOOLCHAIN: ${{ inputs.toolchain }}
+          LOCKFILE: ${{ inputs.lockfile }}
+          ENTRYPOINT: ${{ inputs.entrypoint }}
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
+          RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          EVENT_NAME: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ACTOR: ${{ github.actor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_UNIT: ${{ inputs.run-unit }}
+          RUN_INTEGRATION: ${{ inputs.run-integration }}
+          RUN_BROWSER: ${{ inputs.run-browser }}
+          RUN_LIVE_SMOKE: ${{ inputs.run-live-smoke }}
+        run: |
+          set -euo pipefail
+          case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
+          case "$CACHE_POLICY" in off|restore-only|trusted-write) ;; *) echo "cache-policy must be off, restore-only, or trusted-write" >&2; exit 2 ;; esac
+          for token in "$CONTRACT_ID" "$CACHE_SCHEMA" "$TOOLCHAIN"; do
+            [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "contract-id, cache-schema, and toolchain accept only safe identifier characters" >&2; exit 2; }
+          done
+          for path in "$CACHE_PATH" "$LOCKFILE" "$ENTRYPOINT" "$ARTIFACT_PATH"; do
+            [[ -n "$path" && "$path" != /* && ! "$path" =~ (^|/)\.\.(/|$) ]] || { echo "paths must be non-empty, repository-relative, and may not contain '..'" >&2; exit 2; }
+          done
+          [[ "$CACHE_PATH" != *$'\n'* ]] || { echo "cache-path accepts one repository-relative path" >&2; exit 2; }
+          while IFS= read -r cache_entry; do
+            [[ -z "$cache_entry" ]] && continue
+            [[ "$cache_entry" != /* && ! "$cache_entry" =~ (^|/)\.\.(/|$) ]] || { echo "cache paths must be repository-relative" >&2; exit 2; }
+            [[ ! "$cache_entry" =~ (^|/)(node_modules|vendor|dist|build|\.output)(/|$) ]] || { echo "installed dependencies and build outputs may not be shared as dependency caches" >&2; exit 2; }
+          done <<< "$CACHE_PATH"
+          (( RETENTION_DAYS >= 1 && RETENTION_DAYS <= 30 )) || { echo "artifact-retention-days must be between 1 and 30" >&2; exit 2; }
+
+          untrusted=false
+          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = 'dependabot[bot]' ]]; then
+            untrusted=true
+          fi
+          if [[ "$EXECUTION_CLASS" = trusted-heavy && "$untrusted" = true ]]; then
+            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
+            exit 2
+          fi
+
+          if [[ "$EXECUTION_CLASS" = trusted-heavy ]]; then
+            runner='["self-hosted","trusted-heavy"]'
+          else
+            runner='"ubuntu-24.04"'
+          fi
+          trust_tier=trusted
+          [[ "$untrusted" = true ]] && trust_tier=untrusted
+          can_write_cache=false
+          if [[ "$CACHE_POLICY" = trusted-write && "$trust_tier" = trusted && "$EVENT_NAME" = push && "$REF_NAME" = "$DEFAULT_BRANCH" ]]; then
+            can_write_cache=true
+          fi
+
+          stages=()
+          [[ "$RUN_UNIT" = true ]] && stages+=(unit)
+          [[ "$RUN_INTEGRATION" = true ]] && stages+=(integration)
+          [[ "$RUN_BROWSER" = true ]] && stages+=(browser)
+          [[ "$RUN_LIVE_SMOKE" = true ]] && stages+=(live-smoke)
+          matrix='{"include":['
+          separator=''
+          for stage in "${stages[@]}"; do
+            matrix+="${separator}{\"stage\":\"${stage}\"}"
+            separator=,
+          done
+          matrix+=']}'
+          [[ ${#stages[@]} -gt 0 ]] && has_fanout=true || has_fanout=false
+
+          artifact_name="heavy-ci-v2-${CONTRACT_ID}-${GITHUB_REPOSITORY_ID}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "contract-version=heavy-ci/v2"
+            echo "artifact-name=$artifact_name"
+            echo "metrics-artifact=${artifact_name}-metrics"
+            echo "runner=$runner"
+            echo "trust-tier=$trust_tier"
+            echo "can-write-cache=$can_write_cache"
+            echo "effective-execution-class=$EXECUTION_CLASS"
+            echo "matrix=$matrix"
+            echo "has-fanout=$has_fanout"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      payload-sha256: ${{ steps.bundle.outputs.payload-sha256 }}
+      cache-key: ${{ steps.cache-key.outputs.key }}
+      cache-hit: ${{ steps.cache-restore.outputs.cache-hit || 'false' }}
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Validate repository adapter and lockfile
+        shell: bash
+        env:
+          ENTRYPOINT: ${{ inputs.entrypoint }}
+          LOCKFILE: ${{ inputs.lockfile }}
+        run: |
+          set -euo pipefail
+          [[ -f "$ENTRYPOINT" ]] || { echo "missing entrypoint: $ENTRYPOINT" >&2; exit 2; }
+          [[ -f "$LOCKFILE" ]] || { echo "missing lockfile: $LOCKFILE" >&2; exit 2; }
+
+      - name: Derive isolated dependency cache key
+        id: cache-key
+        shell: bash
+        env:
+          TRUST_TIER: ${{ needs.preflight.outputs.trust-tier }}
+          CONTRACT_ID: ${{ inputs.contract-id }}
+          TOOLCHAIN: ${{ inputs.toolchain }}
+          CACHE_SCHEMA: ${{ inputs.cache-schema }}
+          LOCKFILE_HASH: ${{ hashFiles(inputs.lockfile) }}
+          CONTENT_HASH: ${{ hashFiles(inputs.lockfile, inputs.entrypoint) }}
+        run: |
+          set -euo pipefail
+          runner_image="${ImageOS:-self-hosted}"
+          key="${GITHUB_REPOSITORY_ID}-heavy-ci-v2-${CONTRACT_ID}-${TRUST_TIER}-${RUNNER_OS}-${RUNNER_ARCH}-${runner_image}-${TOOLCHAIN}-${CACHE_SCHEMA}-${LOCKFILE_HASH}-${CONTENT_HASH}"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore isolated dependency cache
+        id: cache-restore
+        if: ${{ inputs.cache-policy != 'off' }}
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Bootstrap once and build once
+        id: build-stage
+        shell: bash
+        env:
+          ENTRYPOINT: ${{ inputs.entrypoint }}
+          CACHE_PATH: ${{ inputs.cache-path }}
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        run: |
+          set -uo pipefail
+          mkdir -p .heavy-ci/evidence "$CACHE_PATH"
+          bootstrap_started=$(date +%s)
+          bash "$ENTRYPOINT" bootstrap
+          bootstrap_status=$?
+          bootstrap_finished=$(date +%s)
+          printf '{"stage":"bootstrap","started":%s,"finished":%s,"duration_seconds":%s,"status":%s}\n' \
+            "$bootstrap_started" "$bootstrap_finished" "$((bootstrap_finished-bootstrap_started))" "$bootstrap_status" > .heavy-ci/evidence/bootstrap.json
+          if (( bootstrap_status == 0 )); then
+            build_started=$(date +%s)
+            bash "$ENTRYPOINT" build
+            stage_status=$?
+            build_finished=$(date +%s)
+            printf '{"stage":"build","started":%s,"finished":%s,"duration_seconds":%s,"status":%s}\n' \
+              "$build_started" "$build_finished" "$((build_finished-build_started))" "$stage_status" > .heavy-ci/evidence/build.json
+          else
+            stage_status=$bootstrap_status
+          fi
+          (( stage_status == 0 )) || exit "$stage_status"
+          [[ -e "$ARTIFACT_PATH" ]] || { echo "build did not produce artifact-path: $ARTIFACT_PATH" >&2; exit 2; }
+
+      - name: Save canonical dependency cache
+        if: ${{ needs.preflight.outputs.can-write-cache == 'true' && steps.cache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Create immutable build bundle
+        id: bundle
+        shell: bash
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
+          ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact-name }}
+          CONTRACT_VERSION: ${{ needs.preflight.outputs.contract-version }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          bundle_dir="$RUNNER_TEMP/heavy-ci-bundle"
+          mkdir -p "$bundle_dir"
+          if find "$ARTIFACT_PATH" -type l -print -quit | grep -q .; then
+            echo "artifact-path may not contain symbolic links" >&2
+            exit 2
+          fi
+          tar -czf "$bundle_dir/payload.tar.gz" "$ARTIFACT_PATH"
+          payload_sha=$(sha256sum "$bundle_dir/payload.tar.gz" | awk '{print $1}')
+          printf '{"contract_version":"%s","source_sha":"%s","repository_id":"%s","run_id":"%s","run_attempt":"%s","artifact_name":"%s","payload_sha256":"%s","runner_os":"%s","runner_arch":"%s"}\n' \
+            "$CONTRACT_VERSION" "$GITHUB_SHA" "$GITHUB_REPOSITORY_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$ARTIFACT_NAME" "$payload_sha" "$RUNNER_OS" "$RUNNER_ARCH" > "$bundle_dir/manifest.json"
+          finished=$(date +%s)
+          printf '{"stage":"artifact-capture","started":%s,"finished":%s,"duration_seconds":%s,"status":0}\n' \
+            "$started" "$finished" "$((finished-started))" > .heavy-ci/evidence/artifact-capture.json
+          echo "payload-sha256=$payload_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable build bundle
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.preflight.outputs.artifact-name }}
+          path: ${{ runner.temp }}/heavy-ci-bundle
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+          compression-level: 0
+
+      - name: Upload build timing and failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.preflight.outputs.artifact-name }}-evidence-build
+          path: .heavy-ci/evidence
+          if-no-files-found: warn
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+  fanout:
+    if: ${{ needs.preflight.outputs.has-fanout == 'true' }}
+    needs: [preflight, build]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Download build bundle by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: ${{ runner.temp }}/heavy-ci-bundle
+          merge-multiple: true
+
+      - name: Verify and restore exact build bundle
+        shell: bash
+        env:
+          CONTRACT_VERSION: ${{ needs.preflight.outputs.contract-version }}
+          ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact-name }}
+          PAYLOAD_SHA256: ${{ needs.build.outputs.payload-sha256 }}
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        run: |
+          set -euo pipefail
+          bundle_dir="$RUNNER_TEMP/heavy-ci-bundle"
+          manifest="$bundle_dir/manifest.json"
+          payload="$bundle_dir/payload.tar.gz"
+          [[ -f "$manifest" && -f "$payload" ]] || { echo "artifact bundle is incomplete" >&2; exit 2; }
+          grep -Fq "\"contract_version\":\"$CONTRACT_VERSION\"" "$manifest"
+          grep -Fq "\"source_sha\":\"$GITHUB_SHA\"" "$manifest"
+          grep -Fq "\"repository_id\":\"$GITHUB_REPOSITORY_ID\"" "$manifest"
+          grep -Fq "\"run_id\":\"$GITHUB_RUN_ID\"" "$manifest"
+          grep -Fq "\"run_attempt\":\"$GITHUB_RUN_ATTEMPT\"" "$manifest"
+          grep -Fq "\"artifact_name\":\"$ARTIFACT_NAME\"" "$manifest"
+          grep -Fq "\"runner_os\":\"$RUNNER_OS\"" "$manifest"
+          grep -Fq "\"runner_arch\":\"$RUNNER_ARCH\"" "$manifest"
+          actual_sha=$(sha256sum "$payload" | awk '{print $1}')
+          [[ "$actual_sha" = "$PAYLOAD_SHA256" ]] || { echo "artifact payload checksum mismatch" >&2; exit 2; }
+          if tar -tzf "$payload" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "artifact contains an unsafe path" >&2
+            exit 2
+          fi
+          while IFS= read -r entry; do
+            [[ "$entry" = "$ARTIFACT_PATH" || "$entry" = "$ARTIFACT_PATH/"* ]] || { echo "artifact contains a path outside artifact-path" >&2; exit 2; }
+          done < <(tar -tzf "$payload")
+          tar -xzf "$payload" -C "$GITHUB_WORKSPACE"
+
+      - name: Run typed fan-out stage
+        shell: bash
+        env:
+          ENTRYPOINT: ${{ inputs.entrypoint }}
+          STAGE: ${{ matrix.stage }}
+          HEAVY_CI_ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        run: |
+          set -uo pipefail
+          mkdir -p .heavy-ci/evidence
+          if [[ "$STAGE" = browser ]]; then
+            prepare_started=$(date +%s)
+            bash "$ENTRYPOINT" e2e-prepare
+            stage_status=$?
+            prepare_finished=$(date +%s)
+            printf '{"stage":"e2e-prepare","started":%s,"finished":%s,"duration_seconds":%s,"status":%s,"artifact_id":"%s","payload_sha256":"%s"}\n' \
+              "$prepare_started" "$prepare_finished" "$((prepare_finished-prepare_started))" "$stage_status" "${{ needs.build.outputs.artifact-id }}" "${{ needs.build.outputs.payload-sha256 }}" > .heavy-ci/evidence/e2e-prepare.json
+          else
+            stage_status=0
+          fi
+          if (( stage_status == 0 )); then
+            started=$(date +%s)
+            bash "$ENTRYPOINT" "$STAGE"
+            stage_status=$?
+            finished=$(date +%s)
+            printf '{"stage":"%s","started":%s,"finished":%s,"duration_seconds":%s,"status":%s,"artifact_id":"%s","payload_sha256":"%s"}\n' \
+              "$STAGE" "$started" "$finished" "$((finished-started))" "$stage_status" "${{ needs.build.outputs.artifact-id }}" "${{ needs.build.outputs.payload-sha256 }}" > ".heavy-ci/evidence/${STAGE}.json"
+          fi
+          exit "$stage_status"
+
+      - name: Upload stage timing and failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.preflight.outputs.artifact-name }}-evidence-${{ matrix.stage }}
+          path: .heavy-ci/evidence
+          if-no-files-found: warn
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+  summary:
+    if: ${{ always() && needs.preflight.result == 'success' }}
+    needs: [preflight, build, fanout]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      metrics-artifact: ${{ steps.metrics.outputs.metrics-artifact }}
+    steps:
+      - name: Download stage evidence from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ needs.preflight.outputs.artifact-name }}-evidence-*
+          path: evidence
+          merge-multiple: true
+
+      - name: Assemble timing summary
+        id: metrics
+        shell: bash
+        env:
+          METRICS_ARTIFACT: ${{ needs.preflight.outputs.metrics-artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p metrics
+          find evidence -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > metrics/stages.ndjson
+          echo "metrics-artifact=$METRICS_ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload consolidated timing evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.preflight.outputs.metrics-artifact }}
+          path: metrics/stages.ndjson
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}

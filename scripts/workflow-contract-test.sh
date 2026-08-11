@@ -10,9 +10,11 @@ required_paths=(
   ".github/workflows/reusable-browser-quality.yml"
   ".github/workflows/reusable-ci-docker.yml"
   ".github/workflows/reusable-release-image.yml"
+  ".github/workflows/reusable-heavy-ci-v2.yml"
   "docs/workflows/contracts/reusable-browser-quality.md"
   "docs/workflows/contracts/reusable-ci-docker.md"
   "docs/workflows/contracts/reusable-release-image.md"
+  "docs/workflows/contracts/reusable-heavy-ci-v2.md"
 )
 
 for path in "${required_paths[@]}"; do

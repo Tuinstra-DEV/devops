@@ -16,3 +16,6 @@ docs/workflows/release-procedure.md @marcel-tuinstra
 # Security policy and executable workflow contract checks
 docs/security/pipeline-security-policy.md @marcel-tuinstra
 scripts/workflow-contract-test.sh @marcel-tuinstra
+scripts/heavy-ci-v2-contract-test.rb @marcel-tuinstra
+tests/fixtures/heavy-ci-v2/ @marcel-tuinstra
+templates/workflows/caller-heavy-ci-v2-canary.yml @marcel-tuinstra
