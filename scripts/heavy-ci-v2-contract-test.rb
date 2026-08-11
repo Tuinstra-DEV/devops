@@ -36,6 +36,7 @@ check.call(text.include?("node_modules|vendor|dist|build|\\.output"), "unsafe de
 check.call(text.include?("GITHUB_REPOSITORY_ID") && text.include?("CONTRACT_ID") && text.include?("RUNNER_OS") && text.include?("RUNNER_ARCH") && text.include?("ImageOS") && text.include?("LOCKFILE_HASH") && text.include?("CONTENT_HASH"), "cache key dimensions are incomplete")
 
 check.call(text.include?("artifact-ids: ${{ needs.build.outputs.artifact-id }}"), "fan-out does not consume the build artifact by ID")
+check.call(text.include?("merge-multiple: true"), "artifact ID download does not restore bundle files directly into the verified directory")
 check.call(text.include?("payload checksum mismatch"), "payload checksum verification is missing")
 check.call(text.include?("run_attempt") && text.include?("repository_id") && text.include?("source_sha"), "artifact manifest binding is incomplete")
 check.call(text.include?("artifact contains an unsafe path"), "archive path traversal check is missing")

@@ -341,6 +341,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
           path: ${{ runner.temp }}/heavy-ci-bundle
+          merge-multiple: true
 
       - name: Verify and restore exact build bundle
         shell: bash
