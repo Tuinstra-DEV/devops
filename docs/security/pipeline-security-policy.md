@@ -66,6 +66,14 @@ the DevOps platform.
 - Production reusable-workflow callers pin the approved v10 release commit by full SHA. Tags remain immutable discovery and audit markers.
 - Rollback changes caller SHAs and image digests through normal reviewed commits; it never rewrites a branch or moves a tag.
 
+### 9) Heavy CI Cache and Artifact Isolation
+
+- Dependency caches contain package-manager/tool downloads only; installed dependencies, build outputs, credentials, and generated secret material are prohibited.
+- Cache keys include repository, contract major and ID, trust tier, runner OS, architecture and image, toolchain, cache schema, lockfile hash, and adapter content hash. Broad restore prefixes are prohibited.
+- Canonical cache writes are allowed only for trusted pushes to the default branch. Pull requests restore at most; forks, Dependabot, and `pull_request_target` use an isolated untrusted tier and cannot write.
+- Build artifacts are current-run handoff objects, downloaded by returned artifact ID and verified against source SHA, repository ID, run ID, run attempt, contract version, and payload SHA-256 before extraction.
+- Heavy CI jobs remain read-only and cannot publish packages, deploy, request OIDC tokens, or inherit caller secrets.
+
 ## Pilot Repository Baseline
 
 The pilot model for control validation is documented in

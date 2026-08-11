@@ -23,5 +23,6 @@ if ! grep -q "Auth0" "README.md"; then
 fi
 
 ./scripts/workflow-contract-test.sh
+ruby ./scripts/heavy-ci-v2-contract-test.rb
 
 echo "test passed"

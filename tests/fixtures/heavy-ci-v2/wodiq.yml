@@ -1,0 +1,8 @@
+contract-id: wodiq-shape
+toolchain: node24-npm11
+lockfile: tests/fixtures/heavy-ci-v2/wodiq/package-lock.json
+entrypoint: tests/fixtures/heavy-ci-v2/wodiq/entrypoint.sh
+artifact-path: .heavy-ci/payload
+stages:
+  - unit
+  - browser

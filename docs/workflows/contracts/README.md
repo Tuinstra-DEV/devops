@@ -12,6 +12,12 @@ Workflow contracts document the stable API surface of each reusable workflow:
 
 ## Available Contracts
 
+### Heavy CI orchestration
+
+| Workflow | Contract | Status |
+|----------|----------|--------|
+| [reusable-heavy-ci-v2.yml](reusable-heavy-ci-v2.md) | heavy-ci/v2 | Candidate; devops-only validation |
+
 ### v10 CI and release contracts
 
 | Workflow | Version | Status |

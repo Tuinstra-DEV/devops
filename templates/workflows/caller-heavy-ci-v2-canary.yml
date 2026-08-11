@@ -1,0 +1,25 @@
+name: Heavy CI v2 canary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heavy-ci:
+    uses: "Tuinstra-DEV/devops/.github/workflows/reusable-heavy-ci-v2.yml@<full-reviewed-commit-sha>"
+    with:
+      contract-id: app
+      execution-class: hosted
+      cache-policy: restore-only
+      cache-path: .npm
+      cache-schema: v1
+      toolchain: node24-npm11
+      lockfile: package-lock.json
+      entrypoint: .github/ci/heavy-ci
+      artifact-path: .heavy-ci/payload
+      run-unit: true
+      run-integration: false
+      run-browser: true
+      run-live-smoke: false

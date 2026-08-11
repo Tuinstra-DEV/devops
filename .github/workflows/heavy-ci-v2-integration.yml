@@ -1,0 +1,39 @@
+name: Heavy CI v2 integration
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/reusable-heavy-ci-v2.yml
+      - .github/workflows/heavy-ci-v2-integration.yml
+      - tests/fixtures/heavy-ci-v2/**
+      - scripts/heavy-ci-v2-contract-test.rb
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wodiq-shape:
+    uses: ./.github/workflows/reusable-heavy-ci-v2.yml
+    with:
+      contract-id: wodiq-shape
+      execution-class: hosted
+      cache-policy: off
+      toolchain: node24-npm11
+      lockfile: tests/fixtures/heavy-ci-v2/wodiq/package-lock.json
+      entrypoint: tests/fixtures/heavy-ci-v2/wodiq/entrypoint.sh
+      run-unit: true
+      run-browser: true
+
+  tracker-shape:
+    uses: ./.github/workflows/reusable-heavy-ci-v2.yml
+    with:
+      contract-id: tracker-shape
+      execution-class: hosted
+      cache-policy: off
+      toolchain: node24-pnpm10-php83
+      lockfile: tests/fixtures/heavy-ci-v2/tracker/pnpm-lock.yaml
+      entrypoint: tests/fixtures/heavy-ci-v2/tracker/entrypoint.sh
+      run-unit: true
+      run-integration: true
+      run-browser: true

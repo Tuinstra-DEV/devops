@@ -14,6 +14,10 @@ uses: Tuinstra-DEV/devops/.github/workflows/reusable-ci-docker.yml@<full-v10-com
 
 This prevents an upstream tag movement or compromised release from silently changing consumer CI. `@main`, floating major tags, and short SHAs are prohibited in production callers. Canary validation may pin a reviewed feature commit SHA.
 
+## Heavy CI v2 candidate
+
+`heavy-ci/v2` names the orchestration schema, not a Git release tag. DEV-6 keeps it parallel to the stable v10 contracts and does not migrate consumers. After hosted canary evidence and review, release it under a new immutable platform version; do not repoint `v10` or introduce a moving `v2` tag. Consumers pin the reviewed release commit by full SHA and retain their previous hosted caller as the rollback path.
+
 ## Release semantics
 
 - Patch: implementation hardening or documentation with no public-interface or default change. Publish an immutable `v10.0.x` tag and deliberately update consumer SHAs after canary validation.
@@ -38,6 +42,8 @@ Existing required inputs are never removed within a major. New inputs must be op
 3. Resolve the release tag to a full commit SHA and validate that SHA in designated canary repositories on hosted runners.
 4. Enable `trusted-heavy` only for trusted repository events after runner controls are verified.
 5. Update production callers deliberately to the approved SHA and monitor them.
+
+For heavy CI v2, first run the WODIQ- and Tracker-shaped fixtures in the devops repository. A later consumer canary must start hosted, record cache restore, bootstrap, build, artifact transfer, and test-stage timings, and compare repeated runs before any speed claim or `trusted-heavy` rollout.
 
 Repository variables may select the execution class with a safe fallback:
 
