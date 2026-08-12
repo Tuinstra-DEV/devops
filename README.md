@@ -25,14 +25,19 @@ Auth0 is the accepted central identity provider for the DevOps platform and down
    - `make lint`
    - `make test`
 4. Reuse workflows from other repositories with:
-   - `uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1`
+   - `uses: Tuinstra-DEV/devops/.github/workflows/reusable-ci.yml@<full-40-character-commit-sha>`
+   - Resolve an approved immutable release tag once, review the commit, and pin
+     that full SHA. Do not use a moving branch or major-version reference.
 
 ## Access Model
 
 - Repository visibility: public (required for reusable workflow consumption).
 - No secrets, credentials, or application code are stored in this repository.
 - Write access remains limited to maintainers of this DevOps platform repo.
-- Consumer repos reference workflows via `uses: marcel-tuinstra/devops/.github/workflows/<workflow>@v1`.
+- Consumer repos reference workflows via
+  `uses: Tuinstra-DEV/devops/.github/workflows/<workflow>@<full-40-character-commit-sha>`.
+  See the [workflow versioning policy](docs/workflows/versioning-policy.md) for
+  release, migration, and rollback rules.
 
 ## Consumer Onboarding
 
