@@ -4,6 +4,7 @@ set -euo pipefail
 matrix="docs/workflows/heavy-ci-rollout-matrix.md"
 evidence="docs/workflows/heavy-ci-evidence-template.md"
 runbook="docs/playbooks/heavy-ci-consumer-cutover.md"
+readme="README.md"
 
 for file in "$matrix" "$evidence" "$runbook"; do
   [[ -f "$file" ]] || { echo "Missing DEV-8 artifact: $file"; exit 1; }
@@ -41,5 +42,17 @@ require_text "$matrix" "heavy-ci-consumer-cutover.md"
 require_text "$matrix" "heavy-ci-evidence-template.md"
 require_text "$runbook" "Hosted rollback procedure"
 require_text "$runbook" "Never force-push"
+require_text "$readme" "Tuinstra-DEV/devops/.github/workflows/"
+require_text "$readme" "<full-40-character-commit-sha>"
+
+if grep -Fq "marcel-tuinstra/devops/.github/workflows/" "$readme"; then
+  echo "$readme must use the current Tuinstra-DEV/devops repository"
+  exit 1
+fi
+
+if grep -Eq 'uses:.*@v[0-9]+' "$readme"; then
+  echo "$readme must pin consumer workflows to an immutable full commit SHA"
+  exit 1
+fi
 
 echo "heavy CI rollout documentation test passed"
