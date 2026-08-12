@@ -20,7 +20,7 @@ for repo in WODIQ tracker gate console notify tuinstra-site marcel-site wodiq-si
   require_text "\`$repo\`"
 done
 
-for section in "Corrected baseline summary" "Top three time-cost drivers" "Cache findings versus opportunities" "DEV-7 pilot evidence and revised targets" "Pilot decisions, order, and capacity envelope"; do
+for section in "Corrected baseline summary" "Top three time-cost drivers" "Cache findings versus opportunities" "DEV-7 pilot evidence and revised targets" "DEV-7 final operational verification" "Pilot decisions, order, and capacity envelope"; do
   require_text "## $section"
 done
 
@@ -28,5 +28,8 @@ require_text "five comparable successes"
 require_text "three comparable misses"
 require_text "20% median improvement"
 require_text "Sanctuary admits at most two isolated jobs"
+require_text "31580093134"
+require_text "31580953872"
+require_text "31573285381"
 
 echo "heavy CI baseline documentation test passed"

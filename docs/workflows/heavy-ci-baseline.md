@@ -133,6 +133,27 @@ and write canonical download caches only on a trusted default-branch push.
 Gate remains evidence-only until its open dependency stream settles and its
 container-cache equivalence is demonstrated.
 
+## DEV-7 final operational verification
+
+The merged consumer changes were checked once more after the failure-evidence
+and package-manager corrections. These runs prove routing, cache behavior,
+artifact handoff, failure handling, and repository semantics. They do not
+replace the minimum sample gate above and are not used as new medians.
+
+| Repository | Final evidence | Cache, queue, and capacity | Failure, semantics, and rollback conclusion |
+|---|---|---|---|
+| `WODIQ` | [Hosted canary run 31580093134](https://github.com/Tuinstra-DEV/WODIQ/actions/runs/31580093134) passed on the failure-safe contract pin. Preflight completed in about 5s, build in 2:03, unit/typecheck fan-out in 2:11, and summary in 7s; the workflow wall interval was about 4:34. | Aggregate job queue was about 9s. The preceding canary run 31578877704 seeded the exact npm download cache; 31580093134 restored that primary key and skipped the save. Total job occupation was about 4:24, not a billing claim. | All sampled DEV-7 WODIQ runs were successful first attempts. The additive canary receives no secrets and changes no existing check or release gate. Rollback is a normal commit restoring the previous full workflow SHA; `CI_HEAVY_EXECUTION_CLASS=hosted` remains the routing fallback. The canary stage set is not comparable to the incumbent required-check set, so no 30% or Actions-minute claim is made. |
+| `tracker` | Initial canary run 31578890215 failed closed because the hosted image selected the wrong pnpm version and exposed a missing failure-evidence path. DevOps [run 31579263539](https://github.com/Tuinstra-DEV/devops/actions/runs/31579263539) then passed both consumer shapes, and [Tracker run 31580953872](https://github.com/Tuinstra-DEV/tracker/actions/runs/31580953872) passed with exact pnpm 11.1.1: preflight about 3s, build 45s, frontend fan-out 2:45, and summary 7s. | The final run used hosted execution, wrote the canonical cache only from trusted `develop`, and retained payload, build evidence, unit evidence, and metrics artifacts. The existing quality workflow remains the measured production path; its roughly 12% hosted-minute and 96% heavy-runner-occupation reductions remain the portfolio's defensible cost result. | PRs #86 and #136 preserve failed-stage evidence and exact toolchain selection. Existing backend and service-aware browser semantics remain outside the additive canary. Manual hosted rollback run 31522407850 bypassed `trusted-heavy`; its unchanged failed-job retry passed. |
+| `gate` | [PR run 31573285381 attempt 2](https://github.com/Tuinstra-DEV/gate/actions/runs/31573285381/attempts/2) passed before merge: approximately 5:30 wall, frontend static 2:04, frontend browser 3:03, and the caller-owned frontend aggregate green. | The critical frontend-static queue was about 2s and the downstream browser queue about 3s. Composer restored successfully and frontend static reported a primary-key pnpm cache hit. One passing rerun cannot establish an Actions-minute or queue median. | The aggregate frontend context, backend/API coverage, and release semantics were preserved. Earlier failed/cancelled attempts remain part of the reliability evidence. Hosted routing was observed, but no separate Gate rollback exercise exists; the documented fallback is `CI_HEAVY_EXECUTION_CLASS=hosted`. Gate therefore remains evidence-only until five comparable successful first attempts and BuildKit/image-equivalence proof exist. |
+
+GitHub's sampled billing endpoint did not provide non-zero billable minutes for
+the WODIQ and Gate evidence. Runner occupation above is calculated from job
+timestamps and is labelled separately. WODIQ and Gate therefore satisfy the
+documented compatibility, trust, cache-signal, failure, and revised-target
+parts of the pilot; Tracker supplies the measured Actions-minute and capacity
+reduction. No repository is promoted to a broader rollout on these single-run
+observations.
+
 ## Pilot decisions, order, and capacity envelope
 
 1. **WODIQ measurement:** capture attempt, concurrency, dependency eligibility,
