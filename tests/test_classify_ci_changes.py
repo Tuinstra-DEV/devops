@@ -160,6 +160,23 @@ class ClassifierTests(unittest.TestCase):
             self.assertEqual(evidence["reason"], "invalid-sha")
             self.assertIn("run-backend=true", github_output.read_text(encoding="utf-8"))
 
+    def test_main_forced_backstop_does_not_require_a_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_path = root / "policy.json"
+            policy_path.write_text(json.dumps(policy()), encoding="utf-8")
+            output = root / "evidence.json"
+            code = classifier.main([
+                "--policy", str(policy_path), "--base-sha", "", "--head-sha", "",
+                "--mode", "selective", "--force-full", "true",
+                "--output", str(output), "--today", "2026-08-13",
+            ])
+            self.assertEqual(code, 0)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["reason"], "caller-forced-full")
+            self.assertEqual(evidence["changedFiles"], [])
+            self.assertTrue(all(evidence["routes"].values()))
+
     def test_composite_action_uses_environment_not_shell_interpolation(self):
         action = (ROOT / ".github/actions/classify-ci-changes/action.yml").read_text()
         self.assertIn('python3 "$GITHUB_ACTION_PATH/classify_ci_changes.py"', action)

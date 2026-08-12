@@ -294,8 +294,13 @@ def main(argv: list[str] | None = None) -> int:
             date.fromisoformat(args.today) if args.today else None,
         )
         digest = canonical_digest(policy)
-        records = parse_name_status_z(Path(args.diff_fixture).read_bytes()) \
+        # Scheduled/manual backstops deliberately have no meaningful diff. A
+        # caller-forced full run must therefore not depend on fetch depth or a
+        # synthetic SHA range to remain safe and observable.
+        records = [] if args.force_full == "true" else (
+            parse_name_status_z(Path(args.diff_fixture).read_bytes())
             if args.diff_fixture else git_diff(args.base_sha, args.head_sha)
+        )
         evidence = classify(
             policy, records, mode=mode,
             force_full=args.force_full == "true", policy_digest=digest,
