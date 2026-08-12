@@ -44,6 +44,9 @@ check.call(text.include?("artifact-path may not contain symbolic links"), "artif
 check.call(text.include?("artifact contains a path outside artifact-path"), "artifact root confinement is missing")
 check.call(text.include?("compression-level: 0"), "already-compressed bundle should not be recompressed")
 check.call(text.include?("duration_seconds") && text.include?("status"), "stage timing/failure evidence is missing")
+check.call(text.scan("set +e").length == 2, "build and fan-out stages must capture adapter failures before exiting")
+check.call(text.scan("include-hidden-files: true").length == 2, "hidden build and fan-out evidence must be uploaded explicitly")
+check.call(text.include?("mkdir -p evidence metrics"), "summary must tolerate a missing evidence download")
 %w[bootstrap build artifact-capture e2e-prepare].each { |stage| check.call(text.include?("stage\":\"#{stage}"), "timing evidence missing for #{stage}") }
 check.call(!text.match?(/^\s*(packages|deployments|id-token|attestations|security-events):\s*write\s*$/), "heavy CI grants a privileged write permission")
 check.call(!text.match?(/^\s*secrets:\s*inherit\s*$/), "secrets: inherit is prohibited")
