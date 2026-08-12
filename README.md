@@ -83,6 +83,13 @@ Shared deployment script documentation is available at
 Reusable Nuxt SSG CD workflow documentation is available at
 `docs/workflows/reusable-cd-nuxt-ssg.md`.
 
+## CI billing evidence
+
+The read-only GitHub Actions billing command and daily workflow generate
+sanitized current-period, rolling 7-day, and rolling 30-day reports. Setup,
+metric boundaries, degraded-data semantics, and durable archive procedure are
+documented in [`docs/operations/ci-billing-reporting.md`](docs/operations/ci-billing-reporting.md).
+
 ## Ephemeral heavy CI
 
 The production design and host automation for the two-slot Sanctuary
