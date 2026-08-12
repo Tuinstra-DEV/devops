@@ -180,6 +180,8 @@ class ClassifierTests(unittest.TestCase):
     def test_composite_action_uses_environment_not_shell_interpolation(self):
         action = (ROOT / ".github/actions/classify-ci-changes/action.yml").read_text()
         self.assertIn('python3 "$GITHUB_ACTION_PATH/classify_ci_changes.py"', action)
+        self.assertIn('ROUTING_REPOSITORY: ${{ github.repository }}', action)
+        self.assertIn('--repository "$ROUTING_REPOSITORY"', action)
         self.assertNotIn("${{ inputs.base-sha }} ", action)
 
 

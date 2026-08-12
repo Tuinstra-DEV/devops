@@ -69,6 +69,7 @@ runs:
         ROUTING_MODE: ${{ inputs.mode }}
         ROUTING_FORCE_FULL: ${{ inputs.force-full }}
         ROUTING_EVIDENCE_PATH: ${{ inputs.evidence-path }}
+        ROUTING_REPOSITORY: ${{ github.repository }}
       run: |
         set -euo pipefail
         python3 "$GITHUB_ACTION_PATH/classify_ci_changes.py" \
@@ -77,6 +78,7 @@ runs:
           --head-sha "$ROUTING_HEAD_SHA" \
           --mode "$ROUTING_MODE" \
           --force-full "$ROUTING_FORCE_FULL" \
+          --repository "$ROUTING_REPOSITORY" \
           --output "$ROUTING_EVIDENCE_PATH" \
           --github-output "$GITHUB_OUTPUT" \
           --github-summary "$GITHUB_STEP_SUMMARY"
