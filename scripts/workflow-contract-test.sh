@@ -56,7 +56,8 @@ for file in "${contract_files[@]}"; do
   grep -Fq "|| 'ubuntu-24.04'" "$file" || fail "$file does not use the safe hosted fallback"
   grep -Fq "github.event_name != 'pull_request_target'" "$file" || fail "$file does not keep pull_request_target off trusted runners"
   grep -Fq '!github.event.pull_request.head.repo.fork' "$file" || fail "$file does not keep forks off trusted runners"
-  grep -Fq "github.actor != 'dependabot[bot]'" "$file" || fail "$file does not keep Dependabot off trusted runners"
+  grep -Fq "!endsWith(github.actor, '[bot]')" "$file" || fail "$file does not keep bots off trusted runners"
+  grep -Fq "github.event.pull_request.user.type != 'Bot'" "$file" || fail "$file does not preserve bot authorship after synchronization"
 done
 
 docker_workflow=".github/workflows/reusable-ci-docker.yml"

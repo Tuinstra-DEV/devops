@@ -26,7 +26,7 @@ Output `report-artifact` is `browser-quality-<github.sha>`. The workflow accepts
 
 ## Execution trust boundary
 
-`execution-class` accepts only `hosted` or `trusted-heavy`. Omitted and invalid values select `ubuntu-24.04`; invalid values then fail validation. `trusted-heavy` resolves only to `[self-hosted, trusted-heavy]` and is rejected for fork pull requests, `pull_request_target`, and Dependabot. Callers must preserve a hosted path for untrusted changes.
+`execution-class` accepts only `hosted` or `trusted-heavy`. Omitted and invalid values select `ubuntu-24.04`; invalid values then fail validation. `trusted-heavy` resolves only to `[self-hosted, trusted-heavy]` and is rejected for fork pull requests, `pull_request_target`, and every actor whose login ends in `[bot]`, including Dependabot and Renovate. Callers must preserve a hosted path for untrusted changes.
 
 Consumer repositories can use a controlled repository variable while retaining the safe default:
 
@@ -39,4 +39,3 @@ jobs:
 ```
 
 For manual callers, expose a `workflow_dispatch` choice containing only `hosted` and `trusted-heavy`. Never pass a free-form runner label.
-
