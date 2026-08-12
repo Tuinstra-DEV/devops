@@ -26,6 +26,10 @@ CONTROL_PLANE_PATTERNS = (
     ".github/CODEOWNERS", ".github/dependabot.yml", "renovate.json",
     "scripts/ci/**", "tests/ci/**", "runner/**", "infra/**",
     "**/*lock*", "**/package.json", "**/composer.json", "**/Dockerfile",
+    "**/pnpm-workspace.yaml", "**/pyproject.toml", "**/requirements*.txt",
+    "**/Gemfile", "**/go.mod", "**/Cargo.toml", "**/nuxt.config.*",
+    "**/vite.config.*", "**/webpack.config.*", "**/rollup.config.*",
+    "**/tsconfig*.json", "**/phpunit.xml*",
     "**/.dockerignore", "**/*compose*.yml", "**/*compose*.yaml",
     "**/.env*", "**/*auth*", "**/*secret*", "**/*credential*",
     "**/*security*", "**/*openapi*", "**/*release*", "**/*deploy*",
@@ -89,7 +93,10 @@ def load_policy(path: Path, repository: str | None = None, today: date | None = 
         expires = date.fromisoformat(payload["expiresAt"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ClassifierError("invalid-policy-lifetime") from exc
-    if reviewed > expires or (today or date.today()) > expires:
+    current_date = today or date.today()
+    if reviewed > current_date:
+        raise ClassifierError("future-policy-review")
+    if reviewed > expires or (expires - reviewed).days > 90 or current_date > expires:
         raise ClassifierError("stale-policy")
     classes = payload.get("classes")
     routes = payload.get("routes")
@@ -122,6 +129,11 @@ def load_policy(path: Path, repository: str | None = None, today: date | None = 
             for stage, enabled in route.items()
         ):
             raise ClassifierError("invalid-policy-route")
+    if set(routes) != names:
+        raise ClassifierError("incomplete-policy-routes")
+    for class_name in {"frontend", "backend"}:
+        if not routes[class_name] or not any(routes[class_name].values()):
+            raise ClassifierError("empty-selective-route")
     return payload
 
 

@@ -136,6 +136,42 @@ class ClassifierTests(unittest.TestCase):
             with self.assertRaisesRegex(classifier.ClassifierError, "incomplete"):
                 classifier.load_policy(path, today=date(2026, 8, 13))
 
+    def test_policy_rejects_future_or_overlong_reviews_and_incomplete_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            future = policy()
+            future["reviewedAt"] = "2026-08-14"
+            path.write_text(json.dumps(future), encoding="utf-8")
+            with self.assertRaisesRegex(classifier.ClassifierError, "future"):
+                classifier.load_policy(path, today=date(2026, 8, 13))
+
+            overlong = policy()
+            overlong["expiresAt"] = "2026-11-11"
+            path.write_text(json.dumps(overlong), encoding="utf-8")
+            with self.assertRaisesRegex(classifier.ClassifierError, "stale"):
+                classifier.load_policy(path, today=date(2026, 8, 13))
+
+            missing_route = policy()
+            del missing_route["routes"]["backend"]
+            path.write_text(json.dumps(missing_route), encoding="utf-8")
+            with self.assertRaisesRegex(classifier.ClassifierError, "incomplete-policy-routes"):
+                classifier.load_policy(path, today=date(2026, 8, 13))
+
+            empty_route = policy()
+            empty_route["routes"]["frontend"] = {}
+            path.write_text(json.dumps(empty_route), encoding="utf-8")
+            with self.assertRaisesRegex(classifier.ClassifierError, "empty-selective-route"):
+                classifier.load_policy(path, today=date(2026, 8, 13))
+
+    def test_build_and_dependency_control_files_force_full(self):
+        for path in (
+            "pnpm-workspace.yaml", "frontend/nuxt.config.ts", "vite.config.mjs",
+            "tsconfig.json", "pyproject.toml", "requirements-dev.txt", "go.mod",
+        ):
+            with self.subTest(path=path):
+                result = self.classify(path)
+                self.assertEqual(result["reason"], "non-overridable-full-safe-path")
+
     def test_evidence_and_policy_digest_are_deterministic(self):
         first = self.classify("frontend/z", "backend/a")
         second = self.classify("backend/a", "frontend/z")

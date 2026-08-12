@@ -14,6 +14,11 @@ booleans. A path may match multiple classes. Routes are unioned. Runtime,
 container, contract, security and workflow classes always select the full safe
 path regardless of consumer configuration.
 
+All eight classes and all eight route entries are mandatory. Frontend and
+backend routes must select at least one stage; documentation may intentionally
+select none. Reviews cannot be future-dated and policies expire after at most
+90 days.
+
 The action additionally owns non-overridable rules for workflow/action/policy,
 runner, authentication, secrets, credentials, lockfiles, package manifests,
 build scripts, containers, API contracts, release and deployment paths.
