@@ -15,6 +15,7 @@ required_paths=(
   "scripts/gate-baseline-scan.sh"
   "scripts/workflow-contract-test.sh"
   "scripts/heavy-ci-v2-contract-test.rb"
+  "scripts/heavy-ci-rollout-docs-test.sh"
   "templates/workflows/caller-gate-baseline.yml"
   "templates/docker/nuxt-ssg-nginx.Dockerfile"
 )
@@ -32,5 +33,6 @@ ruby -e '
 '
 
 ruby -c scripts/heavy-ci-v2-contract-test.rb
+bash -n scripts/heavy-ci-rollout-docs-test.sh
 
 echo "lint passed"
