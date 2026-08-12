@@ -39,6 +39,11 @@ Auth0 is the accepted central identity provider for the DevOps platform and down
 See `docs/onboarding/consumer-migration-checklist.md` for a step-by-step guide to integrating your project with these reusable workflows.
 Gate rollout readiness is documented in `docs/standards/gate-baseline.md`.
 
+Heavy CI adoption is governed by the
+[`rollout matrix`](docs/workflows/heavy-ci-rollout-matrix.md), its reusable
+[`evidence template`](docs/workflows/heavy-ci-evidence-template.md), and the
+[`consumer cutover and rollback runbook`](docs/playbooks/heavy-ci-consumer-cutover.md).
+
 The corrected nine-repository performance baseline, shared stage taxonomy, and
 capacity decisions are documented in
 [`docs/workflows/heavy-ci-baseline.md`](docs/workflows/heavy-ci-baseline.md).
