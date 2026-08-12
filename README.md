@@ -39,6 +39,10 @@ Auth0 is the accepted central identity provider for the DevOps platform and down
 See `docs/onboarding/consumer-migration-checklist.md` for a step-by-step guide to integrating your project with these reusable workflows.
 Gate rollout readiness is documented in `docs/standards/gate-baseline.md`.
 
+The corrected nine-repository performance baseline, shared stage taxonomy, and
+capacity decisions are documented in
+[`docs/workflows/heavy-ci-baseline.md`](docs/workflows/heavy-ci-baseline.md).
+
 ## Reusable Workflow Example
 
 An example caller exists at `.github/workflows/example-caller.yml`.
