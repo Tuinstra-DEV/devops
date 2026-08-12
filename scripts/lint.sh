@@ -8,6 +8,8 @@ required_paths=(
   ".github/workflows/reusable-ci-docker.yml"
   ".github/workflows/reusable-release-image.yml"
   ".github/workflows/reusable-heavy-ci-v2.yml"
+  ".github/actions/classify-ci-changes/action.yml"
+  ".github/actions/classify-ci-changes/classify_ci_changes.py"
   "README.md"
   "docs/testing.md"
   "docs/standards/gate-baseline.md"
@@ -17,6 +19,8 @@ required_paths=(
   "scripts/heavy-ci-v2-contract-test.rb"
   "scripts/heavy-ci-rollout-docs-test.sh"
   "scripts/heavy-ci-baseline-test.sh"
+  "tests/test_classify_ci_changes.py"
+  "docs/workflows/change-aware-routing.md"
   "templates/workflows/caller-gate-baseline.yml"
   "templates/docker/nuxt-ssg-nginx.Dockerfile"
 )
@@ -36,5 +40,6 @@ ruby -e '
 ruby -c scripts/heavy-ci-v2-contract-test.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
+python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
 
 echo "lint passed"
