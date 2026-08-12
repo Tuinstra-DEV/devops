@@ -44,6 +44,10 @@ Heavy CI adoption is governed by the
 [`evidence template`](docs/workflows/heavy-ci-evidence-template.md), and the
 [`consumer cutover and rollback runbook`](docs/playbooks/heavy-ci-consumer-cutover.md).
 
+The corrected nine-repository performance baseline, shared stage taxonomy, and
+capacity decisions are documented in
+[`docs/workflows/heavy-ci-baseline.md`](docs/workflows/heavy-ci-baseline.md).
+
 ## Reusable Workflow Example
 
 An example caller exists at `.github/workflows/example-caller.yml`.

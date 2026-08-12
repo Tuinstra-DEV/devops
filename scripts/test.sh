@@ -25,5 +25,6 @@ fi
 ./scripts/workflow-contract-test.sh
 ruby ./scripts/heavy-ci-v2-contract-test.rb
 ./scripts/heavy-ci-rollout-docs-test.sh
+./scripts/heavy-ci-baseline-test.sh
 
 echo "test passed"
