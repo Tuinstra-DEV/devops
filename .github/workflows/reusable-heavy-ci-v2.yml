@@ -251,6 +251,7 @@ jobs:
           CACHE_PATH: ${{ inputs.cache-path }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
         run: |
+          set +e
           set -uo pipefail
           mkdir -p .heavy-ci/evidence "$CACHE_PATH"
           bootstrap_started=$(date +%s)
@@ -321,6 +322,7 @@ jobs:
           name: ${{ needs.preflight.outputs.artifact-name }}-evidence-build
           path: .heavy-ci/evidence
           if-no-files-found: warn
+          include-hidden-files: true
           retention-days: ${{ inputs.artifact-retention-days }}
 
   fanout:
@@ -382,6 +384,7 @@ jobs:
           STAGE: ${{ matrix.stage }}
           HEAVY_CI_ARTIFACT_PATH: ${{ inputs.artifact-path }}
         run: |
+          set +e
           set -uo pipefail
           mkdir -p .heavy-ci/evidence
           if [[ "$STAGE" = browser ]]; then
@@ -411,6 +414,7 @@ jobs:
           name: ${{ needs.preflight.outputs.artifact-name }}-evidence-${{ matrix.stage }}
           path: .heavy-ci/evidence
           if-no-files-found: warn
+          include-hidden-files: true
           retention-days: ${{ inputs.artifact-retention-days }}
 
   summary:
@@ -436,7 +440,7 @@ jobs:
           METRICS_ARTIFACT: ${{ needs.preflight.outputs.metrics-artifact }}
         run: |
           set -euo pipefail
-          mkdir -p metrics
+          mkdir -p evidence metrics
           find evidence -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > metrics/stages.ndjson
           echo "metrics-artifact=$METRICS_ARTIFACT" >> "$GITHUB_OUTPUT"
 
