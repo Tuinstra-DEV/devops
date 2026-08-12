@@ -49,7 +49,7 @@ the DevOps platform.
 
 - Public contracts expose only `hosted` and `trusted-heavy`; arbitrary labels, groups, and `runs-on` fragments are prohibited.
 - `hosted` is the default and the fallback whenever a caller omits or supplies an invalid class.
-- Fork pull requests, Dependabot, and `pull_request_target` must never schedule `trusted-heavy`. The runner-selection expression enforces this before a job is queued, and contract validation fails a forbidden request on a hosted runner.
+- Fork pull requests, Dependabot, and `pull_request_target` must never schedule `trusted-heavy`. The hosted preflight enforces this before a heavy job is queued and routes a valid forbidden request to the documented hosted/full fallback.
 - Consumer repository variables may select the execution class only with an explicit hosted fallback. Manual inputs must be enumerated choices.
 
 ### 7) Build and Release Integrity
@@ -73,6 +73,7 @@ the DevOps platform.
 - Canonical cache writes are allowed only for trusted pushes to the default branch. Pull requests restore at most; forks, Dependabot, and `pull_request_target` use an isolated untrusted tier and cannot write.
 - Build artifacts are current-run handoff objects, downloaded by returned artifact ID and verified against source SHA, repository ID, run ID, run attempt, contract version, and payload SHA-256 before extraction.
 - Heavy CI jobs remain read-only and cannot publish packages, deploy, request OIDC tokens, or inherit caller secrets.
+- Heavy CI preflight validates the resolved caller and reusable workflow SHAs, requires full-SHA pins for cross-repository calls, verifies caller entrypoint/lockfile and cache/artifact path safety, and emits a machine-readable queue decision before heavy jobs become eligible.
 
 ## Pilot Repository Baseline
 

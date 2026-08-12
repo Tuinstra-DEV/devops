@@ -85,6 +85,16 @@ on:
         value: ${{ jobs.build.outputs.cache-hit }}
       metrics-artifact:
         value: ${{ jobs.summary.outputs.metrics-artifact }}
+      preflight-decision:
+        value: ${{ jobs.preflight.outputs.preflight-decision }}
+      preflight-reason-category:
+        value: ${{ jobs.preflight.outputs.preflight-reason-category }}
+      preflight-evidence:
+        value: ${{ jobs.preflight.outputs.preflight-evidence }}
+      planned-expensive-jobs:
+        value: ${{ jobs.preflight.outputs.planned-expensive-jobs }}
+      avoided-expensive-jobs:
+        value: ${{ jobs.preflight.outputs.avoided-expensive-jobs }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -104,7 +114,17 @@ jobs:
       effective-execution-class: ${{ steps.contract.outputs.effective-execution-class }}
       matrix: ${{ steps.contract.outputs.matrix }}
       has-fanout: ${{ steps.contract.outputs.has-fanout }}
+      preflight-decision: ${{ steps.contract.outputs.decision }}
+      preflight-reason-category: ${{ steps.contract.outputs.reason-category }}
+      preflight-evidence: ${{ steps.contract.outputs.preflight-evidence }}
+      planned-expensive-jobs: ${{ steps.contract.outputs.planned-expensive-jobs }}
+      avoided-expensive-jobs: ${{ steps.contract.outputs.avoided-expensive-jobs }}
     steps:
+      - name: Checkout exact caller source for preflight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
       - name: Validate contract and route trust
         id: contract
         shell: bash
@@ -122,46 +142,209 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          REUSABLE_WORKFLOW_REF: ${{ job.workflow_ref }}
+          REUSABLE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          REUSABLE_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
           RUN_UNIT: ${{ inputs.run-unit }}
           RUN_INTEGRATION: ${{ inputs.run-integration }}
           RUN_BROWSER: ${{ inputs.run-browser }}
           RUN_LIVE_SMOKE: ${{ inputs.run-live-smoke }}
         run: |
-          set -euo pipefail
-          case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
-          case "$CACHE_POLICY" in off|restore-only|trusted-write) ;; *) echo "cache-policy must be off, restore-only, or trusted-write" >&2; exit 2 ;; esac
+          set -uo pipefail
+          preflight_started=$(date +%s)
+          decision=blocked
+          reason_category=invalid-context
+          reason_detail=preflight-not-completed
+          requested_execution_class_evidence=invalid
+          effective_execution_class=hosted
+          runner='"ubuntu-24.04"'
+          trust_tier=untrusted
+          can_write_cache=false
+          candidate_expensive_jobs=1
+          planned_expensive_jobs=0
+          avoided_expensive_jobs=1
+          enabled_stage_count=0
+
+          json_escape() {
+            local value="$1"
+            value=${value//\\/\\\\}
+            value=${value//\"/\\\"}
+            value=${value//$'\n'/\\n}
+            value=${value//$'\r'/\\r}
+            value=${value//$'\t'/\\t}
+            printf '%s' "$value"
+          }
+
+          emit_preflight() {
+            local finished duration evidence
+            finished=$(date +%s)
+            duration=$((finished-preflight_started))
+            evidence=$(printf '{"schema_version":"heavy-ci/preflight-v1","decision":"%s","reason_category":"%s","requested_execution_class":"%s","effective_execution_class":"%s","trust_tier":"%s","event_name":"%s","enabled_stage_count":%s,"planned_expensive_jobs":%s,"avoided_expensive_jobs":%s,"duration_seconds":%s,"caller_workflow_sha":"%s","reusable_workflow_sha":"%s"}' \
+              "$(json_escape "$decision")" "$(json_escape "$reason_category")" "$(json_escape "$requested_execution_class_evidence")" \
+              "$(json_escape "$effective_execution_class")" "$(json_escape "$trust_tier")" "$(json_escape "$EVENT_NAME")" \
+              "$enabled_stage_count" "$planned_expensive_jobs" "$avoided_expensive_jobs" "$duration" \
+              "$(json_escape "$CALLER_WORKFLOW_SHA")" "$(json_escape "$REUSABLE_WORKFLOW_SHA")")
+            {
+              echo "decision=$decision"
+              echo "reason-category=$reason_category"
+              echo "preflight-evidence=$evidence"
+              echo "planned-expensive-jobs=$planned_expensive_jobs"
+              echo "avoided-expensive-jobs=$avoided_expensive_jobs"
+              echo "effective-execution-class=$effective_execution_class"
+              echo "runner=$runner"
+              echo "trust-tier=$trust_tier"
+              echo "can-write-cache=$can_write_cache"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo '### Heavy CI v2 preflight'
+              echo
+              echo '```json'
+              echo "$evidence"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          block_preflight() {
+            reason_category="$1"
+            reason_detail="$2"
+            decision=blocked
+            planned_expensive_jobs=0
+            avoided_expensive_jobs=$candidate_expensive_jobs
+            emit_preflight
+            echo "Heavy CI v2 preflight blocked [$reason_category]: $reason_detail" >&2
+            exit 2
+          }
+
+          skip_preflight() {
+            reason_category="$1"
+            reason_detail="$2"
+            decision=skip
+            planned_expensive_jobs=0
+            avoided_expensive_jobs=$candidate_expensive_jobs
+            emit_preflight
+            echo "Heavy CI v2 preflight skipped [$reason_category]: $reason_detail"
+            exit 0
+          }
+
+          case "$EXECUTION_CLASS" in
+            hosted|trusted-heavy) requested_execution_class_evidence="$EXECUTION_CLASS" ;;
+            *) block_preflight invalid-contract "execution-class must be hosted or trusted-heavy" ;;
+          esac
+          case "$CACHE_POLICY" in off|restore-only|trusted-write) ;; *) block_preflight invalid-contract "cache-policy must be off, restore-only, or trusted-write" ;; esac
           for token in "$CONTRACT_ID" "$CACHE_SCHEMA" "$TOOLCHAIN"; do
-            [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "contract-id, cache-schema, and toolchain accept only safe identifier characters" >&2; exit 2; }
+            [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]] || block_preflight invalid-contract "contract-id, cache-schema, and toolchain accept only safe identifier characters"
           done
+
+          for toggle in "$RUN_UNIT" "$RUN_INTEGRATION" "$RUN_BROWSER" "$RUN_LIVE_SMOKE"; do
+            case "$toggle" in true|false) ;; *) block_preflight invalid-contract "stage toggles must be true or false" ;; esac
+          done
+          [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || block_preflight invalid-contract "artifact-retention-days must be an integer"
+          (( RETENTION_DAYS >= 1 && RETENTION_DAYS <= 30 )) || block_preflight invalid-contract "artifact-retention-days must be between 1 and 30"
+
+          [[ "$RUN_UNIT" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
+          [[ "$RUN_INTEGRATION" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
+          [[ "$RUN_BROWSER" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
+          [[ "$RUN_LIVE_SMOKE" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
+          candidate_expensive_jobs=$((1+enabled_stage_count))
+          avoided_expensive_jobs=$candidate_expensive_jobs
+
           for path in "$CACHE_PATH" "$LOCKFILE" "$ENTRYPOINT" "$ARTIFACT_PATH"; do
-            [[ -n "$path" && "$path" != /* && ! "$path" =~ (^|/)\.\.(/|$) ]] || { echo "paths must be non-empty, repository-relative, and may not contain '..'" >&2; exit 2; }
+            [[ -n "$path" && "$path" != /* && "$path" != . && "$path" != */ && "$path" != *//* ]] || block_preflight unsafe-input "paths must be normalized repository-relative paths"
+            [[ "$path" != *$'\n'* && "$path" != *$'\r'* && "$path" != *$'\t'* ]] || block_preflight unsafe-input "paths may not contain control characters"
+            [[ ! "$path" =~ (^|/)\.\.?(/|$) && ! "$path" =~ (^|/)\.git(/|$) ]] || block_preflight unsafe-input "paths may not traverse parents, contain dot segments, or access .git"
           done
-          [[ "$CACHE_PATH" != *$'\n'* ]] || { echo "cache-path accepts one repository-relative path" >&2; exit 2; }
-          while IFS= read -r cache_entry; do
-            [[ -z "$cache_entry" ]] && continue
-            [[ "$cache_entry" != /* && ! "$cache_entry" =~ (^|/)\.\.(/|$) ]] || { echo "cache paths must be repository-relative" >&2; exit 2; }
-            [[ ! "$cache_entry" =~ (^|/)(node_modules|vendor|dist|build|\.output)(/|$) ]] || { echo "installed dependencies and build outputs may not be shared as dependency caches" >&2; exit 2; }
-          done <<< "$CACHE_PATH"
-          (( RETENTION_DAYS >= 1 && RETENTION_DAYS <= 30 )) || { echo "artifact-retention-days must be between 1 and 30" >&2; exit 2; }
+          [[ ! "$CACHE_PATH" =~ (^|/)(node_modules|vendor|dist|build|\.output)(/|$) ]] || block_preflight unsafe-input "installed dependencies and build outputs may not be shared as dependency caches"
+
+          path_contains() {
+            [[ "$1" = "$2" || "$1" = "$2/"* ]]
+          }
+          if path_contains "$CACHE_PATH" "$ARTIFACT_PATH" || path_contains "$ARTIFACT_PATH" "$CACHE_PATH"; then
+            block_preflight input-path-conflict "cache-path and artifact-path must not overlap"
+          fi
+          for protected_input in "$LOCKFILE" "$ENTRYPOINT"; do
+            if path_contains "$CACHE_PATH" "$protected_input" || path_contains "$ARTIFACT_PATH" "$protected_input"; then
+              block_preflight input-path-conflict "cache-path and artifact-path must not contain the adapter or lockfile"
+            fi
+          done
+          [[ "$LOCKFILE" != "$ENTRYPOINT" ]] || block_preflight input-path-conflict "lockfile and entrypoint must be distinct files"
+
+          has_symlink_component() {
+            local path="$1" component current=""
+            local -a components
+            IFS=/ read -r -a components <<< "$path"
+            for component in "${components[@]}"; do
+              current="${current:+$current/}$component"
+              [[ -L "$current" ]] && return 0
+            done
+            return 1
+          }
+          [[ -e "$ENTRYPOINT" ]] || block_preflight missing-entrypoint "entrypoint does not exist at the caller revision"
+          [[ -f "$ENTRYPOINT" ]] || block_preflight unsafe-input "entrypoint must be a regular file"
+          ! has_symlink_component "$ENTRYPOINT" || block_preflight unsafe-input "entrypoint may not use symbolic links"
+          [[ -e "$LOCKFILE" ]] || block_preflight missing-lockfile "lockfile does not exist at the caller revision"
+          [[ -f "$LOCKFILE" ]] || block_preflight unsafe-input "lockfile must be a regular file"
+          ! has_symlink_component "$LOCKFILE" || block_preflight unsafe-input "lockfile may not use symbolic links"
+          ! has_symlink_component "$CACHE_PATH" || block_preflight unsafe-input "cache-path may not use symbolic links"
+          ! has_symlink_component "$ARTIFACT_PATH" || block_preflight unsafe-input "artifact-path may not use symbolic links"
+
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || block_preflight invalid-context "repository identity is malformed"
+          [[ "$REUSABLE_WORKFLOW_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || block_preflight invalid-context "reusable workflow repository identity is malformed"
+          [[ "$GITHUB_REPOSITORY_ID" =~ ^[1-9][0-9]*$ && "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || block_preflight invalid-context "repository and run identities must be positive integers"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$CALLER_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ && "$REUSABLE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || block_preflight invalid-context "source, caller, and reusable workflow SHAs must be full commit hashes"
+          [[ "$CALLER_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/"* && "$CALLER_WORKFLOW_REF" =~ \.ya?ml@[^[:space:]@]+$ ]] || block_preflight invalid-context "caller workflow ref does not match the caller repository"
+          reusable_prefix="$REUSABLE_WORKFLOW_REPOSITORY/.github/workflows/reusable-heavy-ci-v2.yml@"
+          [[ "$REUSABLE_WORKFLOW_REF" = "$reusable_prefix"* ]] || block_preflight invalid-context "job workflow ref does not identify reusable-heavy-ci-v2.yml"
+          reusable_ref="${REUSABLE_WORKFLOW_REF#"$reusable_prefix"}"
+          [[ -n "$reusable_ref" && "$reusable_ref" != *[[:space:]]* ]] || block_preflight invalid-context "reusable workflow ref is malformed"
+          if [[ "$REUSABLE_WORKFLOW_REPOSITORY" = "$GITHUB_REPOSITORY" ]]; then
+            [[ "$REUSABLE_WORKFLOW_SHA" = "$CALLER_WORKFLOW_SHA" ]] || block_preflight invalid-context "same-repository caller and reusable workflows must resolve from the same commit"
+          else
+            [[ "$reusable_ref" =~ ^[0-9a-f]{40}$ ]] || block_preflight immutable-reference-required "cross-repository callers must pin Heavy CI v2 by full commit SHA"
+            [[ "$reusable_ref" = "$REUSABLE_WORKFLOW_SHA" ]] || block_preflight invalid-context "pinned and resolved reusable workflow SHAs do not match"
+          fi
+
+          case "$EVENT_NAME" in
+            push|pull_request|pull_request_target|merge_group|workflow_dispatch|schedule|repository_dispatch|workflow_run) ;;
+            *) block_preflight unsupported-event "event is not in the documented Heavy CI v2 allowlist" ;;
+          esac
+          case "$IS_FORK" in true|false) ;; *) block_preflight invalid-context "fork context must be true or false" ;; esac
+          if [[ "$IS_FORK" = true && "$EVENT_NAME" != pull_request && "$EVENT_NAME" != pull_request_target ]]; then
+            block_preflight invalid-context "fork context is inconsistent with the event"
+          fi
+          [[ -n "$ACTOR" && "$ACTOR" != *[[:space:]]* && "$ACTOR" != *$'\n'* && "$ACTOR" != *$'\r'* ]] || block_preflight invalid-context "actor identity is missing or malformed"
+          [[ -n "$TRIGGERING_ACTOR" && "$TRIGGERING_ACTOR" != *[[:space:]]* && "$TRIGGERING_ACTOR" != *$'\n'* && "$TRIGGERING_ACTOR" != *$'\r'* ]] || block_preflight invalid-context "triggering actor identity is missing or malformed"
+          [[ -n "$DEFAULT_BRANCH" && -n "$REF_NAME" ]] || block_preflight invalid-context "default branch and ref name are required"
 
           untrusted=false
           if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = 'dependabot[bot]' ]]; then
             untrusted=true
           fi
-          if [[ "$EXECUTION_CLASS" = trusted-heavy && "$untrusted" = true ]]; then
-            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
-            exit 2
-          fi
 
-          if [[ "$EXECUTION_CLASS" = trusted-heavy ]]; then
-            runner='["self-hosted","trusted-heavy"]'
-          else
+          if [[ "$untrusted" = true ]]; then
+            effective_execution_class=hosted
             runner='"ubuntu-24.04"'
+            trust_tier=untrusted
+            if [[ "$EXECUTION_CLASS" = trusted-heavy ]]; then
+              reason_category=untrusted-hosted-fallback
+            else
+              reason_category=untrusted-hosted
+            fi
+          elif [[ "$EXECUTION_CLASS" = trusted-heavy ]]; then
+            effective_execution_class=trusted-heavy
+            runner='["self-hosted","trusted-heavy"]'
+            trust_tier=trusted
+            reason_category=trusted-heavy-approved
+          else
+            effective_execution_class=hosted
+            runner='"ubuntu-24.04"'
+            trust_tier=trusted
+            reason_category=hosted-requested
           fi
-          trust_tier=trusted
-          [[ "$untrusted" = true ]] && trust_tier=untrusted
           can_write_cache=false
           if [[ "$CACHE_POLICY" = trusted-write && "$trust_tier" = trusted && "$EVENT_NAME" = push && "$REF_NAME" = "$DEFAULT_BRANCH" ]]; then
             can_write_cache=true
@@ -181,6 +364,11 @@ jobs:
           matrix+=']}'
           [[ ${#stages[@]} -gt 0 ]] && has_fanout=true || has_fanout=false
 
+          decision=proceed
+          planned_expensive_jobs=$candidate_expensive_jobs
+          avoided_expensive_jobs=0
+          emit_preflight
+
           artifact_name="heavy-ci-v2-${CONTRACT_ID}-${GITHUB_REPOSITORY_ID}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           {
             echo "contract-version=heavy-ci/v2"
@@ -189,12 +377,13 @@ jobs:
             echo "runner=$runner"
             echo "trust-tier=$trust_tier"
             echo "can-write-cache=$can_write_cache"
-            echo "effective-execution-class=$EXECUTION_CLASS"
+            echo "effective-execution-class=$effective_execution_class"
             echo "matrix=$matrix"
             echo "has-fanout=$has_fanout"
           } >> "$GITHUB_OUTPUT"
 
   build:
+    if: ${{ needs.preflight.outputs.preflight-decision == 'proceed' }}
     needs: preflight
     runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}
     permissions:
@@ -208,6 +397,8 @@ jobs:
     steps:
       - name: Checkout exact source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Validate repository adapter and lockfile
         shell: bash
@@ -326,7 +517,7 @@ jobs:
           retention-days: ${{ inputs.artifact-retention-days }}
 
   fanout:
-    if: ${{ needs.preflight.outputs.has-fanout == 'true' }}
+    if: ${{ needs.preflight.outputs.preflight-decision == 'proceed' && needs.preflight.outputs.has-fanout == 'true' }}
     needs: [preflight, build]
     strategy:
       fail-fast: false
@@ -337,6 +528,8 @@ jobs:
     steps:
       - name: Checkout exact source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Download build bundle by immutable artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -418,7 +611,7 @@ jobs:
           retention-days: ${{ inputs.artifact-retention-days }}
 
   summary:
-    if: ${{ always() && needs.preflight.result == 'success' }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.preflight-decision == 'proceed' }}
     needs: [preflight, build, fanout]
     runs-on: ubuntu-24.04
     permissions:
