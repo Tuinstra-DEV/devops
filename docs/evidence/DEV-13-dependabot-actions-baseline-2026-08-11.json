@@ -1,0 +1,180 @@
+{
+  "schema": "DEV-13/dependabot-actions-baseline-v2",
+  "collector": {
+    "version": 2,
+    "invocation": "ruby scripts/collect-dependabot-actions-baseline.rb 2026-07-13 2026-08-11",
+    "actions_query": "GET /repos/{repository}/actions/runs actor=dependabot[bot] created=2026-07-13..2026-08-11; GET each run /jobs filter=all",
+    "pull_request_query": "gh search prs --owner {owner} --app dependabot --merged --merged-at 2026-07-13..2026-08-11; filter repository.nameWithOwner to the 11-repository scope",
+    "dependency_row_rule": "Grouped PR count from 'Bumps the ... group with N updates'; otherwise count body lines beginning 'Bump ' or 'Bumps '.",
+    "runner_attribution": "self-hosted label wins; otherwise GitHub Actions runner name or hosted OS label; remaining jobs are unknown"
+  },
+  "start_date": "2026-07-13",
+  "end_date": "2026-08-11",
+  "actor": "dependabot[bot]",
+  "repositories": {
+    "Tuinstra-DEV/WODIQ": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/console": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/devops": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/gate": {
+      "workflow_runs": 32,
+      "completed_jobs": 69,
+      "hosted_jobs": 52,
+      "self_hosted_jobs": 10,
+      "unknown_jobs": 7,
+      "per_job_rounded_hosted_minutes": 122,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 5558,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/marcel-site": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/notify": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/openairco-site": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "marcel-tuinstra/sudoku-spark-web": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/tracker": {
+      "workflow_runs": 169,
+      "completed_jobs": 294,
+      "hosted_jobs": 266,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 28,
+      "per_job_rounded_hosted_minutes": 907,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 46590,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/tuinstra-site": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    },
+    "Tuinstra-DEV/wodiq-site": {
+      "workflow_runs": 0,
+      "completed_jobs": 0,
+      "hosted_jobs": 0,
+      "self_hosted_jobs": 0,
+      "unknown_jobs": 0,
+      "per_job_rounded_hosted_minutes": 0,
+      "per_job_rounded_unknown_minutes": 0,
+      "raw_job_seconds": 0,
+      "errors": [
+
+      ]
+    }
+  },
+  "merged_updates_by_repository": {
+    "Tuinstra-DEV/tracker": {
+      "merged_prs": 14,
+      "dependency_rows": 14
+    }
+  },
+  "unparsed_pull_requests": [
+
+  ],
+  "totals": {
+    "workflow_runs": 201,
+    "completed_jobs": 363,
+    "hosted_jobs": 318,
+    "self_hosted_jobs": 10,
+    "unknown_jobs": 35,
+    "per_job_rounded_hosted_minutes": 1029,
+    "per_job_rounded_unknown_minutes": 0,
+    "raw_job_seconds": 52148,
+    "merged_dependabot_prs": 14,
+    "merged_dependency_updates": 14
+  }
+}
