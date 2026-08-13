@@ -8,12 +8,21 @@ on:
       - tests/fixtures/heavy-ci-v2/**
       - scripts/heavy-ci-v2-contract-test.rb
   workflow_dispatch:
+    inputs:
+      evidence-mode:
+        description: Run the passing shapes or the intentional fail-fast evidence shapes
+        type: choice
+        options:
+          - proceed
+          - blocked
+        default: proceed
 
 permissions:
   contents: read
 
 jobs:
   wodiq-shape:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence-mode == 'proceed' }}
     uses: ./.github/workflows/reusable-heavy-ci-v2.yml
     with:
       contract-id: wodiq-shape
@@ -26,6 +35,7 @@ jobs:
       run-browser: true
 
   tracker-shape:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence-mode == 'proceed' }}
     uses: ./.github/workflows/reusable-heavy-ci-v2.yml
     with:
       contract-id: tracker-shape
@@ -33,6 +43,33 @@ jobs:
       cache-policy: off
       toolchain: node24-pnpm10-php83
       lockfile: tests/fixtures/heavy-ci-v2/tracker/pnpm-lock.yaml
+      entrypoint: tests/fixtures/heavy-ci-v2/tracker/entrypoint.sh
+      run-unit: true
+      run-integration: true
+      run-browser: true
+
+  wodiq-blocked-evidence:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence-mode == 'blocked' }}
+    uses: ./.github/workflows/reusable-heavy-ci-v2.yml
+    with:
+      contract-id: wodiq-blocked-evidence
+      execution-class: hosted
+      cache-policy: off
+      toolchain: node24-npm11
+      lockfile: tests/fixtures/heavy-ci-v2/wodiq/missing-package-lock.json
+      entrypoint: tests/fixtures/heavy-ci-v2/wodiq/entrypoint.sh
+      run-unit: true
+      run-browser: true
+
+  tracker-blocked-evidence:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence-mode == 'blocked' }}
+    uses: ./.github/workflows/reusable-heavy-ci-v2.yml
+    with:
+      contract-id: tracker-blocked-evidence
+      execution-class: hosted
+      cache-policy: off
+      toolchain: node24-pnpm10-php83
+      lockfile: tests/fixtures/heavy-ci-v2/tracker/missing-pnpm-lock.yaml
       entrypoint: tests/fixtures/heavy-ci-v2/tracker/entrypoint.sh
       run-unit: true
       run-integration: true
