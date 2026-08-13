@@ -62,6 +62,10 @@ The existing `gh` account still needs organization Administration read and
 repository Actions/Metadata read access. This mode is for attended operational
 collection. The scheduled workflow continues to require the dedicated,
 least-privilege `CI_BILLING_REPORT_TOKEN`; it never falls back to `GITHUB_TOKEN`.
+The child process is pinned to `github.com` and removes `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` from its
+environment so those variables cannot silently override the reviewed keychain
+identity.
 
 The command exits `0` for complete or explicitly degraded evidence and `2` for
 incomplete/unauthorized evidence or a command error. Raw API responses are held

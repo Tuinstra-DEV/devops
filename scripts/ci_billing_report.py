@@ -27,6 +27,8 @@ SCHEMA_VERSION = "devops.ci-billing-report/v1"
 DEFAULT_API_VERSION = "2026-03-10"
 RERUN_LOOKBACK_DAYS = 30
 DEFAULT_API_TIME_BUDGET_SECONDS = 25 * 60
+GH_TOKEN_OVERRIDE_ENV = (
+    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 STATUS_ORDER = {
     "not_applicable": -1,
     "complete": 0,
@@ -858,13 +860,18 @@ class GitHubCliClient(GitHubClient):
         endpoint = path.lstrip("/") + (f"?{query}" if query else "")
         command = [
             "gh", "api", "--method", "GET",
+            "--hostname", "github.com",
             "-H", f"X-GitHub-Api-Version: {self.api_version}",
             endpoint,
         ]
+        environment = os.environ.copy()
+        for variable in GH_TOKEN_OVERRIDE_ENV:
+            environment.pop(variable, None)
         for attempt in range(3):
             try:
                 completed = self.runner(
-                    command, capture_output=True, text=True, timeout=30, check=False)
+                    command, capture_output=True, text=True, timeout=30, check=False,
+                    env=environment)
             except (OSError, subprocess.SubprocessError) as exc:
                 if attempt < 2:
                     self.sleeper(2 ** attempt)

@@ -531,11 +531,20 @@ class ApiCollectionTests(unittest.TestCase):
             args=[], returncode=0, stdout='{"ok": true}', stderr=""))
         client = report.GitHubCliClient("2026-03-10", runner=runner)
 
-        self.assertEqual(client.get("/orgs/Tuinstra-DEV/repos", {"page": 2}), {"ok": True})
+        with mock.patch.dict(report.os.environ, {
+                "GH_TOKEN": "override", "GITHUB_TOKEN": "override",
+                "GH_ENTERPRISE_TOKEN": "override", "GITHUB_ENTERPRISE_TOKEN": "override"}):
+            self.assertEqual(
+                client.get("/orgs/Tuinstra-DEV/repos", {"page": 2}), {"ok": True})
         command = runner.call_args.args[0]
         self.assertEqual(command[:4], ["gh", "api", "--method", "GET"])
+        self.assertIn("--hostname", command)
+        self.assertIn("github.com", command)
         self.assertIn("orgs/Tuinstra-DEV/repos?page=2", command)
         self.assertFalse(any("token" in part.casefold() for part in command))
+        environment = runner.call_args.kwargs["env"]
+        self.assertTrue(all(variable not in environment
+                            for variable in report.GH_TOKEN_OVERRIDE_ENV))
 
     def test_gh_cli_client_sanitizes_unauthorized_failure(self):
         runner = mock.Mock(return_value=report.subprocess.CompletedProcess(
