@@ -157,6 +157,7 @@ jobs:
           RUN_LIVE_SMOKE: ${{ inputs.run-live-smoke }}
         run: |
           set -uo pipefail
+          pr_author_type="${PR_AUTHOR_TYPE:-}"
           preflight_started=$(date +%s)
           decision=blocked
           reason_category=invalid-context
@@ -322,7 +323,7 @@ jobs:
           [[ -n "$DEFAULT_BRANCH" && -n "$REF_NAME" ]] || block_preflight invalid-context "default branch and ref name are required"
 
           untrusted=false
-          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = *'[bot]' || "$TRIGGERING_ACTOR" = *'[bot]' || "$PR_AUTHOR_TYPE" = Bot ]]; then
+          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = *'[bot]' || "$TRIGGERING_ACTOR" = *'[bot]' || "$pr_author_type" = Bot ]]; then
             untrusted=true
           fi
 
