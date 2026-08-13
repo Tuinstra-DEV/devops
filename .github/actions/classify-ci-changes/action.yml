@@ -1,0 +1,84 @@
+name: Classify CI changes
+description: Fail-closed, policy-driven CI stage routing with machine-readable evidence
+
+inputs:
+  policy-path:
+    description: Repository-relative consumer routing policy
+    required: true
+  base-sha:
+    description: Full base commit SHA
+    required: true
+  head-sha:
+    description: Full head commit SHA
+    required: true
+  mode:
+    description: Only selective permits stage narrowing; every other value runs full
+    required: false
+    default: full
+  force-full:
+    description: Force full execution for schedules, manual backstops, or callers
+    required: false
+    default: "false"
+  evidence-path:
+    description: Repository-relative JSON evidence path
+    required: false
+    default: .ci/change-routing-evidence.json
+
+outputs:
+  decision:
+    value: ${{ steps.classify.outputs.decision }}
+  reason:
+    value: ${{ steps.classify.outputs.reason }}
+  classes:
+    value: ${{ steps.classify.outputs.classes }}
+  full-safe:
+    value: ${{ steps.classify.outputs.full-safe }}
+  policy-digest:
+    value: ${{ steps.classify.outputs.policy-digest }}
+  evidence-path:
+    value: ${{ steps.classify.outputs.evidence-path }}
+  run-backend:
+    value: ${{ steps.classify.outputs.run-backend }}
+  run-frontend-static:
+    value: ${{ steps.classify.outputs.run-frontend-static }}
+  run-frontend-browser:
+    value: ${{ steps.classify.outputs.run-frontend-browser }}
+  run-browser-integration:
+    value: ${{ steps.classify.outputs.run-browser-integration }}
+  run-containers:
+    value: ${{ steps.classify.outputs.run-containers }}
+  run-php:
+    value: ${{ steps.classify.outputs.run-php }}
+  run-api-contract:
+    value: ${{ steps.classify.outputs.run-api-contract }}
+  run-docker:
+    value: ${{ steps.classify.outputs.run-docker }}
+  run-frontend:
+    value: ${{ steps.classify.outputs.run-frontend }}
+
+runs:
+  using: composite
+  steps:
+    - name: Classify changed files
+      id: classify
+      shell: bash
+      env:
+        ROUTING_POLICY_PATH: ${{ inputs.policy-path }}
+        ROUTING_BASE_SHA: ${{ inputs.base-sha }}
+        ROUTING_HEAD_SHA: ${{ inputs.head-sha }}
+        ROUTING_MODE: ${{ inputs.mode }}
+        ROUTING_FORCE_FULL: ${{ inputs.force-full }}
+        ROUTING_EVIDENCE_PATH: ${{ inputs.evidence-path }}
+        ROUTING_REPOSITORY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/classify_ci_changes.py" \
+          --policy "$ROUTING_POLICY_PATH" \
+          --base-sha "$ROUTING_BASE_SHA" \
+          --head-sha "$ROUTING_HEAD_SHA" \
+          --mode "$ROUTING_MODE" \
+          --force-full "$ROUTING_FORCE_FULL" \
+          --repository "$ROUTING_REPOSITORY" \
+          --output "$ROUTING_EVIDENCE_PATH" \
+          --github-output "$GITHUB_OUTPUT" \
+          --github-summary "$GITHUB_STEP_SUMMARY"

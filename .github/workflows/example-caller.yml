@@ -5,7 +5,7 @@ on:
 
 jobs:
   ci:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@c21f62bc7203d12474e46f1ff51b32a8cab4e116 # main
     with:
       node-version: "24"
       workdir: "."
