@@ -1,0 +1,14 @@
+{
+  "organization": "Tuinstra-DEV",
+  "activeRepositories": [
+    "gate",
+    "WODIQ",
+    "tracker",
+    "notify",
+    "console",
+    "wodiq-site",
+    "marcel-site",
+    "tuinstra-site"
+  ],
+  "note": "Minimum known CI consumer inventory. Collection unions this list with the complete active organization repository listing so every additional active consumer remains separate."
+}

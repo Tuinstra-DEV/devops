@@ -3,6 +3,7 @@ set -euo pipefail
 
 required_paths=(
   ".github/workflows/reusable-ci.yml"
+  ".github/workflows/ci-billing-report.yml"
   ".github/workflows/reusable-gate-baseline.yml"
   ".github/workflows/reusable-browser-quality.yml"
   ".github/workflows/reusable-ci-docker.yml"
@@ -17,6 +18,10 @@ required_paths=(
   "scripts/heavy-ci-v2-contract-test.rb"
   "scripts/heavy-ci-rollout-docs-test.sh"
   "scripts/heavy-ci-baseline-test.sh"
+  "scripts/ci_billing_report.py"
+  "tests/test_ci_billing_report.py"
+  "config/ci-billing-consumers.json"
+  "docs/operations/ci-billing-reporting.md"
   "scripts/dependency-update-policy-test.rb"
   "scripts/dependency-update-fleet-test.rb"
   ".github/dependabot.yml"
@@ -49,6 +54,8 @@ ruby -c scripts/dependency-update-fleet-test.rb
 ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
+python3 -c 'compile(open("scripts/ci_billing_report.py", encoding="utf-8").read(), "scripts/ci_billing_report.py", "exec")'
+python3 -m json.tool config/ci-billing-consumers.json >/dev/null
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

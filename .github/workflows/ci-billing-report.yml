@@ -1,0 +1,52 @@
+name: CI billing report
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-billing-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate sanitized billing evidence
+        id: generate
+        continue-on-error: true
+        env:
+          CI_BILLING_REPORT_TOKEN: ${{ secrets.CI_BILLING_REPORT_TOKEN }}
+        run: |
+          python3 scripts/ci_billing_report.py collect \
+            --organization Tuinstra-DEV \
+            --output-dir evidence/ci-billing
+
+      - name: Add report to workflow summary
+        if: ${{ always() && hashFiles('evidence/ci-billing/*.md') != '' }}
+        run: sed -n '1,240p' evidence/ci-billing/*.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain sanitized billing evidence
+        if: ${{ always() && hashFiles('evidence/ci-billing/*') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-billing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/ci-billing/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Require usable source coverage
+        if: ${{ always() && steps.generate.outcome != 'success' }}
+        run: |
+          echo "CI billing evidence is incomplete; inspect the retained report when present." >&2
+          exit 1
