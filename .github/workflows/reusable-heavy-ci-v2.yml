@@ -322,7 +322,7 @@ jobs:
           [[ -n "$DEFAULT_BRANCH" && -n "$REF_NAME" ]] || block_preflight invalid-context "default branch and ref name are required"
 
           untrusted=false
-          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = *'[bot]' || "$PR_AUTHOR_TYPE" = Bot ]]; then
+          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = *'[bot]' || "${PR_AUTHOR_TYPE:-}" = Bot ]]; then
             untrusted=true
           fi
 
