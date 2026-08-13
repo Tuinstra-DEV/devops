@@ -46,6 +46,23 @@ python3 scripts/ci_billing_report.py collect \
   --output-dir evidence/ci-billing
 ```
 
+For an operator workstation that is already authenticated with `gh`, use the
+credential-preserving mode below. It invokes `gh api` for read-only requests;
+the credential remains in the system keychain and is never exported to an
+environment variable, report, log, fixture, or archive:
+
+```sh
+python3 scripts/ci_billing_report.py collect \
+  --organization Tuinstra-DEV \
+  --output-dir evidence/ci-billing \
+  --auth-mode gh-cli
+```
+
+The existing `gh` account still needs organization Administration read and
+repository Actions/Metadata read access. This mode is for attended operational
+collection. The scheduled workflow continues to require the dedicated,
+least-privilege `CI_BILLING_REPORT_TOKEN`; it never falls back to `GITHUB_TOKEN`.
+
 The command exits `0` for complete or explicitly degraded evidence and `2` for
 incomplete/unauthorized evidence or a command error. Raw API responses are held
 only in process memory. Output contains aggregates, source coverage, request

@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from typing import Any, Callable, Iterable
@@ -839,6 +840,69 @@ class GitHubClient:
         raise PaginationFailure(failure, records, 1000)
 
 
+class GitHubCliClient(GitHubClient):
+    """Use an existing gh login without exporting or persisting its credential."""
+
+    def __init__(self, api_version: str,
+                 runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+                 sleeper: Callable[[float], None] = time.sleep,
+                 monotonic_clock: Callable[[], float] = time.monotonic,
+                 max_elapsed_seconds: int = DEFAULT_API_TIME_BUDGET_SECONDS):
+        super().__init__("", "https://api.github.com", api_version,
+                         sleeper=sleeper, monotonic_clock=monotonic_clock,
+                         max_elapsed_seconds=max_elapsed_seconds)
+        self.runner = runner
+
+    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        query = urllib.parse.urlencode(params or {})
+        endpoint = path.lstrip("/") + (f"?{query}" if query else "")
+        command = [
+            "gh", "api", "--method", "GET",
+            "-H", f"X-GitHub-Api-Version: {self.api_version}",
+            endpoint,
+        ]
+        for attempt in range(3):
+            try:
+                completed = self.runner(
+                    command, capture_output=True, text=True, timeout=30, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                if attempt < 2:
+                    self.sleeper(2 ** attempt)
+                    continue
+                raise SourceFailure(
+                    "transport_error", "incomplete",
+                    f"GitHub CLI request failed: {type(exc).__name__}") from None
+            if completed.returncode == 0:
+                try:
+                    return json.loads(completed.stdout)
+                except json.JSONDecodeError:
+                    raise SourceFailure(
+                        "invalid_response", "incomplete",
+                        "GitHub CLI response was not valid JSON") from None
+
+            match = re.search(r"HTTP\s+(\d{3})", completed.stderr or "")
+            status = int(match.group(1)) if match else None
+            if status == 429:
+                if attempt < 2:
+                    self.wait_for_rate_limit(60, status)
+                    continue
+                raise SourceFailure(
+                    "rate_limited", "incomplete",
+                    "GitHub CLI remained rate limited after bounded retries", status) from None
+            if status in {401, 403}:
+                raise SourceFailure(
+                    "unauthorized", "unauthorized",
+                    f"GitHub CLI request was unauthorized (HTTP {status})", status) from None
+            if status is not None and 500 <= status <= 599 and attempt < 2:
+                self.sleeper(2 ** attempt)
+                continue
+            raise SourceFailure(
+                "service_error", "incomplete",
+                f"GitHub CLI request failed{f' (HTTP {status})' if status else ''}",
+                status) from None
+        raise AssertionError("unreachable")
+
+
 def month_periods(start: date, end: date) -> list[tuple[int, int]]:
     periods = []
     cursor = start.replace(day=1)
@@ -1221,8 +1285,9 @@ def collect_command(args: argparse.Namespace) -> int:
     configured_repositories = load_consumer_inventory(
         Path(args.consumer_inventory), args.organization)
     problems: list[dict[str, str]] = []
-    if token:
-        client = GitHubClient(token, "https://api.github.com", args.api_version)
+    if token or args.auth_mode == "gh-cli":
+        client = (GitHubClient(token, "https://api.github.com", args.api_version)
+                  if token else GitHubCliClient(args.api_version))
         billing_rows, billing_source, billing_problems = collect_billing(
             client, args.organization, start, as_of)
         billing_repositories = {
@@ -1279,6 +1344,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     collect.add_argument("--output-dir", required=True)
     collect.add_argument("--as-of", help="UTC date (YYYY-MM-DD); defaults to today")
     collect.add_argument("--token-env", default="CI_BILLING_REPORT_TOKEN")
+    collect.add_argument(
+        "--auth-mode", choices=("token", "gh-cli"), default="token",
+        help="token reads --token-env; gh-cli uses the existing authenticated gh session")
     collect.add_argument("--api-version", default=DEFAULT_API_VERSION)
     collect.add_argument("--consumer-inventory", default=str(DEFAULT_CONSUMER_INVENTORY))
 
