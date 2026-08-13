@@ -526,6 +526,27 @@ class ApiCollectionTests(unittest.TestCase):
         self.assertEqual(len(raised.exception.partial), 100)
         self.assertEqual(raised.exception.pages, 1)
 
+    def test_gh_cli_client_uses_keychain_backed_api_without_token_argument(self):
+        runner = mock.Mock(return_value=report.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"ok": true}', stderr=""))
+        client = report.GitHubCliClient("2026-03-10", runner=runner)
+
+        self.assertEqual(client.get("/orgs/Tuinstra-DEV/repos", {"page": 2}), {"ok": True})
+        command = runner.call_args.args[0]
+        self.assertEqual(command[:4], ["gh", "api", "--method", "GET"])
+        self.assertIn("orgs/Tuinstra-DEV/repos?page=2", command)
+        self.assertFalse(any("token" in part.casefold() for part in command))
+
+    def test_gh_cli_client_sanitizes_unauthorized_failure(self):
+        runner = mock.Mock(return_value=report.subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="sensitive detail (HTTP 403)"))
+        client = report.GitHubCliClient("2026-03-10", runner=runner)
+
+        with self.assertRaises(report.SourceFailure) as raised:
+            client.get("/settings/billing")
+        self.assertEqual(raised.exception.status, "unauthorized")
+        self.assertNotIn("sensitive detail", str(raised.exception))
+
     def test_403_is_unauthorized_and_not_retried(self):
         error = report.urllib.error.HTTPError("https://api.github.test/x", 403, "", {}, None)
         opener = mock.Mock(side_effect=error)
@@ -674,6 +695,16 @@ class EvidenceTests(unittest.TestCase):
             "--output-dir", "evidence/ci-billing",
         ])
         self.assertEqual(args.token_env, "CI_BILLING_REPORT_TOKEN")
+        self.assertEqual(args.auth_mode, "token")
+
+    def test_collector_supports_explicit_gh_cli_authentication(self):
+        args = report.parse_args([
+            "collect",
+            "--organization", "Tuinstra-DEV",
+            "--output-dir", "evidence/ci-billing",
+            "--auth-mode", "gh-cli",
+        ])
+        self.assertEqual(args.auth_mode, "gh-cli")
 
 if __name__ == "__main__":
     unittest.main()
