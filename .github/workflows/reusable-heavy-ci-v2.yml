@@ -143,6 +143,7 @@ jobs:
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -321,7 +322,7 @@ jobs:
           [[ -n "$DEFAULT_BRANCH" && -n "$REF_NAME" ]] || block_preflight invalid-context "default branch and ref name are required"
 
           untrusted=false
-          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = 'dependabot[bot]' ]]; then
+          if [[ "$EVENT_NAME" = pull_request_target || "$IS_FORK" = true || "$ACTOR" = *'[bot]' || "$PR_AUTHOR_TYPE" = Bot ]]; then
             untrusted=true
           fi
 
@@ -498,7 +499,7 @@ jobs:
 
       - name: Upload immutable build bundle
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.preflight.outputs.artifact-name }}
           path: ${{ runner.temp }}/heavy-ci-bundle
@@ -508,7 +509,7 @@ jobs:
 
       - name: Upload build timing and failure evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.preflight.outputs.artifact-name }}-evidence-build
           path: .heavy-ci/evidence
@@ -602,7 +603,7 @@ jobs:
 
       - name: Upload stage timing and failure evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.preflight.outputs.artifact-name }}-evidence-${{ matrix.stage }}
           path: .heavy-ci/evidence
@@ -638,7 +639,7 @@ jobs:
           echo "metrics-artifact=$METRICS_ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - name: Upload consolidated timing evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.preflight.outputs.metrics-artifact }}
           path: metrics/stages.ndjson

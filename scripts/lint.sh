@@ -21,6 +21,16 @@ required_paths=(
   "scripts/heavy-ci-baseline-test.sh"
   "tests/test_classify_ci_changes.py"
   "docs/workflows/change-aware-routing.md"
+  "scripts/dependency-update-policy-test.rb"
+  "scripts/dependency-update-fleet-test.rb"
+  ".github/dependabot.yml"
+  "docs/standards/dependency-update-policy.md"
+  "docs/workflows/dependency-rollout-matrix.md"
+  "docs/workflows/dependency-rollout-evidence-template.md"
+  "docs/workflows/dependency-rollout-baseline.md"
+  "docs/evidence/DEV-13-ci-billing-baseline-2026-08-12.md"
+  "docs/evidence/DEV-13-dependabot-actions-baseline-2026-08-11.json"
+  "docs/evidence/DEV-13-security-settings-preflight-2026-08-12.json"
   "templates/workflows/caller-gate-baseline.yml"
   "templates/docker/nuxt-ssg-nginx.Dockerfile"
 )
@@ -38,8 +48,12 @@ ruby -e '
 '
 
 ruby -c scripts/heavy-ci-v2-contract-test.rb
+ruby -c scripts/dependency-update-policy-test.rb
+ruby -c scripts/dependency-update-fleet-test.rb
+ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
+ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

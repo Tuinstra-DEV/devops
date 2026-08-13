@@ -56,7 +56,7 @@ on:
 
 jobs:
   build-and-scan:
-    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && !endsWith(github.actor, '[bot]') && (github.event_name != 'pull_request' || (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.type != 'Bot')) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
     outputs:
@@ -70,6 +70,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ACTOR: ${{ github.actor }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || '' }}
           WORKDIR: ${{ inputs.workdir }}
           DOCKERFILE: ${{ inputs.dockerfile }}
           TRIVY_EXIT_CODE: ${{ inputs['trivy-exit-code'] }}
@@ -77,8 +78,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EXECUTION_CLASS" in hosted|trusted-heavy) ;; *) echo "execution-class must be hosted or trusted-heavy" >&2; exit 2 ;; esac
-          if [[ "$EXECUTION_CLASS" = trusted-heavy ]] && { [[ "$EVENT_NAME" = pull_request_target ]] || [[ "$IS_FORK" = true ]] || [[ "$ACTOR" = 'dependabot[bot]' ]]; }; then
-            echo "trusted-heavy is forbidden for pull_request_target, fork, and Dependabot execution" >&2
+          if [[ "$EXECUTION_CLASS" = trusted-heavy ]] && { [[ "$EVENT_NAME" = pull_request_target ]] || [[ "$IS_FORK" = true ]] || [[ "$ACTOR" = *'[bot]' ]] || [[ "$PR_AUTHOR_TYPE" = Bot ]]; }; then
+            echo "trusted-heavy is forbidden for pull_request_target, fork, and dependency-bot execution" >&2
             exit 2
           fi
           for path in "$WORKDIR" "$DOCKERFILE"; do
@@ -140,7 +141,7 @@ jobs:
 
       - name: Upload deterministic scan reports
         if: ${{ always() && steps.build.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.contract.outputs['scan-artifact'] }}
           path: |

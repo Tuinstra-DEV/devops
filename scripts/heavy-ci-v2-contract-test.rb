@@ -36,7 +36,8 @@ check.call(text.include?("reason-category"), "preflight must emit a stable reaso
 check.call(text.include?("planned-expensive-jobs") && text.include?("avoided-expensive-jobs"), "preflight must quantify planned and avoided expensive jobs")
 check.call(text.include?("job.workflow_ref") && text.include?("job.workflow_sha") && text.include?("github.workflow_ref") && text.include?("github.workflow_sha"), "workflow and caller identity context is incomplete")
 check.call(text.include?("github.event.pull_request.head.repo.fork || false"), "fork boundary is missing")
-check.call(text.include?("dependabot[bot]"), "Dependabot boundary is missing")
+check.call(text.include?("*'[bot]'"), "dependency-bot boundary is missing")
+check.call(text.include?("github.event.pull_request.user.type || ''"), "immutable bot-author boundary is missing")
 check.call(text.include?("pull_request_target"), "pull_request_target boundary is missing")
 check.call(text.include?("EVENT_NAME\" = push") && text.include?("REF_NAME\" = \"$DEFAULT_BRANCH"), "canonical cache write is not restricted to default-branch pushes")
 check.call(text.include?("actions/cache/restore@") && text.include?("actions/cache/save@"), "split restore/save cache actions are required")
@@ -77,7 +78,7 @@ def cache_path?(path)
 end
 
 def untrusted?(event:, fork:, actor:)
-  event == "pull_request_target" || fork || actor == "dependabot[bot]"
+  event == "pull_request_target" || fork || actor.end_with?("[bot]")
 end
 
 def can_write_cache?(policy:, event:, fork:, actor:, ref:, default_branch:)
@@ -90,6 +91,7 @@ end
 negative_contexts = [
   { event: "pull_request", fork: true, actor: "contributor" },
   { event: "pull_request", fork: false, actor: "dependabot[bot]" },
+  { event: "pull_request", fork: false, actor: "renovate[bot]" },
   { event: "pull_request_target", fork: false, actor: "maintainer" },
   { event: "pull_request", fork: false, actor: "maintainer" }
 ]
