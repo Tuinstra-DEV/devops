@@ -650,6 +650,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("secrets.CI_BILLING_REPORT_TOKEN", workflow)
+        self.assertIn("CI_BILLING_REPORT_TOKEN: ${{ secrets.CI_BILLING_REPORT_TOKEN }}", workflow)
+        self.assertNotIn("CI_BILLING_TOKEN:", workflow)
         self.assertIn("retention-days: 90", workflow)
         self.assertIn("continue-on-error: true", workflow)
         self.assertIn("persist-credentials: false", workflow)
@@ -664,6 +666,14 @@ class EvidenceTests(unittest.TestCase):
         )
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertNotIn("contents: write", workflow)
+
+    def test_collector_defaults_to_documented_secret_environment_name(self):
+        args = report.parse_args([
+            "collect",
+            "--organization", "Tuinstra-DEV",
+            "--output-dir", "evidence/ci-billing",
+        ])
+        self.assertEqual(args.token_env, "CI_BILLING_REPORT_TOKEN")
 
 if __name__ == "__main__":
     unittest.main()

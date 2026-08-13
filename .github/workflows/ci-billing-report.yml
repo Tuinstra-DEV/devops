@@ -26,7 +26,7 @@ jobs:
         id: generate
         continue-on-error: true
         env:
-          CI_BILLING_TOKEN: ${{ secrets.CI_BILLING_REPORT_TOKEN }}
+          CI_BILLING_REPORT_TOKEN: ${{ secrets.CI_BILLING_REPORT_TOKEN }}
         run: |
           python3 scripts/ci_billing_report.py collect \
             --organization Tuinstra-DEV \

@@ -1278,7 +1278,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     collect.add_argument("--organization", required=True)
     collect.add_argument("--output-dir", required=True)
     collect.add_argument("--as-of", help="UTC date (YYYY-MM-DD); defaults to today")
-    collect.add_argument("--token-env", default="CI_BILLING_TOKEN")
+    collect.add_argument("--token-env", default="CI_BILLING_REPORT_TOKEN")
     collect.add_argument("--api-version", default=DEFAULT_API_VERSION)
     collect.add_argument("--consumer-inventory", default=str(DEFAULT_CONSUMER_INVENTORY))
 
