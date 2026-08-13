@@ -31,7 +31,7 @@ The existing v1 inputs remain valid. v10 adds `execution-class`, `artifact-reten
 
 The build/scan job grants only `contents: read`. The optional upload job grants `actions: read`, `contents: read`, and `security-events: write`. No secrets are accepted. `build-args` is the only build-argument source and is for non-secret values only.
 
-The execution trust boundary and repository-variable/manual fallback are documented in [reusable-browser-quality](reusable-browser-quality.md). Fork pull requests, `pull_request_target`, and Dependabot can never select a trusted runner.
+The execution trust boundary and repository-variable/manual fallback are documented in [reusable-browser-quality](reusable-browser-quality.md). Fork pull requests, `pull_request_target`, and bot actors such as Dependabot or Renovate can never select a trusted runner.
 
 ## Example
 

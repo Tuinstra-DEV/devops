@@ -1,0 +1,19 @@
+{
+  "schema": "DEV-13/dependabot-security-settings-v1",
+  "verified_at": "2026-08-12",
+  "source": "GitHub REST vulnerability-alerts and automated-security-fixes endpoints",
+  "raw_payload_retained": false,
+  "repositories": {
+    "Tuinstra-DEV/WODIQ": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/console": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/devops": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/gate": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/marcel-site": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/notify": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/openairco-site": {"alerts": true, "security_updates": true},
+    "marcel-tuinstra/sudoku-spark-web": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/tracker": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/tuinstra-site": {"alerts": true, "security_updates": true},
+    "Tuinstra-DEV/wodiq-site": {"alerts": true, "security_updates": true}
+  }
+}

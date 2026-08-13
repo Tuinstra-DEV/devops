@@ -73,9 +73,9 @@ The exact cache key contains repository ID, contract major and ID, trust tier, r
 - `restore-only`: exact-key restore only; never save.
 - `trusted-write`: save only on a trusted `push` to the repository's default branch. All other events behave as restore-only.
 
-Forks, Dependabot, and `pull_request_target` are assigned the `untrusted` cache tier and cannot save. They cannot request `trusted-heavy`. Same-repository trusted pull requests may restore the exact trusted default-branch cache but cannot write it.
+Forks, bot actors such as Dependabot or Renovate, and `pull_request_target` are assigned the `untrusted` cache tier and cannot save. They cannot request `trusted-heavy`. Same-repository trusted pull requests may restore the exact trusted default-branch cache but cannot write it.
 
-The contract test contains negative cases for fork pull requests, Dependabot, `pull_request_target`, ordinary pull requests, unsafe cache paths, parent traversal, broad restore prefixes, privileged permissions, secret inheritance, incomplete artifact binding, and non-SHA Action references. The hosted preflight performs the same trust decision before any self-hosted job is queued.
+The contract test contains negative cases for fork pull requests, Dependabot, Renovate, `pull_request_target`, ordinary pull requests, unsafe cache paths, parent traversal, broad restore prefixes, privileged permissions, secret inheritance, incomplete artifact binding, and non-SHA Action references. The hosted preflight performs the same trust decision before any self-hosted job is queued.
 
 ## Security boundaries
 
