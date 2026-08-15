@@ -682,10 +682,13 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("secrets.CI_BILLING_REPORT_TOKEN", workflow)
         self.assertIn("CI_BILLING_REPORT_TOKEN: ${{ secrets.CI_BILLING_REPORT_TOKEN }}", workflow)
         self.assertNotIn("CI_BILLING_TOKEN:", workflow)
-        self.assertIn("retention-days: 90", workflow)
+        self.assertIn("retention-days: 30", workflow)
         self.assertIn("continue-on-error: true", workflow)
         self.assertIn("persist-credentials: false", workflow)
-        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertIn("runs-on: [self-hosted, linux, x64, ops-billing]", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("github.event_name == 'schedule'", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         self.assertIn(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
             workflow,
@@ -695,6 +698,8 @@ class EvidenceTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
+        self.assertNotIn("runs-on: ubuntu-24.04", workflow)
+        self.assertNotIn("fallback", workflow.lower())
         self.assertNotIn("contents: write", workflow)
 
     def test_collector_defaults_to_documented_secret_environment_name(self):

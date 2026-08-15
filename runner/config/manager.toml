@@ -26,3 +26,13 @@ repositories = [
 ]
 runner_label = "trusted-heavy"
 runner_group_id = 1
+
+[[dedicated_routes]]
+name = "ci-billing-report"
+repositories = ["Tuinstra-DEV/devops"]
+runner_label = "ops-billing"
+runner_group_id = 3
+workflow_paths = [".github/workflows/ci-billing-report.yml"]
+events = ["schedule", "workflow_dispatch"]
+branches = ["main"]
+actor_types = ["User"]
