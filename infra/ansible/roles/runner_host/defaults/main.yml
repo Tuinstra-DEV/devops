@@ -6,6 +6,8 @@ runner_max_concurrency: 2
 runner_vcpus: 4
 runner_memory_mib: 6144
 runner_host_memory_reserve_mib: 4096
+runner_billing_group_id: null
+runner_billing_group_policy_verified: false
 runner_bridge_name: virbr-ci
 runner_network_cidr: 192.0.2.0/24
 runner_production_networks_reviewed: false

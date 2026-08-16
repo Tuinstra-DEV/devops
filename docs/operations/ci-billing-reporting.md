@@ -37,6 +37,10 @@ header, and is never written to a report, log, fixture, or archive. A missing or
 unauthorized credential produces an explicit non-zero, incomplete report when
 the command can write one; it never becomes a zero-cost report.
 
+The current fine-grained credential expires on **2026-11-13**. Rotate it before
+that date with the same read-only scope and update only the repository Actions
+secret `CI_BILLING_REPORT_TOKEN`; never reuse it for runner administration.
+
 Manual collection uses the same path as the daily schedule:
 
 ```sh
@@ -149,8 +153,8 @@ assumptions, and low/medium confidence.
 
 ## Evidence, rendering, and retention
 
-The daily workflow uploads JSON and Markdown for 90 days, enough for monthly
-comparison. Artifact retention is not the durable archive. Once per month,
+The daily workflow uploads JSON and Markdown for 30 days, matching the current
+repository retention cap. Artifact retention is not the durable archive. Once per month,
 download the latest successful artifact and append its sanitized JSON to the
 access-controlled operations archive mounted at `/srv/ci-billing-archive`:
 
@@ -185,6 +189,36 @@ python3 scripts/ci_billing_report.py render \
   inventory access and rerun.
 - Never substitute job-rounded minutes or inferred self-hosted occupation for
   GitHub-billed minute quantities.
+
+## Self-hosted execution boundary
+
+The daily and manual workflow runs only on
+`[self-hosted, linux, x64, ops-billing]`. Its dedicated organization runner
+group permits only `Tuinstra-DEV/devops` and only
+`Tuinstra-DEV/devops/.github/workflows/ci-billing-report.yml@refs/heads/main`;
+public repositories remain disabled. The Sanctuary manager independently
+checks repository, workflow, event, branch, SHA, job/run binding and non-bot
+actor identity before launching an ephemeral runner. PR checks and every other
+DevOps workflow remain GitHub-hosted.
+
+If no matching self-hosted capacity is available, GitHub leaves the job queued;
+there is deliberately no automatic hosted fallback. After five minutes,
+inspect the `ci-runner-manager` service and audit log, runner-group access,
+group ID, `ops-billing` label, host capacity and GitHub API rate limits. A job
+queued for 24 hours ultimately fails according to GitHub's self-hosted runner
+limit.
+
+Rollback is a reviewed normal commit restoring `runs-on: ubuntu-24.04`, after
+disabling the dedicated group's repository access. Keep `contents: read`, the
+dedicated secret, `persist-credentials: false`, pinned Actions, report failure
+semantics and artifact contract unchanged. Never implement rollback as a
+second label or conditional hosted fallback.
+
+The hosted parity baseline is manual run `31875979649` (2026-08-15): it used
+GitHub Actions runner `1000004149`, completed in 27m35s, and produced sanitized
+JSON and Markdown. Record the self-hosted run/job IDs, runner and group names,
+duration, report status/issues, artifact names and any explainable data drift
+in the DEV-21 delivery evidence.
 
 ## Official references
 

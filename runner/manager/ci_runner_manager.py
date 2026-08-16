@@ -25,6 +25,9 @@ import urllib.parse
 import urllib.request
 
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ROUTE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$")
+BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 LOG = logging.getLogger("ci-runner-manager")
 REGISTRATION_GRACE_SECONDS = 300
 HANDOFF_GRACE_SECONDS = 30
@@ -32,6 +35,8 @@ HANDOFF_RETRY_MAX_SECONDS = 600
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
 ASSIGNMENT_RUNS_PER_STATUS = 10
+DISCOVERY_PAGE_SIZE = 100
+DISCOVERY_MAX_PAGES = 10
 HELPER_HEADER_MAX = 4096
 HELPER_RESPONSE_MAX = 65536
 HELPER_JIT_MAX = 131072
@@ -84,6 +89,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "max_concurrency", "runner_vcpus", "runner_memory_mib",
         "host_memory_reserve_mib", "min_free_disk_gib", "max_load_1m",
         "max_lease_seconds", "github_token_file", "repositories", "runner_label",
+        "dedicated_routes",
     }
     missing = required.difference(cfg)
     if missing:
@@ -100,6 +106,7 @@ def load_config(path: Path) -> dict[str, Any]:
     reserve = cfg["host_memory_reserve_mib"]
     if not isinstance(reserve, int) or isinstance(reserve, bool) or not 1024 <= reserve <= 65536:
         raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")
+    admission_routes(cfg)
     return cfg
 
 
@@ -398,16 +405,115 @@ class GitHubClient:
         owner, name = repo.split("/", 1)
         return f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}"
 
-    def candidate_jobs(self, repo: str, required_label: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def workflow_path_for_run(run: dict[str, Any], policy: dict[str, Any]) -> str | None:
+        value = run.get("path")
+        if not isinstance(value, str):
+            return None
+        branch = run.get("head_branch")
+        for path in policy["workflow_paths"]:
+            if value in {path, f"{path}@{branch}", f"{path}@refs/heads/{branch}"}:
+                return path
+        return None
+
+    def paginated(self, path: str, key: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        separator = "&" if "?" in path else "?"
+        for page in range(1, DISCOVERY_MAX_PAGES + 1):
+            payload = self.request(
+                "GET", f"{path}{separator}per_page={DISCOVERY_PAGE_SIZE}&page={page}"
+            )
+            if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+                raise RunnerError("GitHub returned an invalid paginated response")
+            page_items = payload[key]
+            if len(page_items) > DISCOVERY_PAGE_SIZE \
+                    or any(not isinstance(item, dict) for item in page_items):
+                raise RunnerError("GitHub returned an invalid paginated collection")
+            items.extend(page_items)
+            if len(page_items) < DISCOVERY_PAGE_SIZE:
+                return items
+        raise RunnerError("GitHub discovery exceeded the bounded pagination limit")
+
+    @staticmethod
+    def run_matches_policy(run: dict[str, Any], repo: str,
+                           policy: dict[str, Any]) -> bool:
+        if not policy:
+            return True
+        repository = run.get("repository")
+        head_repository = run.get("head_repository")
+        actor = run.get("actor")
+        triggering_actor = run.get("triggering_actor")
+        return (
+            isinstance(run.get("id"), int)
+            and not isinstance(run.get("id"), bool)
+            and run["id"] > 0
+            and isinstance(run.get("workflow_id"), int)
+            and not isinstance(run.get("workflow_id"), bool)
+            and run["workflow_id"] > 0
+            and isinstance(run.get("run_attempt"), int)
+            and not isinstance(run.get("run_attempt"), bool)
+            and run["run_attempt"] > 0
+            and isinstance(run.get("head_sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is not None
+            and
+            GitHubClient.workflow_path_for_run(run, policy) is not None
+            and run.get("event") in policy["events"]
+            and run.get("head_branch") in policy["branches"]
+            and isinstance(repository, dict)
+            and repository.get("full_name") == repo
+            and isinstance(head_repository, dict)
+            and head_repository.get("full_name") == repo
+            and isinstance(actor, dict)
+            and actor.get("type") in policy["actor_types"]
+            and isinstance(actor.get("login"), str)
+            and not actor["login"].endswith("[bot]")
+            and isinstance(triggering_actor, dict)
+            and triggering_actor.get("type") in policy["actor_types"]
+            and isinstance(triggering_actor.get("login"), str)
+            and not triggering_actor["login"].endswith("[bot]")
+        )
+
+    def candidate_jobs(self, repo: str, required_label: str,
+                       policy: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         candidates = []
         for status in ("queued", "in_progress"):
-            runs = self.request("GET", f"{self.repo_path(repo)}/actions/runs?status={status}&per_page=100")
-            for run in runs.get("workflow_runs", []):
-                jobs = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{int(run['id'])}/jobs?filter=latest&per_page=100")
-                for job in jobs.get("jobs", []):
+            runs = self.paginated(
+                f"{self.repo_path(repo)}/actions/runs?status={status}", "workflow_runs"
+            )
+            for run in runs:
+                if policy is not None and not self.run_matches_policy(run, repo, policy):
+                    continue
+                jobs = self.paginated(
+                    f"{self.repo_path(repo)}/actions/runs/{int(run['id'])}/jobs?filter=latest",
+                    "jobs",
+                )
+                for job in jobs:
                     labels = job.get("labels", [])
-                    if job.get("status") == "queued" and required_label in labels:
-                        candidates.append({"repo": repo, "run_id": int(run["id"]), "job_id": int(job["id"])})
+                    if policy is not None and (
+                        job.get("run_id") != run["id"]
+                        or job.get("head_sha") != run["head_sha"]
+                    ):
+                        continue
+                    required_labels = {"self-hosted", required_label}
+                    if policy is not None:
+                        required_labels.update({"linux", "x64"})
+                    if job.get("status") == "queued" \
+                            and isinstance(labels, list) \
+                            and required_labels.issubset(labels):
+                        candidate = {
+                            "repo": repo, "run_id": int(run["id"]),
+                            "job_id": int(job["id"]),
+                        }
+                        if policy is not None:
+                            candidate.update({
+                                "event": run["event"],
+                                "workflow_id": run["workflow_id"],
+                                "workflow_path": self.workflow_path_for_run(run, policy),
+                                "head_branch": run["head_branch"],
+                                "head_sha": run["head_sha"],
+                                "run_attempt": run["run_attempt"],
+                            })
+                        candidates.append(candidate)
         return candidates
 
     def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
@@ -498,6 +604,102 @@ def validate_repositories(cfg: dict[str, Any]) -> list[str]:
     if any(not isinstance(repo, str) or not pattern.fullmatch(repo) for repo in repos):
         raise RunnerError("repository allowlist contains an invalid repository")
     return repos
+
+
+def validate_string_list(value: Any, field: str, pattern: re.Pattern[str]) -> list[str]:
+    if not isinstance(value, list) or not value \
+            or any(not isinstance(item, str) or not pattern.fullmatch(item) for item in value):
+        raise RunnerError(f"{field} must be a non-empty list of safe values")
+    if len(value) != len(set(value)):
+        raise RunnerError(f"{field} must not contain duplicates")
+    return value
+
+
+def admission_routes(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return validated routes; dedicated routes are checked first for fairness."""
+    owner = str(cfg.get("allowed_owner", "Tuinstra-DEV"))
+    primary_group_id = cfg.get("runner_group_id", 1)
+    primary_label = cfg.get("runner_label", "trusted-heavy")
+    if not isinstance(primary_group_id, int) or isinstance(primary_group_id, bool) \
+            or primary_group_id < 1:
+        raise RunnerError("runner_group_id must be a positive integer")
+    if not isinstance(primary_label, str) or not ROUTE_VALUE_RE.fullmatch(primary_label):
+        raise RunnerError("runner_label must be a safe label")
+    primary = {
+        "name": primary_label,
+        "repositories": validate_repositories(cfg),
+        "runner_label": primary_label,
+        "runner_group_id": primary_group_id,
+    }
+    if f"{owner}/devops" in primary["repositories"]:
+        raise RunnerError("devops must never be admitted through trusted-heavy")
+
+    raw_routes = cfg.get("dedicated_routes", [])
+    if not isinstance(raw_routes, list):
+        raise RunnerError("dedicated_routes must be an array of tables")
+    if raw_routes:
+        if len(raw_routes) != 1 or not isinstance(raw_routes[0], dict):
+            raise RunnerError("dedicated_routes must match the exact DEV-21 policy")
+        fixed = raw_routes[0]
+        expected = {
+            "name": "ci-billing-report",
+            "repositories": [f"{owner}/devops"],
+            "runner_label": "ops-billing",
+            "runner_group_id": 3,
+            "workflow_paths": [".github/workflows/ci-billing-report.yml"],
+            "events": ["schedule", "workflow_dispatch"],
+            "branches": ["main"],
+            "actor_types": ["User"],
+        }
+        if any(fixed.get(key) != value for key, value in expected.items()):
+            raise RunnerError("dedicated_routes must match the exact DEV-21 policy")
+    routes: list[dict[str, Any]] = []
+    used_names = {primary["name"]}
+    used_labels = {primary_label}
+    used_group_ids = {primary_group_id}
+    used_repositories = set(primary["repositories"])
+    for raw in raw_routes:
+        if not isinstance(raw, dict):
+            raise RunnerError("dedicated route must be a table")
+        required = {
+            "name", "repositories", "runner_label", "runner_group_id",
+            "workflow_paths", "events", "branches", "actor_types",
+        }
+        if set(raw) != required:
+            raise RunnerError("dedicated route must define only the required admission fields")
+        name = raw["name"]
+        label = raw["runner_label"]
+        group_id = raw["runner_group_id"]
+        if not isinstance(name, str) or not ROUTE_VALUE_RE.fullmatch(name):
+            raise RunnerError("dedicated route name must be a safe value")
+        if not isinstance(label, str) or not ROUTE_VALUE_RE.fullmatch(label):
+            raise RunnerError("dedicated route runner_label must be a safe value")
+        if not isinstance(group_id, int) or isinstance(group_id, bool) or group_id < 1:
+            raise RunnerError("dedicated route runner_group_id must be a positive integer")
+        repositories = validate_repositories({
+            "repositories": raw["repositories"], "allowed_owner": owner,
+        })
+        workflow_paths = validate_string_list(
+            raw["workflow_paths"], "workflow_paths", WORKFLOW_PATH_RE
+        )
+        events = validate_string_list(raw["events"], "events", ROUTE_VALUE_RE)
+        if set(events) != {"schedule", "workflow_dispatch"}:
+            raise RunnerError("dedicated routes must admit exactly scheduled or manual workflows")
+        branches = validate_string_list(raw["branches"], "branches", BRANCH_RE)
+        actor_types = validate_string_list(raw["actor_types"], "actor_types", ROUTE_VALUE_RE)
+        if actor_types != ["User"]:
+            raise RunnerError("dedicated routes may admit only User actors")
+        if name in used_names or label in used_labels or group_id in used_group_ids:
+            raise RunnerError("runner route names, labels, and group IDs must be unique")
+        if used_repositories.intersection(repositories):
+            raise RunnerError("repositories must not be shared between runner routes")
+        route = dict(raw)
+        routes.append(route)
+        used_names.add(name)
+        used_labels.add(label)
+        used_group_ids.add(group_id)
+        used_repositories.update(repositories)
+    return [*routes, primary]
 
 
 def read_token(path: Path) -> str:
@@ -930,77 +1132,96 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
     now = int(time.time())
     history = DispatchHistory(Path(cfg["state_dir"]))
     pending_dispatches = store.pending_dispatch_keys()
-    label = str(cfg.get("runner_label", "trusted-heavy"))
     launched = 0
-    for repo in validate_repositories(cfg):
-        if launched >= available_slots:
-            break
-        for job in client.candidate_jobs(repo, label):
+    for route in admission_routes(cfg):
+        label = route["runner_label"]
+        policy = route if "workflow_paths" in route else None
+        for repo in route["repositories"]:
             if launched >= available_slots:
                 break
-            key = f"{repo}:{job['job_id']}"
-            if key in pending_dispatches or history.contains(key, now):
-                continue
-            response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
-            encoded = response.get("encoded_jit_config")
-            runner = response.get("runner", {})
-            runner_id = runner.get("id") if isinstance(runner, dict) else None
-            reported_runner_name = runner.get("name") if isinstance(runner, dict) else None
-            runner_name = runner_name_for_trigger(job["job_id"])
-            runner_name_conflicts = reported_runner_name not in (None, "", runner_name)
-            lease = f"gh-{job['job_id']}"
-            registration = {
-                "lease": lease,
-                "repo": repo,
-                "runner_id": runner_id,
-                "trigger_run_id": job["run_id"],
-                "trigger_job_id": job["job_id"],
-            }
-            registration["runner_name"] = runner_name
-            if not isinstance(encoded, str) or not isinstance(runner_id, int) \
-                    or runner_name_conflicts:
-                if isinstance(runner_id, int):
-                    store.write_cleanup_obligation(lease, registration, int(time.time()))
-                    try:
-                        client.delete_runner(repo, runner_id)
-                    except RunnerError as exc:
-                        LOG.error("deferring malformed GitHub runner cleanup repo=%s runner_id=%s error=%s",
-                                  repo, runner_id, exc)
-                        store.defer_cleanup(lease, registration, int(time.time()))
-                    else:
-                        store.remove_cleanup(registration)
-                raise RunnerError("GitHub returned an invalid JIT response")
-            try:
-                launch(cfg, lease, encoded.encode("ascii"), metadata={
+            for job in client.candidate_jobs(repo, label, policy):
+                if launched >= available_slots:
+                    break
+                key = f"{repo}:{job['job_id']}"
+                if key in pending_dispatches or history.contains(key, now):
+                    continue
+                response = client.generate_jit(
+                    repo, job["job_id"], route["runner_group_id"], label
+                )
+                encoded = response.get("encoded_jit_config")
+                runner = response.get("runner", {})
+                runner_id = runner.get("id") if isinstance(runner, dict) else None
+                reported_runner_name = runner.get("name") if isinstance(runner, dict) else None
+                runner_name = runner_name_for_trigger(job["job_id"])
+                runner_name_conflicts = reported_runner_name not in (None, "", runner_name)
+                lease = f"gh-{job['job_id']}"
+                registration = {
+                    "lease": lease,
+                    "repo": repo,
+                    "runner_id": runner_id,
+                    "trigger_run_id": job["run_id"],
+                    "trigger_job_id": job["job_id"],
+                }
+                registration["runner_name"] = runner_name
+                if not isinstance(encoded, str) or not isinstance(runner_id, int) \
+                        or runner_name_conflicts:
+                    if isinstance(runner_id, int):
+                        store.write_cleanup_obligation(lease, registration, int(time.time()))
+                        try:
+                            client.delete_runner(repo, runner_id)
+                        except RunnerError as exc:
+                            LOG.error("deferring malformed GitHub runner cleanup repo=%s runner_id=%s error=%s",
+                                      repo, runner_id, exc)
+                            store.defer_cleanup(lease, registration, int(time.time()))
+                        else:
+                            store.remove_cleanup(registration)
+                    raise RunnerError("GitHub returned an invalid JIT response")
+                metadata = {
                     "repo": repo,
                     "runner_id": runner_id,
                     "runner_name": runner_name,
                     "trigger_run_id": job["run_id"],
                     "trigger_job_id": job["job_id"],
-                }, dispatch_history_key=key)
-                LOG.info(
-                    "runner registered lease=%s repo=%s runner_id=%s trigger_run_id=%s "
-                    "trigger_job_id=%s assignment=unverified",
-                    lease, repo, runner_id, job["run_id"], job["job_id"],
-                )
-                launched += 1
-            except Exception:
+                }
+                if policy is not None:
+                    metadata.update({
+                        "admission_route": route["name"],
+                        "event": job["event"],
+                        "workflow_id": job["workflow_id"],
+                        "workflow_path": job["workflow_path"],
+                        "head_branch": job["head_branch"],
+                        "head_sha": job["head_sha"],
+                        "run_attempt": job["run_attempt"],
+                    })
                 try:
-                    client.delete_runner(repo, runner_id)
-                except RunnerError as exc:
-                    LOG.error("deferring unused GitHub runner cleanup repo=%s runner_id=%s error=%s",
-                              repo, runner_id, exc)
-                    store.defer_cleanup(lease, {
-                        "lease": lease,
-                        "repo": repo,
-                        "runner_id": runner_id,
-                        "runner_name": runner_name,
-                        "trigger_run_id": job["run_id"],
-                        "trigger_job_id": job["job_id"],
-                    }, int(time.time()), preserve_lease=True)
-                else:
-                    store.remove_cleanup(registration)
-                raise
+                    launch(cfg, lease, encoded.encode("ascii"), metadata=metadata,
+                           dispatch_history_key=key)
+                    LOG.info(
+                        "runner registered lease=%s repo=%s route=%s runner_id=%s "
+                        "trigger_run_id=%s trigger_job_id=%s assignment=unverified",
+                        lease, repo, route["name"], runner_id, job["run_id"],
+                        job["job_id"],
+                    )
+                    launched += 1
+                except Exception:
+                    try:
+                        client.delete_runner(repo, runner_id)
+                    except RunnerError as exc:
+                        LOG.error(
+                            "deferring unused GitHub runner cleanup repo=%s "
+                            "runner_id=%s error=%s", repo, runner_id, exc
+                        )
+                        store.defer_cleanup(lease, {
+                            "lease": lease,
+                            "repo": repo,
+                            "runner_id": runner_id,
+                            "runner_name": runner_name,
+                            "trigger_run_id": job["run_id"],
+                            "trigger_job_id": job["job_id"],
+                        }, int(time.time()), preserve_lease=True)
+                    else:
+                        store.remove_cleanup(registration)
+                    raise
     return launched > 0
 
 

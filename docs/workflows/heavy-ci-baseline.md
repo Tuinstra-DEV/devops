@@ -110,7 +110,7 @@ jobs.
 | `tuinstra-site` | Short dependency installation shows the existing path is already effective | No meaningful heavy-CI cache opportunity. |
 | `marcel-site` | Short dependency installation shows the existing path is already effective | No meaningful heavy-CI cache opportunity. |
 | `wodiq-site` | Short install/build stages show the existing path is already effective | No meaningful heavy-CI cache opportunity. |
-| `devops` | PR checks are already short | The control plane remains hosted-only and must not optimize itself onto Sanctuary. |
+| `devops` | PR checks are already short | Control-plane and PR CI remains hosted and never enters `trusted-heavy`. DEV-21's separately restricted scheduled/manual billing report is the only Sanctuary exception. |
 
 A configured cache or a runtime hit is only a signal. It becomes an effective
 cache only when a comparable miss/hit set proves the stage-time reduction.
