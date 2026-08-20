@@ -2,30 +2,17 @@
 
 ## Provision
 
-1. Create and verify GitHub runner group `ci-billing-report`: ID 3, only
-   `Tuinstra-DEV/devops`, public repositories disabled, and only
-   `Tuinstra-DEV/devops/.github/workflows/ci-billing-report.yml@refs/heads/main`.
-   Record the UI/API evidence before enabling the route.
-2. Confirm Ubuntu 24.04, `/dev/kvm`, and persistent SSD/HDD mounts.
-3. Build the Packer image with pinned Ubuntu ISO and runner checksums.
-4. Publish the image to an access-controlled artifact source.
-5. Provision the repository runner token directly on the host as root-owned
+1. Confirm Ubuntu 24.04, `/dev/kvm`, and persistent SSD/HDD mounts.
+2. Build the Packer image with pinned Ubuntu ISO and runner checksums.
+3. Publish the image to an access-controlled artifact source.
+4. Provision the repository runner token directly on the host as root-owned
    mode `0600` `/etc/ci-runner/github.token`; do not place it in inventory.
-6. Set `runner_base_image_source`, `runner_base_image_sha256`, production IPv4
-   and IPv6 deny lists, `runner_production_networks_reviewed=true`,
-   `runner_billing_group_id=3`, and
-   `runner_billing_group_policy_verified=true` in protected Ansible inventory.
-   Run `ansible-playbook infra/ansible/site.yml` only after the group policy is
-   verified.
-7. Confirm the trusted-heavy allowlist and group ID 1. Confirm the separate
-   `ci-billing-report` route uses repository `Tuinstra-DEV/devops`, label
-   `ops-billing`, dedicated group ID 3, exact workflow path,
-   `schedule`/`workflow_dispatch`, branch `main`, and actor type `User`.
-8. Confirm concurrency 2, 4 vCPU / 6,144 MiB guest dimensions, 4,096 MiB host
-   memory reserve, and the 120-minute lease limit in
-   `/etc/ci-runner/manager.toml`.
-9. Merge the workflow routing only after the deployed manager has passed its
-   health checks, then manually dispatch the billing report from `main`.
+5. Set `runner_base_image_source`, `runner_base_image_sha256`, production IPv4
+   and IPv6 deny lists, and `runner_production_networks_reviewed=true` in
+   protected Ansible inventory, then run `ansible-playbook infra/ansible/site.yml`.
+6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1,
+   concurrency 2, 4 vCPU / 6,144 MiB guest dimensions, 4,096 MiB host memory
+   reserve, and 120-minute lease limit in `/etc/ci-runner/manager.toml`.
 
 Image activation is fail-closed: Ansible stops new admission, refuses to switch
 the digest symlink while any `sanctuary-ci-*` domain or overlay entry exists,
@@ -85,16 +72,6 @@ and GitHub runner record.
 Simulate one failed GitHub deletion and verify a private cleanup tombstone is
 retried without blocking the next VM admission.
 
-For the billing canary, manually dispatch `ci-billing-report.yml` from `main`.
-Verify the job reports runner group `ci-billing-report`, a
-`sanctuary-<job-id>` runner, and labels including `ops-billing`. Confirm its
-sanitized JSON and Markdown artifacts match the report contract. Negative
-checks must leave a non-main dispatch skipped and a PR/fork context, bot
-trigger, different workflow path, or hosted label unadmitted. If a valid job
-remains queued for more than five minutes, inspect the manager service, group
-access, label, capacity, API rate limit, and audit log; do not add an automatic
-hosted fallback.
-
 The Sanctuary production deny list must contain `88.159.77.149/32` plus every
 other public production CIDR. The dedicated firewall service must leave Docker
 and all non-`sanctuary_ci` nftables tables unchanged.
@@ -124,11 +101,3 @@ To roll back an image, drain to zero domains and overlays, atomically repoint
 `ubuntu-24.04-runner.qcow2` to the digest recorded by
 `ubuntu-24.04-runner.previous.qcow2`, restart the manager, and pass the same
 non-production canary. Verify backing chains before deleting any retained image.
-
-For billing-only rollback, disable the `ci-billing-report` runner group's
-repository access first, then restore `runs-on: ubuntu-24.04` in
-`.github/workflows/ci-billing-report.yml` through a normal reviewed commit.
-Remove the dedicated route from the manager only after the workflow change is
-live and no `ops-billing` lease or runner remains. Never configure both labels
-or a conditional hosted fallback in the workflow. The trusted-heavy service
-does not need to stop for this isolated rollback.

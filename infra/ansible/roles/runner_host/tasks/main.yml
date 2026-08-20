@@ -20,14 +20,6 @@
       - ansible_memtotal_mb | int >= ((runner_max_concurrency | int) * (runner_memory_mib | int)) + (runner_host_memory_reserve_mib | int)
     fail_msg: Host capacity must fit two 4-vCPU, 6144-MiB runners plus the memory reserve.
 
-- name: Assert isolated billing runner group contract
-  ansible.builtin.assert:
-    that:
-      - runner_billing_group_id | int == 3
-      - runner_billing_group_id | string == (runner_billing_group_id | int | string)
-      - runner_billing_group_policy_verified | bool
-    fail_msg: Pin verified ci-billing-report group ID 3 in protected inventory and acknowledge its exact repository/workflow policy.
-
 - name: Check KVM device
   ansible.builtin.stat:
     path: /dev/kvm

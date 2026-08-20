@@ -1,5 +1,8 @@
 # GitHub Actions billing report — 2026-08-12
 
+> Historical baseline only. The automated CI billing reporting capability was
+> retired in August 2026 and this evidence does not describe a live workflow.
+
 **Status:** `degraded`  
 **Organization:** `Tuinstra-DEV`  
 **Generated (UTC):** `2026-08-12T18:41:16.323693Z`
@@ -144,4 +147,3 @@ Top consumers are ranked by observed current-period net GitHub Actions amount. T
 ## Evidence handling
 
 This is a sanitized aggregate. API credentials and raw API payloads are not retained. Use the documented append-only archive command for month-over-month evidence.
-

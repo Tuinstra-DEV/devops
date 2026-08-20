@@ -76,34 +76,12 @@ assert_absent 'passwd --lock packer' infra/packer/scripts/seal-image.sh
 grep -q 'packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112beac413ccbce80da927cf1' infra/packer/toolchain.lock
 grep -q 'qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87' infra/packer/toolchain.lock
 grep -q 'Tuinstra-DEV/tuinstra-site' runner/config/manager.toml
-grep -q 'name = "ci-billing-report"' runner/config/manager.toml
-grep -q 'repositories = \["Tuinstra-DEV/devops"\]' runner/config/manager.toml
-grep -q 'runner_label = "ops-billing"' runner/config/manager.toml
-grep -q 'workflow_paths = \[".github/workflows/ci-billing-report.yml"\]' runner/config/manager.toml
-grep -q 'runner_billing_group_id | int == 3' infra/ansible/roles/runner_host/tasks/main.yml
-grep -q 'runner_billing_group_id: null' infra/ansible/roles/runner_host/defaults/main.yml
-grep -q 'runner_billing_group_policy_verified: false' infra/ansible/roles/runner_host/defaults/main.yml
-grep -q 'runner_billing_group_id: 3' infra/ansible/inventory/hosts.example.yml
-grep -q 'runner_billing_group_policy_verified: true' infra/ansible/inventory/hosts.example.yml
-python3 - <<'PY'
-import tomllib
-from pathlib import Path
-
-with (Path("runner/config/manager.toml")).open("rb") as handle:
-    config = tomllib.load(handle)
-assert "Tuinstra-DEV/devops" not in config["repositories"]
-route, = config["dedicated_routes"]
-assert route == {
-    "name": "ci-billing-report",
-    "repositories": ["Tuinstra-DEV/devops"],
-    "runner_label": "ops-billing",
-    "runner_group_id": 3,
-    "workflow_paths": [".github/workflows/ci-billing-report.yml"],
-    "events": ["schedule", "workflow_dispatch"],
-    "branches": ["main"],
-    "actor_types": ["User"],
-}
-PY
+assert_absent 'Tuinstra-DEV/devops' runner/config/manager.toml
+assert_absent 'ops-billing' runner/config/manager.toml
+assert_absent 'ci-billing-report' runner/config/manager.toml
+assert_absent 'ops-billing' infra/ansible/roles/runner_host/templates/manager.toml.j2
+assert_absent 'runner_billing_' infra/ansible/roles/runner_host/defaults/main.yml
+assert_absent 'runner_billing_' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q '88.159.77.149/32' infra/ansible/inventory/hosts.example.yml
 assert_absent 'nftables.service' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'docker buildx version' infra/packer/scripts/verify-image-contract.sh
