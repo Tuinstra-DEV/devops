@@ -9,26 +9,15 @@ each VM is deleted after its single JIT job.
 
 The manager includes a small GitHub REST polling adapter because an organization
 scale-set listener is not available with repository-scoped administration. It
-polls queued/in-progress workflow runs through explicit admission routes,
-selects only queued jobs carrying `self-hosted` and the route's exact labels,
-and requests a repository JIT configuration for that route's runner-group ID.
-All routes share the same lifecycle lock and two-runner capacity envelope.
+polls queued/in-progress workflow runs in an explicit `Tuinstra-DEV` repository
+allowlist, selects only queued jobs whose labels include `trusted-heavy`, and
+requests a repository JIT configuration. `runner_group_id` is configurable and
+defaults to the verified repository runner group ID `1`.
 
-The `trusted-heavy` allowlist is Gate, WODIQ, Tracker, Notify, Console,
-wodiq-site, marcel-site, and tuinstra-site. DevOps remains excluded from that
-route so PR checks and control-plane changes cannot execute on Sanctuary. The
-sole exception is the isolated `ops-billing` route for the scheduled/manual
-`.github/workflows/ci-billing-report.yml` workflow on `main`.
-
-That exception fails closed in two independent places. Its GitHub runner group
-is restricted to repository `Tuinstra-DEV/devops` and selected workflow
-`Tuinstra-DEV/devops/.github/workflows/ci-billing-report.yml@refs/heads/main`,
-with group ID 3 and public repositories disabled. The manager also requires exact repository
-and head-repository identity, workflow path, `main` branch, `schedule` or
-`workflow_dispatch`, non-bot `User` actor and triggering actor, matching
-run/job IDs and SHAs, and all `self-hosted`, `linux`, `x64`, and `ops-billing`
-labels. Missing or malformed identity fields reject admission. There is no
-hosted fallback.
+The deployed allowlist is Gate, WODIQ, Tracker, Notify, Console, wodiq-site,
+marcel-site, and tuinstra-site. This DevOps repository remains hosted-only and
+is intentionally excluded to prevent the runner control plane from executing
+its own changes.
 
 The adapter deduplicates completed job IDs for 24 hours. Repository JIT runners
 are label-scoped, so GitHub may assign a different queued heavy job than the one
@@ -82,12 +71,10 @@ organization administration becomes available.
 
 ## Runner routing contract
 
-Heavy runners register with the exact custom label `trusted-heavy`; reusable
-workflows target `[self-hosted, trusted-heavy]`. The billing runner registers
-with `ops-billing`, and only the directly defined report job targets
-`[self-hosted, linux, x64, ops-billing]`. Do not reuse either label for another
-trust class or add a generic route that lets arbitrary workflows, branches,
-bots, or fork pull requests select these machines.
+The runner must register with the exact custom label `trusted-heavy` in the
+restricted runner group. Reusable workflows target `[self-hosted,
+trusted-heavy]`. Do not add a generic route that lets arbitrary workflows or
+fork pull requests select this machine.
 
 ## Resource and admission policy
 

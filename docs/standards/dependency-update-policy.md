@@ -37,11 +37,11 @@ disproportionate share of GitHub Actions minutes or runner capacity.
 
 ## Measurement
 
-Use the DEV-11 billing collector for the 30 days before rollout and again for
-the first complete 30-day window beginning the day after the last consumer
-merge. Record total and dependency-bot workflow attempts, per-job-rounded
-hosted minutes, self-hosted occupation, p50/p95 first-check completion,
-dependency freshness, failure rate and flaky-rerun rate.
+Use GitHub Actions run and job evidence for the 30 days before rollout and
+again for the first complete 30-day window beginning the day after the last
+consumer merge. Record total and dependency-bot workflow attempts,
+per-job-rounded hosted minutes, self-hosted occupation, p50/p95 first-check
+completion, dependency freshness, failure rate and flaky-rerun rate.
 Reproduce the bot-specific figures with
 `ruby scripts/collect-dependabot-actions-baseline.rb START_DATE END_DATE`.
 

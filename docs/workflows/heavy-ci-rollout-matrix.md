@@ -46,7 +46,7 @@ before ownership changes.
 | `tuinstra-site` | Light | Evidence-only | DEV-9 measured a roughly 27-43 second site class; dependency install was 8 seconds. Heavy orchestration overhead would dominate. Benefit is governance: current contract pin, telemetry, and predictable rollback. | Marcel / tuinstra-site maintainer | DEV-3 contract-refresh scope; reviewed immutable reusable-ci SHA | No performance case for heavy CI | Default `develop`; repository ruleset requires exactly `ci / ci`. A pin refresh must preserve that context. | Revert the caller SHA to the previously passing full SHA; remain on hosted `reusable-ci`. |
 | `marcel-site` | Light | Evidence-only | DEV-9 measured a roughly 27-43 second site class; dependency install was 8 seconds. Use only contract refresh and evidence hygiene. | Marcel / marcel-site maintainer | DEV-3 contract-refresh scope; reviewed immutable reusable-ci SHA | No performance case for heavy CI | Default `develop`; repository ruleset requires exactly `ci / ci`. A pin refresh must preserve that context. | Revert the caller SHA to the previously passing full SHA; remain on hosted `reusable-ci`. |
 | `wodiq-site` | Light | Evidence-only | DEV-9 found build 12 seconds, tests 9 seconds, and install 7 seconds. Heavy fan-out has no credible payoff. | Marcel / wodiq-site maintainer | DEV-3 contract-refresh scope; reviewed immutable reusable-ci SHA | No performance case for heavy CI | Default `develop`; active organization ruleset has no required status check. Preserve the current `ci / ci` check name for future compatibility. | Revert the caller SHA to the previously passing full SHA; remain on hosted `reusable-ci`. |
-| `devops` | Light (control plane) | Evidence-only | DEV-9 measured PR test p50 10 seconds. Its role is contract fixtures, policy tests, and evidence-template validation, not consumer acceleration. | Marcel / DevOps platform maintainer | DEV-6 contract and DEV-8 evidence tests | Explicitly excluded from `trusted-heavy`; DEV-21 permits only the isolated scheduled/manual billing report route | Default `main`; active organization ruleset has no required status check. Keep `PR Checks / lint` and `PR Checks / test` stable if they become required. | Keep every PR check hosted. The billing-only rollback restores `ubuntu-24.04` by normal commit after disabling its dedicated group. Never add devops to `trusted-heavy`. |
+| `devops` | Light (control plane) | Evidence-only | DEV-9 measured PR test p50 10 seconds. Its role is contract fixtures, policy tests, and evidence-template validation, not consumer acceleration. | Marcel / DevOps platform maintainer | DEV-6 contract and DEV-8 evidence tests | Explicitly excluded from the Sanctuary allowlist so the runner control plane cannot execute its own changes | Default `main`; active organization ruleset has no required status check. Keep `PR Checks / lint` and `PR Checks / test` stable if they become required. | Keep all PR checks hosted; revert documentation or contract changes through a normal commit. Never add devops to `trusted-heavy`. |
 
 The workflow review also found that the five consumer callers still pin the
 older full DevOps SHA `a8815205609fdc709a521914bd927ba72d8d7ad5`. A pin refresh
@@ -84,9 +84,7 @@ Missing queue, cache, trust, required-check, or rollback evidence means
 ## Rollout order
 
 1. **DevOps evidence-only:** validate this policy and its tests on hosted PR
-   checks. DevOps never enters `trusted-heavy`; only DEV-21's
-   workflow-restricted scheduled/manual billing report may use its separate
-   Sanctuary route.
+   checks. DevOps never moves to Sanctuary.
 2. **Light sites:** refresh immutable reusable-workflow pins under DEV-3 only
    when normal repository work allows it. Preserve `ci / ci` where required.
    Do not add heavy orchestration.

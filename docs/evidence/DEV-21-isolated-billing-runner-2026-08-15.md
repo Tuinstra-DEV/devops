@@ -1,5 +1,9 @@
 # DEV-21 isolated billing runner evidence
 
+> Historical evidence only. The CI billing workflow, reporting implementation,
+> dedicated runner route, secret and runner group were retired in August 2026;
+> this document is not an active operations runbook.
+
 ## Change boundary
 
 The DevOps repository remains excluded from `trusted-heavy`. Only the report
