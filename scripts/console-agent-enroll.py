@@ -54,7 +54,8 @@ def ensure_image(source, target):
     if source_id != IMAGE_ID:
         raise RuntimeError('Source image identity differs from reviewed image')
     print('Streaming the verified Console image over SSH...', flush=True)
-    producer = subprocess.Popen(ssh_command(source, shlex.join(['docker', 'image', 'save', IMAGE_ID])),
+    save_pipeline = shlex.join(['docker', 'image', 'save', IMAGE_ID]) + ' | gzip -1'
+    producer = subprocess.Popen(ssh_command(source, shlex.join(['bash', '-o', 'pipefail', '-c', save_pipeline])),
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         consumer = subprocess.run(ssh_command(target, 'sudo -n docker image load'),
