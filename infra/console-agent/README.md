@@ -6,7 +6,10 @@ Its upstream source remains the Console repository's `agent/install-container.sh
 Local adaptations enforce stdin-only tokens, protected atomic env writes, immutable
 images, fixed production inputs and disabled backups with no backup-directory mount.
 The orchestration script uses `/var/www/_platform/console-agent`, never copies
-registry credentials, and pins the loaded image by verified SHA256 image ID.
+registry credentials, and pins the loaded image by its verified SHA256 image ID. Docker classic and
+containerd stores can assign different image IDs: the helper compares the exact
+root filesystem layers, OS/architecture and image configuration, normalizing only
+null or known empty container-default fields.
 
 After host bootstrap, run from this checkout:
 
@@ -30,7 +33,9 @@ target before retrying; explicitly disable any orphan credential. No raw CLI out
 or env/config dumps are printed. Do not run with shell tracing.
 
 The official container agent publishes no ports; only its proxy can reach the
-Docker socket. It uses read-only host mounts and a GET-only Docker API proxy.
+Docker socket. It mounts only three read-only host metric files plus an empty capacity marker on
+the same root/Docker filesystem, and uses a GET-only Docker API proxy. It does not
+mount host /etc, the full /proc tree, backups or Docker volume contents.
 Container mode cannot accurately report host listeners. Backups collection is
 explicitly disabled until the separately deferred backup configuration exists.
 Firewall configuration is outside this bootstrap's user-approved scope.

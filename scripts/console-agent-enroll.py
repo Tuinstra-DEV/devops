@@ -7,6 +7,7 @@ no registry credentials are copied to the target. Run after host bootstrap.
 """
 import argparse
 import hashlib
+import json
 import pathlib
 import re
 import shlex
@@ -44,15 +45,41 @@ def token_from_output(output):
     return tokens.pop() + b'\n'
 
 
+def image_fingerprint(host, image, *, sudo=False):
+    prefix = ['sudo', '-n'] if sudo else []
+    fmt = '{"Config":{{json .Config}},"RootFS":{{json .RootFS}},"Os":{{json .Os}},"Architecture":{{json .Architecture}}}'
+    result = remote(host, prefix + ['docker', 'image', 'inspect', image, '--format', fmt])
+    data = json.loads(result.stdout)
+    data['Config'] = {key: value for key, value in data['Config'].items() if value is not None}
+    # Older Docker inspect includes empty container defaults that containerd
+    # image inspect omits. Normalize only those known semantically empty fields.
+    for key in ('Hostname', 'Domainname', 'User', 'AttachStdin', 'AttachStdout',
+                'AttachStderr', 'Tty', 'OpenStdin', 'StdinOnce', 'Image'):
+        if data['Config'].get(key) in (None, '', False):
+            data['Config'].pop(key, None)
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
 def ensure_image(source, target):
-    check = remote(target, ['sudo', '-n', 'docker', 'image', 'inspect', IMAGE_ID,
-                            '--format', '{{.Id}}'], allow_failure=True)
-    if check.returncode == 0 and check.stdout.strip().decode() == IMAGE_ID:
-        return
     source_id = remote(source, ['docker', 'image', 'inspect', IMAGE_REF,
                                 '--format', '{{.Id}}']).stdout.strip().decode()
     if source_id != IMAGE_ID:
         raise RuntimeError('Source image identity differs from reviewed image')
+    fingerprint = image_fingerprint(source, IMAGE_REF)
+
+    def find_loaded_image():
+        ids = remote(target, ['sudo', '-n', 'docker', 'image', 'ls', '--all',
+                              '--no-trunc', '--format', '{{.ID}}']).stdout.decode().splitlines()
+        for candidate in sorted(set(ids)):
+            if not re.fullmatch(r'sha256:[a-f0-9]{64}', candidate):
+                continue
+            if image_fingerprint(target, candidate, sudo=True) == fingerprint:
+                return candidate
+        return None
+
+    existing = find_loaded_image()
+    if existing:
+        return existing
     print('Streaming the verified Console image over SSH...', flush=True)
     save_pipeline = shlex.join(['docker', 'image', 'save', IMAGE_ID]) + ' | gzip -1'
     producer = subprocess.Popen(ssh_command(source, shlex.join(['bash', '-o', 'pipefail', '-c', save_pipeline])),
@@ -69,10 +96,10 @@ def ensure_image(source, target):
         if producer.poll() is None:
             producer.terminate()
             producer.wait()
-    actual = remote(target, ['sudo', '-n', 'docker', 'image', 'inspect', IMAGE_ID,
-                             '--format', '{{.Id}}']).stdout.strip().decode()
-    if actual != IMAGE_ID:
-        raise RuntimeError('Target image identity mismatch')
+    actual = find_loaded_image()
+    if not actual:
+        raise RuntimeError('Target image config, filesystem or platform identity mismatch')
+    return actual
 
 
 def main():
@@ -103,7 +130,7 @@ def main():
     remote_hash = remote(args.target, ['sha256sum', '/usr/local/lib/tuinstra/install-console-agent.sh']).stdout.split()[0].decode()
     if remote_hash != hashlib.sha256(content).hexdigest():
         raise RuntimeError('Remote installer checksum differs')
-    ensure_image(args.source, args.target)
+    image_id = ensure_image(args.source, args.target)
     agent_id = 'agent:' + args.host_slug
     console = ['docker', 'exec', 'console_prod_php', 'php', 'bin/console']
     token = None
@@ -118,13 +145,13 @@ def main():
         result = None
         remote(args.target, ['sudo', '-n', 'env', 'INSTALL_DIR=' + INSTALL_DIR,
                  '/usr/local/lib/tuinstra/install-console-agent.sh', '--host-slug', args.host_slug,
-                 '--agent-id', agent_id, '--environment', 'production', '--image', IMAGE_ID,
+                 '--agent-id', agent_id, '--environment', 'production', '--image', image_id,
                  '--token-stdin', '--no-start'], data=token)
         token = None
         compose = ['sudo', '-n', 'docker', 'compose', '--env-file', env,
                    '-f', INSTALL_DIR + '/docker-compose.yml']
         remote(args.target, compose + ['config', '--quiet'])
-        source_record = (f'Upstream: {IMAGE_REF}\nImage ID: {IMAGE_ID}\n'
+        source_record = (f'Upstream: {IMAGE_REF}\nSource image ID: {IMAGE_ID}\nLocal image ID: {image_id}\n'
                          f'Installer sha256: {hashlib.sha256(content).hexdigest()}\n')
         remote(args.target, ['sudo', '-n', 'tee', INSTALL_DIR + '/source-image.txt'],
                data=source_record.encode())

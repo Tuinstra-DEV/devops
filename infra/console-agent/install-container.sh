@@ -192,6 +192,12 @@ if [[ ! "${DOCKER_LOG_MAX_SIZE:-10m}" =~ ^[0-9]+[kmg]$ ||
     echo "Invalid Docker log bounds." >&2
     exit 64
 fi
+install -d -m 0755 /var/lib/tuinstra/console-capacity
+if [[ "$(stat -c %d /var/lib/tuinstra/console-capacity)" != "$(stat -c %d /var/lib/docker)" ||
+      "$(stat -c %d /var/lib/tuinstra/console-capacity)" != "$(stat -c %d /)" ]]; then
+    echo "Capacity marker must share the root and Docker filesystems; review mounts first." >&2
+    exit 64
+fi
 install -d -m 0750 "${INSTALL_DIR}"
 
 cat > "${ENV_FILE}.tmp" <<ENV
@@ -257,9 +263,11 @@ services:
       DOCKER_HOST: tcp://docker-proxy:2375
       HOME: /tmp
     volumes:
-      - /proc:/host/proc:ro
-      - /etc:/host/rootfs:ro
-      - ${CONSOLE_AGENT_DOCKER_DATA_ROOT}:/host/var/lib/docker:ro
+      - /proc/loadavg:/host/proc/loadavg:ro
+      - /proc/cpuinfo:/host/proc/cpuinfo:ro
+      - /proc/meminfo:/host/proc/meminfo:ro
+      - /var/lib/tuinstra/console-capacity:/host/rootfs:ro
+      - /var/lib/tuinstra/console-capacity:/host/var/lib/docker:ro
     read_only: true
     tmpfs:
       - /tmp

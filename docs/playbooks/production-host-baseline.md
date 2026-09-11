@@ -1,95 +1,99 @@
-# Production host baseline
+# Productiehost-baseline
 
-This playbook prepares `prod01` (`vps01.tuinstra.dev`) without migrating a
-site, changing firewall policy, configuring DNS, or creating backups. Those
-controls remain explicit follow-up work. Port 80 serves only a Caddy `404`;
-HTTPS is added with the reviewed domain routes during migration.
+Dit draaiboek richt een nieuwe productiehost veilig en herhaalbaar in. DEV-26
+migreert geen applicaties, wijzigt geen firewall of DNS en configureert nog geen
+back-ups. Poort 80 geeft alleen Caddy `404`; HTTPS volgt bij de migratie van de
+beoordeelde domeinroutes.
 
-## Managed baseline
+## Wat de baseline beheert
 
-- `mtuinstra` uses the controller public key and has passwordless sudo.
-- `deploy` has a locked password, its own forced-command key, no Docker group,
-  and no general shell or sudo capability.
-- Docker Engine and Compose use exact apt versions from inventory. Docker uses
-  live restore and bounded local logs.
-- Caddy uses the pinned multi-architecture image digest, has a loopback-only
-  admin endpoint, imports future root-owned route fragments from the initially
-  empty `sites` directory, and publishes only the empty HTTP route.
-- Application roots use `/var/www/<app>`. Root controls the root, `shared`, and
-  future `compose.yml`; deploy may write only `releases`. Secrets belong in
-  `/etc/tuinstra/<app>` mode `0700`; durable data belongs in
-  `/var/lib/tuinstra/<app>`.
+- `mtuinstra` gebruikt `~/.ssh/id_ed25519_marcel.pub` en heeft passwordless sudo.
+- `deploy` heeft een vergrendeld wachtwoord, geen algemene shell, sudo of
+  Docker-groep en per host een eigen forced-command-sleutel.
+- De private deploysleutels zijn
+  `~/.ssh/id_ed25519_tuinstra_prod_01_deploy` en
+  `~/.ssh/id_ed25519_tuinstra_prod_02_deploy`. Deel of commit deze nooit; de
+  inventory verwijst alleen naar de bijbehorende `.pub`-bestanden.
+- Docker Engine en Compose gebruiken de exacte apt-versies uit de inventory,
+  met live restore en begrensde lokale logs.
+- Caddy gebruikt een vastgezette multi-architecture image-digest, een
+  loopback-only admin-endpoint en root-owned configuratie onder
+  `/var/www/_platform`. Nieuwe applicatieroutes komen in de aanvankelijk lege
+  map `/var/www/_platform/caddy/sites`.
+- Applicaties staan onder `/var/www/<app>`: alleen `releases` is schrijfbaar
+  voor `deploy`; root beheert `shared` en de toekomstige `compose.yml`.
+- Secrets staan in `/etc/tuinstra/<app>` met modus `0700`; duurzame data staat
+  in `/var/lib/tuinstra/<app>`.
 
-The deploy key accepts only `status <app>` and `deploy <app>`. The root-owned
-helper rejects unknown apps, missing or writable compose definitions, and any
-image that is not pinned with `@sha256:<digest>`. Deploy cannot choose a compose
-path or Docker argument. Do not reference deploy-writable release files from a
-privileged Compose definition.
+De deploysleutel accepteert alleen `status <app>` en `deploy <app>`. De
+root-owned helper weigert onbekende apps, ontbrekende of schrijfbare
+Compose-definities en images zonder `@sha256:<digest>`. Verwijs vanuit een
+geprivilegieerde Compose-definitie nooit naar bestanden die `deploy` kan wijzigen.
 
-## Run
+## Voorbereiding
 
-Use the repository wrapper; it uses an existing Ansible installation and never
-installs Python packages globally:
+De repository-wrapper detecteert `ansible-playbook` op `PATH` en anders de
+optionele repo-installatie `../.tooling/ansible/bin/ansible-playbook`. Hij
+installeert zelf niets. Controleer vooraf de persoonlijke admin-public-key en
+maak voor elke host een unieke deploy-keypair. CI-credentials zijn nog niet
+geconfigureerd en horen niet bij deze baseline.
+
+## Vaste workflow per nieuwe host
+
+Voer bootstrap eerst als `root` uit. Check mode doet alleen de fail-closed
+host-, key- en app-preflight, omdat de latere users en apt-bestanden nog niet
+bestaan.
+
+Voor `prod01` gebruikt de wrapper standaard
+`infra/ansible/production/inventory.yml` en limit `prod01`:
 
 ```sh
 scripts/production-host-baseline --check bootstrap
 scripts/production-host-baseline bootstrap
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes mtuinstra@vps01.tuinstra.dev sudo -n true
-scripts/production-host-baseline --check configure
-scripts/production-host-baseline configure
+PRODUCTION_ADMIN_SSH_VERIFIED=true PRODUCTION_ADMIN_SUDO_VERIFIED=true \
+  scripts/production-host-baseline --check harden-ssh
+PRODUCTION_ADMIN_SSH_VERIFIED=true PRODUCTION_ADMIN_SUDO_VERIFIED=true \
+  scripts/production-host-baseline harden-ssh
+scripts/production-host-baseline --as-admin --check configure
+scripts/production-host-baseline --as-admin configure
 scripts/production-host-baseline --as-admin verify
 ```
 
-On a clean host, `--check bootstrap` runs only the fail-closed host/key/app
-preflight because check mode does not create the users and apt files later tasks
-need. `bootstrap` creates the accounts and Docker apt source. After bootstrap,
-`--check configure` previews managed files while skipping service commands whose
-packages check mode does not install. `configure` applies the complete baseline.
-Rerun `configure` and require zero unexplained changes.
-After a controlled reboot, rerun `verify`; also confirm the Hetzner Console or
-rescue path is available before changing SSH access.
-
-SSH hardening is deliberately separate. Run it only through the independently
-verified administrator session after both login and sudo checks passed:
+Voor `prod02` is dezelfde workflow pas uitvoerbaar vanuit de afhankelijke
+DEV-25-branch, waar `infra/ansible/production/inventory-prod02.yml` wordt
+toegevoegd. Voeg aan ieder wrappercommando toe:
 
 ```sh
-PRODUCTION_ADMIN_SSH_VERIFIED=true \
-PRODUCTION_ADMIN_SUDO_VERIFIED=true \
-  scripts/production-host-baseline --check harden-ssh
-
-PRODUCTION_ADMIN_SSH_VERIFIED=true \
-PRODUCTION_ADMIN_SUDO_VERIFIED=true \
-  scripts/production-host-baseline harden-ssh
+--inventory infra/ansible/production/inventory-prod02.yml --limit prod02
 ```
 
-That playbook disables password authentication and direct root login, validates
-the complete sshd configuration, then reloads SSH. The baseline playbook never
-does this implicitly.
+Gebruik voor de onafhankelijke controle het `prod02`-adres uit die inventory.
+Verifieer vóór hardening in een aparte adminsessie zowel login als `sudo -n
+true`. Na hardening moeten `configure`, de herhaalde idempotentiecontrole en
+`verify` altijd `--as-admin` gebruiken. Herhaal `configure` en accepteer geen
+onverklaarde wijzigingen. Herhaal `verify` na een gecontroleerde reboot en
+controleer vooraf of Hetzner Console of rescue bereikbaar is.
 
-## Deferred controls
+## Uitgestelde controles
 
-Firewall and network filtering are unchanged by DEV-26. Until that work is
-accepted, publish no application, database, Docker API, or monitoring port;
-only the empty Caddy port 80 listener is intentional. Backups are also deferred.
-Before any migration, configure encrypted application-consistent backups to the
-approved spare disk under Sanctuary `/mnt/hdd`, define retention, and prove a
-restore. Console monitoring enrollment is managed separately and must not mount
-the unrestricted Docker socket.
+Firewall- en netwerkfiltering vallen buiten DEV-26. Publiceer tot acceptatie
+geen applicatie-, database-, Docker API- of monitoringpoort; alleen Caddy op
+poort 80 is bedoeld. Back-ups zijn eveneens uitgesteld. Richt vóór een migratie
+versleutelde, applicatieconsistente back-ups in naar Sanctuary
+`/mnt/hdd1000-01`, leg retentie vast en bewijs een restore.
 
-CI integration is pending. A future workflow may use the per-host deploy key,
-but it must retain the forced command and install root-owned digest-pinned
-Compose files through a separately reviewed control path.
+Console-enrollment gebeurt afzonderlijk volgens
+[Console enrollment](../../infra/console-agent/README.md). De agent mag de
+onbeperkte Docker-socket niet mounten. Toekomstige Console-provisioning hoort
+niet in DEV-26.
 
-## Local template regression gate
-
-Run the real Ansible renderer as well as static syntax checks. This catches Bash
-array expansions being mistaken for Jinja comments and leading whitespace before
-a forced-command shebang:
+## Lokale regressiecontrole
 
 ```sh
 ANSIBLE_HOME=/tmp/tuinstra-ansible ANSIBLE_REMOTE_TEMP=/tmp/tuinstra-ansible-local \
   ansible-playbook -i localhost, infra/ansible/production-host-template-test.yml
 ```
 
-The command renders only synthetic configuration into a temporary directory, checks
-the shell syntax, and removes the fixtures. It does not contact production hosts.
+Deze test rendert alleen synthetische configuratie in een tijdelijke map,
+controleert shellsyntax en verwijdert de fixtures. Hij benadert geen host.
