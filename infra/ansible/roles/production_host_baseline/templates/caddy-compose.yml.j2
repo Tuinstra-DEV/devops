@@ -1,0 +1,21 @@
+---
+services:
+  caddy:
+    image: {{ production_caddy_image }}
+    restart: unless-stopped
+    ports:
+      - "{{ production_caddy_http_bind_address }}:80:80"
+    volumes:
+      - /var/www/_platform/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /var/www/_platform/caddy/sites:/etc/caddy/sites:ro
+      - /var/lib/tuinstra/caddy/data:/data
+      - /var/lib/tuinstra/caddy/config:/config
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m

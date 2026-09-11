@@ -1,0 +1,10 @@
+---
+- name: Verify the production host baseline
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Run production baseline verification
+      ansible.builtin.import_role:
+        name: production_host_baseline
+        tasks_from: verify

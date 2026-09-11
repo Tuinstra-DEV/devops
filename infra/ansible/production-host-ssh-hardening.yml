@@ -1,0 +1,10 @@
+---
+- name: Harden production SSH after verified administrator access
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Run separately gated SSH hardening
+      ansible.builtin.import_role:
+        name: production_host_baseline
+        tasks_from: ssh_hardening

@@ -1,0 +1,22 @@
+---
+all:
+  children:
+    production_hosts:
+      hosts:
+        prod01:
+          ansible_host: vps01.tuinstra.dev
+          ansible_user: root
+          production_app_names:
+            - site-tuinstra
+            - site-marcel
+            - site-openairco
+            - wodiq-site
+            - umami
+          production_admin_public_key_file: /Users/marceltuinstra/.ssh/id_ed25519_marcel.pub
+          production_deploy_public_key_file: /Users/marceltuinstra/.ssh/id_ed25519_tuinstra_prod_01_deploy.pub
+          production_docker_package_versions:
+            docker-ce: 5:29.8.0-1~ubuntu.26.04~resolute
+            docker-ce-cli: 5:29.8.0-1~ubuntu.26.04~resolute
+            containerd.io: 2.3.5-1~ubuntu.26.04~resolute
+            docker-buildx-plugin: 0.37.1-1~ubuntu.26.04~resolute
+            docker-compose-plugin: 5.5.1-1~ubuntu.26.04~resolute

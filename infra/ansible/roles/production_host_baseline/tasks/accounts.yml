@@ -1,0 +1,79 @@
+---
+- name: Install baseline packages without upgrading the distribution
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - python3-apt
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the restricted deployment group
+  ansible.builtin.group:
+    name: "{{ production_deploy_group }}"
+    state: present
+
+- name: Create the administrator account
+  ansible.builtin.user:
+    name: "{{ production_admin_user }}"
+    shell: /bin/bash
+    groups:
+      - sudo
+    append: true
+    create_home: true
+    password_lock: true
+
+- name: Create administrator SSH directory
+  ansible.builtin.file:
+    path: "/home/{{ production_admin_user }}/.ssh"
+    state: directory
+    owner: "{{ production_admin_user }}"
+    group: "{{ production_admin_user }}"
+    mode: '0700'
+
+- name: Install the administrator public key
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', production_admin_public_key_file) | trim }}\n"
+    dest: "/home/{{ production_admin_user }}/.ssh/authorized_keys"
+    owner: "{{ production_admin_user }}"
+    group: "{{ production_admin_user }}"
+    mode: '0600'
+
+- name: Grant the administrator explicit passwordless sudo
+  ansible.builtin.copy:
+    content: "{{ production_admin_user }} ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    dest: "/etc/sudoers.d/90-{{ production_admin_user }}"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Create the restricted deploy account
+  ansible.builtin.user:
+    name: "{{ production_deploy_user }}"
+    shell: /bin/bash
+    groups:
+      - "{{ production_deploy_group }}"
+    append: false
+    create_home: true
+    password_lock: true
+
+- name: Create deploy SSH directory
+  ansible.builtin.file:
+    path: "/home/{{ production_deploy_user }}/.ssh"
+    state: directory
+    owner: "{{ production_deploy_user }}"
+    group: "{{ production_deploy_user }}"
+    mode: '0700'
+
+- name: Install the forced-command deploy public key
+  ansible.builtin.copy:
+    content: >-
+      restrict,command="/usr/local/sbin/tuinstra-deploy-shell"
+      {{ lookup('ansible.builtin.file', production_deploy_public_key_file) | trim }}
+    dest: "/home/{{ production_deploy_user }}/.ssh/authorized_keys"
+    owner: "{{ production_deploy_user }}"
+    group: "{{ production_deploy_user }}"
+    mode: '0600'

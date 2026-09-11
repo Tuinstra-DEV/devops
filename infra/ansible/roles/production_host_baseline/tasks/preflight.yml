@@ -1,0 +1,37 @@
+---
+- name: Require a supported Ubuntu release
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Ubuntu'
+      - ansible_distribution_version is match('^(24\\.04|26\\.04)(\\.|$)')
+      - ansible_architecture in ['x86_64', 'aarch64']
+    fail_msg: This baseline supports Ubuntu 24.04 and 26.04 only.
+
+- name: Validate production application names
+  ansible.builtin.assert:
+    that:
+      - production_app_names | length > 0
+      - production_app_names | unique | length == production_app_names | length
+      - item is match('^[a-z0-9][a-z0-9-]{0,62}$')
+    fail_msg: Application names must be unique lowercase DNS-label-safe values.
+  loop: "{{ production_app_names }}"
+
+- name: Inspect controller public keys
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ production_admin_public_key_file }}"
+    - "{{ production_deploy_public_key_file }}"
+  delegate_to: localhost
+  become: false
+  register: production_controller_public_keys
+
+- name: Require externally supplied public keys
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: Both administrator and deploy public-key paths must exist on the controller.
+  loop: "{{ production_controller_public_keys.results }}"
+  loop_control:
+    label: "{{ item.item }}"

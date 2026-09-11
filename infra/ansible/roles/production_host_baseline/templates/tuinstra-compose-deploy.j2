@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+readonly allowed_apps=({% for app in production_app_names %}{{ app | quote }} {% endfor %})
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: tuinstra-compose-deploy status|deploy <application>" >&2
+  exit 64
+fi
+
+readonly action="$1"
+readonly app="$2"
+case "$action" in
+  status|deploy) ;;
+  *) echo "unsupported action" >&2; exit 64 ;;
+esac
+
+allowed=false
+for candidate in "${allowed_apps[@]}"; do
+  if [[ "$candidate" == "$app" ]]; then
+    allowed=true
+    break
+  fi
+done
+if [[ "$allowed" != true ]]; then
+  echo "application is not allowlisted" >&2
+  exit 64
+fi
+
+readonly app_root="/var/www/$app"
+readonly compose_file="$app_root/compose.yml"
+if [[ ! -f "$compose_file" || -L "$compose_file" ]]; then
+  echo "root-owned compose definition is not installed" >&2
+  exit 66
+fi
+
+if [[ "$(/usr/bin/stat -c '%u' "$app_root")" != 0 ||
+      "$(/usr/bin/stat -c '%u' "$compose_file")" != 0 ]]; then
+  echo "application root and compose definition must be owned by root" >&2
+  exit 77
+fi
+for path in "$app_root" "$compose_file"; do
+  mode="$(/usr/bin/stat -c '%a' "$path")"
+  if (( (8#$mode & 0022) != 0 )); then
+    echo "application root and compose definition must not be group/world writable" >&2
+    exit 77
+  fi
+done
+
+compose=(/usr/bin/docker compose --project-name "$app" --project-directory "$app_root" --file "$compose_file")
+"${compose[@]}" config --quiet
+mapfile -t images < <("${compose[@]}" config --images)
+if [[ ${#images[@]} -eq 0 ]]; then
+  echo "compose definition has no images" >&2
+  exit 65
+fi
+for image in "${images[@]}"; do
+  if [[ ! "$image" =~ @sha256:[a-f0-9]{64}$ ]]; then
+    echo "every image must be pinned by sha256 digest" >&2
+    exit 65
+  fi
+done
+
+if [[ "$action" == status ]]; then
+  exec "${compose[@]}" ps --all
+fi
+
+"${compose[@]}" pull
+"${compose[@]}" up --detach --remove-orphans
+exec "${compose[@]}" ps --all

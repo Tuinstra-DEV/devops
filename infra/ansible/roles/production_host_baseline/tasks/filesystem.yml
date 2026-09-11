@@ -1,0 +1,86 @@
+---
+- name: Create application roots
+  ansible.builtin.file:
+    path: "/var/www/{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ production_deploy_group }}"
+    mode: '0750'
+  loop: "{{ production_app_names }}"
+
+- name: Create deploy-writable release directories
+  ansible.builtin.file:
+    path: "/var/www/{{ item }}/releases"
+    state: directory
+    owner: root
+    group: "{{ production_deploy_group }}"
+    mode: '2770'
+  loop: "{{ production_app_names }}"
+
+- name: Create root-controlled shared directories
+  ansible.builtin.file:
+    path: "/var/www/{{ item }}/shared"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  loop: "{{ production_app_names }}"
+
+- name: Create root-only application secret directories
+  ansible.builtin.file:
+    path: "/etc/tuinstra/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: "{{ production_app_names }}"
+
+- name: Create root-controlled persistent data directories
+  ansible.builtin.file:
+    path: "/var/lib/tuinstra/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  loop: "{{ production_app_names }}"
+
+- name: Create the Caddy platform directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/www/_platform, mode: '0750' }
+    - { path: /var/www/_platform/caddy, mode: '0750' }
+    - { path: /var/www/_platform/caddy/sites, mode: '0750' }
+    - { path: /var/lib/tuinstra/caddy, mode: '0750' }
+    - { path: /var/lib/tuinstra/caddy/data, mode: '0700' }
+    - { path: /var/lib/tuinstra/caddy/config, mode: '0700' }
+
+- name: Install the root-owned compose deployment helper
+  ansible.builtin.template:
+    src: tuinstra-compose-deploy.j2
+    dest: /usr/local/sbin/tuinstra-compose-deploy
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the forced-command SSH dispatcher
+  ansible.builtin.template:
+    src: tuinstra-deploy-shell.j2
+    dest: /usr/local/sbin/tuinstra-deploy-shell
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Allow deploy to invoke only the policy-enforcing helper
+  ansible.builtin.copy:
+    content: |
+      {{ production_deploy_user }} ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-compose-deploy *
+    dest: /etc/sudoers.d/91-tuinstra-deploy
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s

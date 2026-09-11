@@ -1,0 +1,64 @@
+---
+- name: Run verification preflight
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Read administrator groups
+  ansible.builtin.command:
+    argv: [id, -nG, "{{ production_admin_user }}"]
+  register: production_admin_groups
+  changed_when: false
+
+- name: Read deploy groups
+  ansible.builtin.command:
+    argv: [id, -nG, "{{ production_deploy_user }}"]
+  register: production_deploy_groups
+  changed_when: false
+
+- name: Verify account privilege boundaries
+  ansible.builtin.assert:
+    that:
+      - "'sudo' in production_admin_groups.stdout.split()"
+      - "'sudo' not in production_deploy_groups.stdout.split()"
+      - "'docker' not in production_deploy_groups.stdout.split()"
+      - production_deploy_group in production_deploy_groups.stdout.split()
+
+- name: Read Docker daemon configuration
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: production_docker_daemon_config
+
+- name: Verify Docker logging policy
+  ansible.builtin.assert:
+    that:
+      - (production_docker_daemon_config.content | b64decode | from_json)['live-restore'] | bool
+      - (production_docker_daemon_config.content | b64decode | from_json)['log-driver'] == 'local'
+      - (production_docker_daemon_config.content | b64decode | from_json)['log-opts']['max-size'] == production_docker_log_max_size
+      - (production_docker_daemon_config.content | b64decode | from_json)['log-opts']['max-file'] == production_docker_log_max_files
+
+- name: Verify Docker service is active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, docker.service]
+  changed_when: false
+
+- name: Verify the empty Caddy route
+  ansible.builtin.uri:
+    url: http://127.0.0.1/
+    status_code: 404
+    return_content: false
+
+- name: Inspect managed directory permissions
+  ansible.builtin.stat:
+    path: "/etc/tuinstra/{{ item }}"
+  loop: "{{ production_app_names }}"
+  register: production_secret_directories
+
+- name: Verify secret directory ownership and mode
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == '0700'
+  loop: "{{ production_secret_directories.results }}"
+  loop_control:
+    label: "/etc/tuinstra/{{ item.item }}"

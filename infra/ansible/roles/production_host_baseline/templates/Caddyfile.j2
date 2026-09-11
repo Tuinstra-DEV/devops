@@ -1,0 +1,10 @@
+{
+	admin 127.0.0.1:2019
+	auto_https off
+}
+
+import /etc/caddy/sites/*.caddy
+
+:80 {
+	respond 404
+}

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly original_command="${SSH_ORIGINAL_COMMAND:-}"
+if [[ -z "$original_command" || "$original_command" == *$'\n'* || "$original_command" == *$'\r'* ]]; then
+  echo "usage: status|deploy <application>" >&2
+  exit 64
+fi
+
+read -r -a command_parts <<< "$original_command"
+if [[ ${#command_parts[@]} -ne 2 ]]; then
+  echo "usage: status|deploy <application>" >&2
+  exit 64
+fi
+
+exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \
+  "${command_parts[0]}" "${command_parts[1]}"

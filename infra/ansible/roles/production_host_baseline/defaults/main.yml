@@ -1,0 +1,22 @@
+---
+production_admin_user: mtuinstra
+production_admin_public_key_file: ""
+production_deploy_user: deploy
+production_deploy_group: tuinstra-deploy
+production_deploy_public_key_file: ""
+production_app_names: []
+
+production_docker_apt_repository_url: https://download.docker.com/linux/ubuntu
+production_docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+production_docker_apt_key_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+production_docker_package_versions: {}
+production_docker_log_max_size: 10m
+production_docker_log_max_files: "5"
+
+production_caddy_image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+production_caddy_http_bind_address: 0.0.0.0
+
+# SSH hardening is deliberately absent from the baseline playbook. The separate
+# playbook requires these two confirmations and an administrator connection.
+production_admin_ssh_verified: false
+production_admin_sudo_verified: false
