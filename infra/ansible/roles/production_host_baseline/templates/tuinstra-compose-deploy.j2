@@ -3,6 +3,7 @@ set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 readonly allowed_apps=({% for app in production_app_names %}{{ app | quote }} {% endfor %})
+{% raw %}
 
 if [[ $# -ne 2 ]]; then
   echo "usage: tuinstra-compose-deploy status|deploy <application>" >&2
@@ -69,3 +70,4 @@ fi
 "${compose[@]}" pull
 "${compose[@]}" up --detach --remove-orphans
 exec "${compose[@]}" ps --all
+{% endraw %}

@@ -1,3 +1,4 @@
+{% raw %}
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -15,3 +16,4 @@ fi
 
 exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \
   "${command_parts[0]}" "${command_parts[1]}"
+{% endraw %}
