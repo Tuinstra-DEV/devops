@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Security boundary tests: never print CLI tokens or accept SSH option injection."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -44,6 +45,28 @@ class EnrollmentTests(unittest.TestCase):
                 enroll.remote('admin@host', ['issue'], data=b'cag_synthetic\n')
         self.assertIn('inspect target/hub state', str(error.exception))
         self.assertNotIn('secret', str(error.exception))
+
+
+    def fingerprint(self, config, layers=None):
+        data = {'Config': config, 'RootFS': {'Type': 'layers', 'Layers': layers or ['sha256:fixture']},
+                'Os': 'linux', 'Architecture': 'amd64'}
+        result = subprocess.CompletedProcess([], 0, json.dumps(data).encode(), b'')
+        with patch.object(enroll, 'remote', return_value=result):
+            return enroll.image_fingerprint('admin@host', 'test-image')
+
+    def test_image_identity_normalizes_only_empty_cross_store_defaults(self):
+        classic = {'Cmd': ['php', 'agent'], 'User': '', 'AttachStdin': False, 'Labels': None, 'OnBuild': None}
+        containerd = {'Cmd': ['php', 'agent']}
+        self.assertEqual(self.fingerprint(classic), self.fingerprint(containerd))
+
+    def test_image_identity_rejects_changed_command_or_nonempty_user(self):
+        base = self.fingerprint({'Cmd': ['php', 'agent']})
+        self.assertNotEqual(base, self.fingerprint({'Cmd': ['sh', 'other']}))
+        self.assertNotEqual(base, self.fingerprint({'Cmd': ['php', 'agent'], 'User': '1000'}))
+
+    def test_image_identity_rejects_changed_filesystem(self):
+        self.assertNotEqual(self.fingerprint({'Cmd': ['php']}),
+                            self.fingerprint({'Cmd': ['php']}, ['sha256:changed']))
 
 
 if __name__ == '__main__':
