@@ -1,0 +1,52 @@
+---
+- name: Render and validate production host templates on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - roles/production_host_baseline/defaults/main.yml
+  vars:
+    production_app_names: [site-tuinstra, site-marcel]
+    production_docker_package_versions:
+      docker-ce: test-version
+  tasks:
+    - name: Create isolated render directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tuinstra-render-
+      register: rendered
+
+    - name: Test rendered templates
+      block:
+        - name: Render every production template
+          ansible.builtin.template:
+            src: "{{ item }}"
+            dest: "{{ rendered.path }}/{{ item | basename | regex_replace('\\.j2$', '') }}"
+            mode: '0600'
+          loop: "{{ lookup('ansible.builtin.fileglob', playbook_dir + '/roles/production_host_baseline/templates/*.j2', wantlist=True) }}"
+
+        - name: Validate rendered deploy helper Bash syntax
+          ansible.builtin.command:
+            argv: [bash, -n, "{{ rendered.path }}/{{ item }}"]
+          loop: [tuinstra-compose-deploy, tuinstra-deploy-shell]
+          changed_when: false
+
+        - name: Read rendered deploy scripts
+          ansible.builtin.slurp:
+            src: "{{ rendered.path }}/{{ item }}"
+          loop: [tuinstra-compose-deploy, tuinstra-deploy-shell]
+          register: rendered_scripts
+
+        - name: Require executable shebang at byte zero
+          ansible.builtin.assert:
+            that: (item.content | b64decode).startswith('#!/usr/bin/env bash\n')
+            quiet: true
+          loop: "{{ rendered_scripts.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+      always:
+        - name: Remove isolated rendered fixtures
+          ansible.builtin.file:
+            path: "{{ rendered.path }}"
+            state: absent

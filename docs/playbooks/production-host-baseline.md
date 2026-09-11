@@ -79,3 +79,17 @@ the unrestricted Docker socket.
 CI integration is pending. A future workflow may use the per-host deploy key,
 but it must retain the forced command and install root-owned digest-pinned
 Compose files through a separately reviewed control path.
+
+## Local template regression gate
+
+Run the real Ansible renderer as well as static syntax checks. This catches Bash
+array expansions being mistaken for Jinja comments and leading whitespace before
+a forced-command shebang:
+
+```sh
+ANSIBLE_HOME=/tmp/tuinstra-ansible ANSIBLE_REMOTE_TEMP=/tmp/tuinstra-ansible-local \
+  ansible-playbook -i localhost, infra/ansible/production-host-template-test.yml
+```
+
+The command renders only synthetic configuration into a temporary directory, checks
+the shell syntax, and removes the fixtures. It does not contact production hosts.
