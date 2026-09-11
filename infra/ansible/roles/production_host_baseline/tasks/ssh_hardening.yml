@@ -72,4 +72,3 @@
     - name: Stop after rolling back invalid SSH hardening
       ansible.builtin.fail:
         msg: SSH hardening did not produce the required effective configuration; the prior state was restored.
-
