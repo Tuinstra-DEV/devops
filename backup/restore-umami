@@ -64,9 +64,11 @@ readonly operation="restore-$PPID-$$"
 readonly db_container="${operation}-db"
 readonly app_container="${operation}-app"
 readonly work="/run/tuinstra-backup/$operation"
-# The pinned Alpine PostgreSQL image runs as uid/gid 70. A root-owned 0700 bind
-# source is inaccessible on Linux even though Docker Desktop may mask that error.
-/usr/bin/install -d -o 70 -g 70 -m 0700 "$work/postgres"
+# The pinned Alpine PostgreSQL image runs as uid/gid 70. GNU install resolves
+# -o/-g operands as account names, so create first and apply numeric ownership
+# separately for bare hosts without an NSS entry named "70".
+/usr/bin/install -d -m 0700 "$work/postgres"
+/usr/bin/chown 70:70 "$work/postgres"
 
 cleanup_done=false
 containers_removed=false

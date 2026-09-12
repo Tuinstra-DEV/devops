@@ -378,7 +378,7 @@ class OnePassword:
         try:
             self.commands.json(
                 [self.executable, "item", "edit", item_id, "--vault", self.vault_id,
-                 "--template=-", "--format", "json"],
+                 "--format", "json"],
                 input_value=candidate,
                 operation="1Password managed escrow upgrade",
             )

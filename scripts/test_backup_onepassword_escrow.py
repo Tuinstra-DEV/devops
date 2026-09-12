@@ -153,7 +153,9 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
         self.assertEqual(result["secretCount"], 5)
         edits = [(args, input_text) for args, input_text in runner.calls if args[1:3] == ["item", "edit"]]
         self.assertEqual(len(edits), 1)
-        self.assertIn("--template=-", edits[0][0])
+        self.assertEqual(edits[0][0], [
+            "/opt/op", "item", "edit", ITEM_ID, "--vault", VAULT_ID, "--format", "json",
+        ])
         for secret in SECRETS.values():
             self.assertNotIn(secret.strip(), " ".join(edits[0][0]))
         self.assertEqual(escrow.item_secrets(runner.item), SECRETS)

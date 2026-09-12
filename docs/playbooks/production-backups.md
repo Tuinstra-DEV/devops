@@ -64,7 +64,7 @@ Een upgrade met een bestaande v1-marker maakt eenmalig een nieuwe vijf-veld-hand
 de marker door v2. Voer dit bestand op de Mac rechtstreeks via stdin aan
 `backup/onepassword-escrow.py escrow --op <absoluut-op-pad> --vault <vault-id>`.
 De helper maakt één beheerde Secure Note en vergelijkt de readback. Een bestaand beheerd item met vier
-velden wordt uitsluitend uitgebreid met `prod01-restore`; de volledige JSON-template gaat via stdin en
+velden wordt uitsluitend uitgebreid met `prod01-restore`; het volledige JSON-item gaat via stdin en
 de helper vergelijkt daarna alle vijf waarden. Verwijder het
 handoffbestand op Sanctuary pas na die geslaagde readback. Een root-owned marker
 voorkomt dat een herhaalde installatie ongemerkt een nieuwe leesbare kopie maakt.
