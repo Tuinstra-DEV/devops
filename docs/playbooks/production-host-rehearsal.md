@@ -56,8 +56,15 @@ limactl start --progress --tty=false tuinstra-rehearsal-01
 
 Bootstrap buiten de Console-worker één keer gebruiker `mtuinstra` met de
 tijdelijke publieke sleutel, passwordless sudo, OpenSSH en Python 3. Pin daarna
-de hostkey. Dit is expliciet de bootstrapgrens: DEV-36 voert uitsluitend de
-vaste baseline uit als bestaande administrator.
+de hostkey. Voer vervolgens buiten de worker eenmaal de beoordeelde
+`production-host-baseline ... bootstrap` uit met dezelfde vaste inventory,
+limit en beschermde vars. Die stap installeert de pakketvoorwaarden, accounts
+en de gecontroleerde Docker signing key waarop een betekenisvolle Ansible-check
+kan voortbouwen. Check mode maakt ontbrekende gebruikers en apt-bestanden niet
+aan; een lege host rechtstreeks aan `ansible.profile_check` aanbieden moet dus
+fail-closed eindigen. Dit is expliciet de bootstrapgrens: DEV-36 voert daarna
+uitsluitend check en apply van de vaste baseline uit als bestaande
+administrator.
 
 ## Check, apply en bewijs
 
@@ -67,6 +74,10 @@ bewijs gebonden `ansible.profile_apply`. De onderliggende vaste aanroepen zijn:
 ```sh
 export ANSIBLE_PRIVATE_KEY_FILE=/protected/tuinstra-rehearsal-01/id_ed25519
 export ANSIBLE_SSH_ARGS='-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/protected/tuinstra-rehearsal-01/known_hosts'
+scripts/production-host-baseline \
+  --inventory infra/ansible/rehearsal/inventory.yml \
+  --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \
+  --as-admin bootstrap
 scripts/production-host-baseline \
   --inventory infra/ansible/rehearsal/inventory.yml \
   --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \

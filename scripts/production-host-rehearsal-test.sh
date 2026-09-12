@@ -5,11 +5,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 inventory="$repo_root/infra/ansible/rehearsal/inventory.yml"
 profile_contract="$repo_root/infra/ansible/rehearsal/profile-contract.yml"
 lima_profile="$repo_root/infra/lima/tuinstra-rehearsal-01.yaml"
+docker_repository_tasks="$repo_root/infra/ansible/roles/production_host_baseline/tasks/docker_repository.yml"
 wrapper="$repo_root/scripts/production-host-baseline"
 run_dir="$(mktemp -d "${TMPDIR:-/tmp}/tuinstra-rehearsal-contract.XXXXXX")"
 trap 'rm -rf -- "$run_dir"' EXIT
 
-for path in "$inventory" "$profile_contract" "$lima_profile" "$wrapper"; do
+for path in "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" "$wrapper"; do
   [[ -f "$path" ]] || { echo "missing rehearsal fixture: $path" >&2; exit 1; }
 done
 
@@ -20,7 +21,7 @@ if grep -R -E '(PRIVATE KEY|BEGIN OPENSSH|password[[:space:]]*:)' \
   exit 1
 fi
 
-ruby - "$inventory" "$profile_contract" "$lima_profile" <<'RUBY'
+ruby - "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" <<'RUBY'
 require "yaml"
 
 inventory = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
@@ -89,6 +90,20 @@ raise "backup rehearsal disk is not fixed" unless lima.fetch("additionalDisks") 
 
 image = lima.fetch("images").fetch(0)
 raise "Ubuntu rehearsal image must be digest-pinned" unless image.fetch("arch") == "aarch64" && image.fetch("digest").match?(/\Asha256:[a-f0-9]{64}\z/)
+
+docker_repository_tasks = YAML.safe_load(File.read(ARGV.fetch(3)), aliases: false)
+fingerprint_probe = docker_repository_tasks.find { |task| task.fetch("name") == "Read the Docker signing-key fingerprint" }
+raise "fingerprint probe must run read-only in check mode" unless
+  fingerprint_probe.fetch("check_mode") == false &&
+    fingerprint_probe.fetch("changed_when") == false &&
+    fingerprint_probe.dig("ansible.builtin.command", "argv") == [
+      "/usr/bin/gpg", "--batch", "--show-keys", "--with-colons", "/etc/apt/keyrings/docker.asc"
+    ]
+signature_gate = docker_repository_tasks.find { |task| task.fetch("name") == "Require the expected Docker signing key" }
+raise "check-mode compatibility must preserve the signature gate" unless
+  signature_gate.dig("ansible.builtin.assert", "that") == [
+    "production_docker_apt_key_fingerprint in production_docker_key_details.stdout"
+  ]
 RUBY
 
 fake_ansible="$run_dir/ansible-playbook"
