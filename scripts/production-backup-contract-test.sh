@@ -24,8 +24,14 @@ grep -q -- '--network none' "$repo_root/backup/restore-umami"
 grep -q -- 'docker run --rm --interactive --network none --entrypoint pg_restore' \
   "$repo_root/backup/restore-umami"
 grep -q -- '--network "container:' "$repo_root/backup/restore-umami"
-grep -q '/usr/bin/install -d -o 70 -g 70 -m 0700 "$work/postgres"' \
+grep -q '/usr/bin/install -d -m 0700 "$work/postgres"' \
   "$repo_root/backup/restore-umami"
+grep -q '/usr/bin/chown 70:70 "$work/postgres"' \
+  "$repo_root/backup/restore-umami"
+if grep -Eq '/usr/bin/install[[:space:]].*(-o 70|-g 70)' "$repo_root/backup/restore-umami"; then
+  echo 'numeric postgres ownership must use chown, not install user-name lookup' >&2
+  exit 1
+fi
 if grep -q -- 'network create --internal' "$repo_root/backup/restore-umami"; then
   echo 'restore adapter must not use a bridge-backed internal network' >&2
   exit 1
