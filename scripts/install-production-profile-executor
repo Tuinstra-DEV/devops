@@ -94,7 +94,35 @@ assert_regular "$destination/scripts/production-profile-bridge"
 install -o root -g root -m 0600 "$host_stage/vars.yml" "$host_config/vars.yml"
 install -o root -g root -m 0600 "$host_stage/admin.pub" "$host_config/admin.pub"
 install -o root -g root -m 0600 "$host_stage/deploy.pub" "$host_config/deploy.pub"
-printf '%s\n' "$host" | install -o root -g root -m 0644 /dev/stdin "$config_root/host-identity"
+
+atomic_text() {
+  local target="$1" mode="$2" content="$3"
+  python3 - "$target" "$mode" "$content" <<'PY'
+import os, sys, tempfile
+target, raw_mode, content = sys.argv[1:]
+directory = os.path.dirname(target)
+descriptor, temporary = tempfile.mkstemp(prefix=".profile-executor.", dir=directory)
+try:
+    os.fchmod(descriptor, int(raw_mode, 8))
+    with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+        stream.write(content)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  chown root:root "$target"
+}
+
+atomic_text "$config_root/host-identity" 0644 "$host"
 
 python3 - "$config_root/profiles/$host.json" <<PY
 import json, os, sys, tempfile
@@ -131,8 +159,8 @@ chmod 0440 /etc/sudoers.d/tuinstra-profile-executor
 visudo -cf /etc/sudoers.d/tuinstra-profile-executor >/dev/null
 
 install -d -o root -g root -m 0755 /var/lib/tuinstra-profile-executor-account /var/lib/tuinstra-profile-executor-account/.ssh
-printf 'restrict,no-user-rc,command="/usr/local/libexec/tuinstra-profile-bridge" %s %s profile-worker\n' "$key_type" "$key_body" \
-  | install -o root -g root -m 0644 /dev/stdin /var/lib/tuinstra-profile-executor-account/.ssh/authorized_keys
+atomic_text /var/lib/tuinstra-profile-executor-account/.ssh/authorized_keys 0644 \
+  "restrict,no-user-rc,command=\"/usr/local/libexec/tuinstra-profile-bridge\" $key_type $key_body profile-worker"
 assert_mode "$config_root/profiles/$host.json" root:root:600
 assert_mode "$host_config/vars.yml" root:root:600
 assert_mode /usr/local/sbin/tuinstra-profile-executor root:root:755
