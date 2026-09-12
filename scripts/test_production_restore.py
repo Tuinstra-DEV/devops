@@ -202,8 +202,12 @@ class ProductionRestoreTests(unittest.TestCase):
             "restore_status": "passed",
             "engine_version": "tuinstra-backup-v1",
             "duration_seconds": 60,
+            "manifest_sha256": "c" * 64,
             "preflight": {key: "passed" for key in ("key", "payload_checksum", "compatibility", "capacity")},
-            "validation": {key: "passed" for key in ("schema", "data", "application_health")},
+            "validation": {key: "passed" for key in (
+                "schema", "data", "application_health", "database_content_marker",
+                "encrypted_two_factor_authentication",
+            )},
             "isolation": {"external_effects_blocked": True, "host_ports": 0},
             "cleanup": {"status": "passed", "containers_removed": True, "workspace_removed": True},
         }
@@ -222,6 +226,41 @@ class ProductionRestoreTests(unittest.TestCase):
         evidence_file.write_text(json.dumps(evidence))
         with self.assertRaisesRegex(restore.RestoreError, "exact recovery point"):
             restore._validate_restore_evidence(self.config, request, point)
+
+        evidence["artifact_id"] = artifact
+        for proof in ("database_content_marker", "encrypted_two_factor_authentication"):
+            for value in (None, "failed"):
+                with self.subTest(proof=proof, value=value):
+                    if value is None:
+                        evidence["validation"].pop(proof)
+                    else:
+                        evidence["validation"][proof] = value
+                    evidence_file.write_text(json.dumps(evidence))
+                    with self.assertRaisesRegex(restore.RestoreError, "exact recovery point"):
+                        restore._validate_restore_evidence(self.config, request, point)
+                    evidence["validation"][proof] = "passed"
+
+    def test_preflight_rejects_materialized_manifest_not_used_by_restore_drill(self):
+        request = restore.RestoreRequest.create(
+            self.config, "tuinstra-prod-01", "umami", "a" * 64, "op-01", "b" * 64,
+        )
+        store = restore.JournalStore(self.root / "journals")
+        bundle = self.root / "target.tar"
+        bundle.write_bytes(b"exact-bundle")
+        transport = mock.Mock()
+        with (mock.patch.object(restore, "_catalog_point", return_value={
+                  "artifact_id": "12345678-1234-4123-8123-123456789abc",
+              }),
+              mock.patch.object(restore, "_validate_restore_evidence", return_value=({
+                  "manifest_sha256": "c" * 64,
+              }, "restore-12345678-1234-4123-8123-123456789abc")),
+              mock.patch.object(restore, "materialize_bundle", return_value=(bundle, {
+                  "result": {"manifest_sha256": "d" * 64},
+                  "work_root": str(self.root / "materialized-work"),
+              }))):
+            with self.assertRaisesRegex(restore.RestoreError, "isolated restore evidence"):
+                restore.preflight(self.config, request, store, transport)
+        transport.stage.assert_not_called()
 
     def test_restore_transport_rejects_shared_or_untrusted_identity_material(self):
         identity = self.root / "restore-key"

@@ -367,8 +367,12 @@ def _validate_restore_evidence(config: dict[str, Any], request: RestoreRequest,
             or evidence.get("host_slug") != request.host_slug or evidence.get("app_id") != request.app_id
             or evidence.get("restore_status") != "passed" or evidence.get("engine_version") != "tuinstra-backup-v1"
             or not isinstance(evidence.get("duration_seconds"), int) or evidence["duration_seconds"] > 14400
+            or not SHA_RE.fullmatch(evidence.get("manifest_sha256", ""))
             or any(preflight.get(key) != "passed" for key in ("key", "payload_checksum", "compatibility", "capacity"))
-            or any(validation.get(key) != "passed" for key in ("schema", "data", "application_health"))
+            or any(validation.get(key) != "passed" for key in (
+                "schema", "data", "application_health", "database_content_marker",
+                "encrypted_two_factor_authentication",
+            ))
             or isolation.get("external_effects_blocked") is not True or isolation.get("host_ports") != 0
             or cleanup.get("status") != "passed" or cleanup.get("containers_removed") is not True
             or cleanup.get("workspace_removed") is not True):
@@ -426,10 +430,12 @@ def materialize_bundle(config: dict[str, Any], request: RestoreRequest, purpose:
 def preflight(config: dict[str, Any], request: RestoreRequest, store: JournalStore,
               transport: RemoteTransport) -> dict[str, Any]:
     point = _catalog_point(config, request)
-    _, evidence_id = _validate_restore_evidence(config, request, point)
+    evidence, evidence_id = _validate_restore_evidence(config, request, point)
     with host_operation_lock(config, request.host_slug) as lock_descriptor:
         bundle, materialized = materialize_bundle(config, request, "restore", lock_descriptor=lock_descriptor)
         try:
+            if evidence["manifest_sha256"] != materialized["result"]["manifest_sha256"]:
+                raise RestoreError("materialized manifest does not match isolated restore evidence")
             stage_result = transport.stage(bundle, "restore", request.plan_hash)
             if stage_result.get("status") != "staged" or stage_result.get("stage_sha256") != sha256(bundle):
                 raise RestoreError("production target did not confirm the exact staged bundle")
