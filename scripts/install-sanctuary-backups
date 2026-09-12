@@ -17,13 +17,15 @@ if [[ "$bundle_root" != /home/mtuinstra/tuinstra-backup-install ]]; then
 fi
 engine_source="$bundle_root/backup/tuinstra_backup.py"
 restore_source="$bundle_root/backup/restore-umami"
+production_restore_source="$bundle_root/backup/production_restore.py"
+production_restore_admin_source="$bundle_root/backup/tuinstra-production-restore"
 admin_source="$bundle_root/backup/tuinstra-backup-admin"
 profile_source="$bundle_root/backup/profiles/sanctuary.json"
 bootstrap_source="$bundle_root/scripts/bootstrap_backup_credentials.py"
 escrow_stage_source="$bundle_root/scripts/stage_backup_escrow.py"
 hostkey_root="$bundle_root/install-input/hostkeys"
 
-for source in "$engine_source" "$restore_source" "$admin_source" "$profile_source" \
+for source in "$engine_source" "$restore_source" "$production_restore_source" "$production_restore_admin_source" "$admin_source" "$profile_source" \
               "$bootstrap_source" "$escrow_stage_source" "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
   if [[ ! -f "$source" || -L "$source" ]]; then
     echo "installer input is missing or unsafe: $source" >&2
@@ -80,7 +82,8 @@ install -d -o tuinstra-backup -g tuinstra-backup -m 0700 \
   /var/lib/tuinstra-backup/locks /var/lib/tuinstra-backup/locks/pull
 install -d -o root -g root -m 0700 /var/lib/tuinstra-backup/ingest \
   /var/lib/tuinstra-backup/locks/operations /var/lib/tuinstra-backup/restore-evidence \
-  /var/lib/tuinstra-backup/retention-audit
+  /var/lib/tuinstra-backup/retention-audit /var/lib/tuinstra-backup/production-restore \
+  /var/lib/tuinstra-backup/production-restore/journal /var/lib/tuinstra-backup/production-restore/work
 install -d -o root -g root -m 0755 /var/lib/tuinstra-backup/policies
 install -d -o root -g root -m 0755 /var/lib/tuinstra-backup/catalog
 install -d -o root -g tuinstra-ops -m 0750 /run/lock/tuinstra
@@ -99,12 +102,16 @@ install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-p
 
 install -o root -g root -m 0755 "$engine_source" /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
 install -o root -g root -m 0755 "$restore_source" /usr/local/libexec/tuinstra-backup/restore-umami
+install -o root -g root -m 0755 "$production_restore_source" /usr/local/libexec/tuinstra-backup/production_restore.py
+install -o root -g root -m 0755 "$production_restore_admin_source" /usr/local/sbin/tuinstra-production-restore
 install -o root -g root -m 0755 "$admin_source" /usr/local/sbin/tuinstra-backup-admin
 install -o root -g tuinstra-backup -m 0640 "$profile_source" /etc/tuinstra-backup/worker.json
 chown root:root /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
-  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/ssh/prod01-restore \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
 chmod 0600 /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
-  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/ssh/prod01-restore \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
 
 known_hosts_temp="$(mktemp /etc/tuinstra-backup/ssh/.known_hosts.XXXXXX)"
 trap 'rm -f "$known_hosts_temp"' EXIT
@@ -139,6 +146,15 @@ EOF
 chmod 0440 "$sudoers_admin"
 visudo -cf "$sudoers_admin"
 mv -f "$sudoers_admin" /etc/sudoers.d/94-tuinstra-backup-admin
+
+sudoers_restore="$(mktemp /etc/sudoers.d/.95-tuinstra-production-restore.XXXXXX)"
+cat >"$sudoers_restore" <<'EOF'
+Defaults!/usr/local/sbin/tuinstra-production-restore timestamp_timeout=0
+mtuinstra ALL=(root) /usr/local/sbin/tuinstra-production-restore *
+EOF
+chmod 0440 "$sudoers_restore"
+visudo -cf "$sudoers_restore"
+mv -f "$sudoers_restore" /etc/sudoers.d/95-tuinstra-production-restore
 
 cat >/etc/systemd/system/tuinstra-backup-retention.service <<'EOF'
 [Unit]

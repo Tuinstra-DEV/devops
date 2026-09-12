@@ -70,6 +70,8 @@ bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
 python3 -c 'compile(open("backup/tuinstra_backup.py", encoding="utf-8").read(), "backup/tuinstra_backup.py", "exec")'
+python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
+python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
 python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
 python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
 python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'

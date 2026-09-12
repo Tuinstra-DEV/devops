@@ -51,6 +51,7 @@ echo "test passed"
 ./scripts/production-host-baseline-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_backup.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_restore.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_credential_bootstrap.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_stage_backup_escrow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_escrow.py

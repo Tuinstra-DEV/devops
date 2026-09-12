@@ -8,6 +8,7 @@ all:
           ansible_user: mtuinstra
           production_backup_host_slug: tuinstra-prod-01
           production_backup_pull_public_key_file: "{{ production_backup_public_key_root }}/prod01.pub"
+          production_restore_public_key_file: "{{ production_backup_public_key_root }}/prod01-restore.pub"
         prod02:
           ansible_host: vps02.tuinstra.dev
           ansible_user: mtuinstra
