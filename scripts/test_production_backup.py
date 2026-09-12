@@ -86,6 +86,39 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(result["payload_sha256"], backup.sha256(next(spool.glob("*.age"))))
         self.assertFalse(any(path.suffix == ".tar" for path in spool.iterdir()))
 
+    def test_export_stages_ciphertext_on_spool_filesystem_before_atomic_publication(self):
+        config = self.producer()
+        spool = Path(config["spool_dir"])
+        real_replace = backup.os.replace
+        ciphertext_publications = []
+
+        def fake_run(argv, **kwargs):
+            if argv[0] == "docker" and "exec" in argv:
+                kwargs["stdout"].write(b"PGDMP-test")
+                return mock.Mock(stdout=None)
+            if argv[0] == "docker":
+                return mock.Mock(stdout=b"postgres@sha256:" + b"a" * 64 + b"\n")
+            if argv[0] == "age":
+                encrypted = Path(argv[argv.index("--output") + 1])
+                self.assertEqual(encrypted.parent, spool)
+                shutil.copyfile(argv[-1], encrypted)
+                return mock.Mock(stdout=b"")
+            raise AssertionError(argv)
+
+        def reject_cross_device_replace(source, destination):
+            source_path, destination_path = Path(source), Path(destination)
+            if destination_path.suffix == ".age":
+                ciphertext_publications.append((source_path, destination_path))
+                self.assertEqual(source_path.parent, destination_path.parent)
+            return real_replace(source, destination)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run), \
+             mock.patch.object(backup.os, "replace", side_effect=reject_cross_device_replace):
+            backup.create_export(config, "umami")
+        self.assertEqual(len(ciphertext_publications), 1)
+        self.assertEqual(len(list(spool.glob("*.age"))), 1)
+        self.assertFalse(list(spool.glob(".*.age.tmp")))
+
     def test_export_fails_closed_when_spool_quota_is_reached(self):
         config = self.producer()
         config["spool_quota_bytes"] = 1

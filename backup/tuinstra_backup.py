@@ -448,7 +448,8 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     final_manifest = spool / f"{artifact_id}.json"
     quota = int(config["spool_quota_bytes"])
     with lock(Path(config["lock_file"])):
-        if spool_usage(spool) >= quota:
+        initial_usage = spool_usage(spool)
+        if initial_usage >= quota:
             raise BackupError("backup spool quota reached")
         with tempfile.TemporaryDirectory(prefix=f"{app_id}-", dir=work_root) as temporary:
             root = Path(temporary)
@@ -481,23 +482,35 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             archive = root / "payload.tar"
             with tarfile.open(archive, "w") as tar:
                 tar.add(payload, arcname="payload", recursive=True)
-            encrypted = root / "payload.age"
-            run(["age", "--encrypt", "--recipients-file", str(recipient), "--output", str(encrypted), str(archive)])
-            payload_size = encrypted.stat().st_size
-            required_space = payload_size + PUBLIC_MANIFEST_RESERVE
-            if spool_usage(spool) + required_space > quota:
-                raise BackupError("backup would exceed spool quota")
-            if shutil.disk_usage(spool).free < required_space:
-                raise BackupError("backup spool filesystem is full")
-            os.chmod(encrypted, 0o640)
-            os.replace(encrypted, final_payload)
-            public = {
-                "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id, "host_slug": host,
-                "app_id": app_id, "adapter": app["adapter"], "created_at": internal["created_at"],
-                "payload_sha256": sha256(final_payload), "payload_bytes": final_payload.stat().st_size,
-            }
-            validate_public_manifest(public, quota)
-            atomic_json(final_manifest, public)
+            # The encrypted staging file lives beside its final name so publication cannot
+            # cross filesystems when the private plaintext workspace is on tmpfs.
+            encrypted = spool / f".{artifact_id}.{uuid.uuid4().hex}.age.tmp"
+            try:
+                run(["age", "--encrypt", "--recipients-file", str(recipient),
+                     "--output", str(encrypted), str(archive)])
+                payload_size = encrypted.stat().st_size
+                required_space = payload_size + PUBLIC_MANIFEST_RESERVE
+                if initial_usage + required_space > quota:
+                    raise BackupError("backup would exceed spool quota")
+                if shutil.disk_usage(spool).free < PUBLIC_MANIFEST_RESERVE:
+                    raise BackupError("backup spool filesystem is full")
+                os.chmod(encrypted, 0o640)
+                with encrypted.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(encrypted, final_payload)
+                public = {
+                    "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id, "host_slug": host,
+                    "app_id": app_id, "adapter": app["adapter"], "created_at": internal["created_at"],
+                    "payload_sha256": sha256(final_payload), "payload_bytes": final_payload.stat().st_size,
+                }
+                validate_public_manifest(public, quota)
+                try:
+                    atomic_json(final_manifest, public)
+                except Exception:
+                    final_payload.unlink(missing_ok=True)
+                    raise
+            finally:
+                encrypted.unlink(missing_ok=True)
     return public
 
 
