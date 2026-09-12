@@ -153,10 +153,11 @@ prod01 : ok=47 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
     def test_bounded_runner_terminates_the_entire_child_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             child_pid = pathlib.Path(directory) / "child.pid"
-            program = "import pathlib,subprocess,sys,time;p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(60)"
+            child = "import signal,time;signal.signal(signal.SIGTERM, signal.SIG_IGN);time.sleep(60)"
+            program = "import pathlib,subprocess,sys,time;p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]);pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(60)"
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
                 with self.assertRaises(subprocess.TimeoutExpired):
-                    EXECUTOR.run_bounded([sys.executable, "-c", program, str(child_pid)], pathlib.Path(directory), {"PATH": os.environ.get("PATH", "")}, stdout, stderr, 0.5)
+                    EXECUTOR.run_bounded([sys.executable, "-c", program, str(child_pid), child], pathlib.Path(directory), {"PATH": os.environ.get("PATH", "")}, stdout, stderr, 0.5)
             pid = int(child_pid.read_text(encoding="ascii"))
             for _ in range(20):
                 try:

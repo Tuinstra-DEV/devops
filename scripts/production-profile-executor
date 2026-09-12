@@ -303,17 +303,28 @@ def run_bounded(
     try:
         return process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
+        signal_group(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            pass
+        # The leader can exit on SIGTERM while a descendant ignores it. Always
+        # kill the remaining group before returning control to the host lock.
+        signal_group(process.pid, signal.SIGKILL)
+        if process.poll() is None:
             process.wait(timeout=5)
         raise
     finally:
         if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
+            signal_group(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
+
+
+def signal_group(group: int, selected_signal: signal.Signals) -> None:
+    try:
+        os.killpg(group, selected_signal)
+    except ProcessLookupError:
+        pass
 
 
 def run_phase(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, Path, Path], phase: str) -> dict[str, Any]:
