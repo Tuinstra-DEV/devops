@@ -116,6 +116,29 @@ with tempfile.TemporaryDirectory() as directory:
         elif result.returncode == 0 or target.exists():
             raise SystemExit(f"{name}: invalid environment was accepted")
 PY
+PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root/backup/restore-umami" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+restore = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = '| /usr/bin/docker exec -i "$app_container" node -e \'\n'
+end = "\n' >/dev/null 2>&1; then"
+if restore.count(start) != 1:
+    raise SystemExit("two-factor validation script marker is ambiguous")
+validator, separator, _ = restore.partition(start)[2].partition(end)
+if not separator:
+    raise SystemExit("two-factor validation script terminator is missing")
+
+# Empty synthetic input must reach the validator's fixed input-shape rejection.
+# This catches synchronous Promise-wiring failures without requiring a database,
+# secret, token, or HTTP request.
+result = subprocess.run(
+    ["node", "-e", validator], input="", capture_output=True, text=True, check=False,
+)
+if result.returncode != 2:
+    raise SystemExit("two-factor validator failed before processing bounded input")
+PY
 grep -q 'duration_seconds' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'external_effects_blocked' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'commands.add_parser("safety-ingest")' "$repo_root/backup/tuinstra_backup.py"

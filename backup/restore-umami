@@ -237,7 +237,7 @@ if ! {
 const { createDecipheriv, createHmac } = require("node:crypto");
 const chunks = [];
 process.stdin.on("data", chunk => chunks.push(chunk));
-process.stdin.on("end", async () => {
+const validateRestore = async () => {
   const lines = Buffer.concat(chunks).toString("utf8").split("\n");
   while (lines.at(-1) === "") lines.pop();
   if (lines.length !== 2 || lines.some(value => value.length < 1 || value.length > 4096)) process.exit(2);
@@ -279,7 +279,10 @@ process.stdin.on("end", async () => {
   if (typeof verified.token !== "string" || verified.token.length > 8192) process.exit(7);
   const identity = await call("/api/auth/verify", undefined, verified.token);
   if (identity.username !== "admin" || identity.isAdmin !== true) process.exit(8);
-}).catch(() => process.exit(9));
+};
+process.stdin.on("end", () => {
+  validateRestore().catch(() => process.exit(9));
+});
 ' >/dev/null 2>&1; then
   echo 'restored encrypted two-factor authentication validation failed' >&2
   exit 69
