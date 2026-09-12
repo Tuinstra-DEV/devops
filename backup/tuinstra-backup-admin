@@ -5,8 +5,6 @@ engine=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py
 config=/etc/tuinstra-backup/worker.json
 host=tuinstra-prod-01
 app=umami
-policy=production-v1
-plan_hash=658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "backup admin failed: privileged wrapper must run through sudo" >&2
@@ -20,8 +18,7 @@ case "${1:-}" in
     ;;
   run)
     [[ $# -eq 1 ]] || exit 2
-    exec "$engine" --config "$config" cycle --host "$host" --app "$app" \
-      --policy-version "$policy" --plan-hash "$plan_hash" --trigger manual
+    exec "$engine" --config "$config" run-active --host "$host" --app "$app" --trigger manual
     ;;
   check)
     [[ $# -eq 1 ]] || exit 2
@@ -43,8 +40,12 @@ case "${1:-}" in
     }
     exec "$engine" --config "$config" restore-test --host "$host" --app "$app" --snapshot "$2"
     ;;
+  escrow-recovery-test)
+    [[ $# -eq 1 ]] || exit 2
+    exec "$engine" --config "$config" escrow-recovery-test
+    ;;
   *)
-    echo "usage: sudo tuinstra-backup-admin {status|catalog|run|check|retention|restore-test SNAPSHOT}" >&2
+    echo "usage: sudo tuinstra-backup-admin {status|catalog|run|check|retention|restore-test SNAPSHOT|escrow-recovery-test}" >&2
     exit 2
     ;;
 esac

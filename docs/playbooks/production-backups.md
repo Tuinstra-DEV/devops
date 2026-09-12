@@ -18,13 +18,27 @@ De volgende bestanden worden buiten Git aangeleverd:
 |---|---|---|---|
 | Sanctuary | `/etc/tuinstra-backup/age-identity.txt` | `root:root 0600` | Ontsleuteling en onafhankelijk herstel |
 | Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password` | `root:root 0600` | Losse Umami-repository |
-| Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys via systemd-credentials |
-| Sanctuary | `/etc/tuinstra-backup/ssh/known_hosts` | `root:tuinstra-backup 0644` | Handmatig geverifieerde hostkeys |
+| Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys voor alleen de vaste backupcyclus |
+| Sanctuary | `/etc/tuinstra-backup/ssh/known_hosts` | `root:root 0644` | Handmatig geverifieerde hostkeys |
 | Productie | `/etc/tuinstra-backup/age-recipient.txt` | `root:root 0600` | Alleen de publieke, afgeleide age-recipient |
 
 Bewaar de age-identity en het Restic-wachtwoord daarnaast in 1Password. De
 acceptatietest gebruikt een vanuit 1Password opnieuw aangeleverde kopie. Laat
 waarden nooit via command-line-argumenten, terminaloutput, Git of Tracker lopen.
+
+Voor de onafhankelijke credentialtest zet de 1Password-helper exact één tijdelijk JSON-bestand op
+`/home/mtuinstra/.local/share/tuinstra-backup-recovery.json` (`mtuinstra:0600`). Voer daarna uit:
+
+```bash
+sudo /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
+```
+
+De vaste actie valideert het schema, kopieert de vier waarden naar een root-private tijdelijke map,
+bewijst met beide teruggehaalde SSH-keys de beperkte `list`-toegang en voert de volledige geïsoleerde
+Umami-restore uit met de teruggehaalde age- en Restic-credentials. Pas nadat het herstelbewijs duurzaam is
+opgeslagen, verwijdert de actie de exacte user-readable stagingkopie. Bij een fout blijft deze stagingkopie
+beschikbaar voor een gecontroleerde retry; tijdelijke root-kopieën worden altijd verwijderd. De JSON-uitvoer
+bevat alleen host-, applicatie-, snapshot- en bewijsidentiteit.
 
 Plaats de beoordeelde bundle exact onder
 `/home/mtuinstra/tuinstra-backup-install`. Voeg de via de bestaande vertrouwde
@@ -40,8 +54,7 @@ De installer controleert mount en vrije ruimte voordat hij iets wijzigt. Daarna
 installeert hij dependencies, maakt credentials idempotent, plaatst de vaste
 engine en profielen, valideert sudoers vóór installatie en activeert alleen de
 vaste timers. Private age-, Restic- en Ed25519-sleutels blijven root-owned mode
-0600. Systemd geeft de niet-loginworker alleen tijdens een cyclus een tijdelijke
-kopie van de juiste hostkey.
+0600. De root-owned systemd-cyclus gebruikt deze sleutels; de niet-loginworker heeft geen secrettoegang.
 
 De eerste installatie maakt één handoffbestand
 `/home/mtuinstra/.local/share/tuinstra-backup-escrow.json` als `mtuinstra:0600`.
@@ -150,9 +163,21 @@ De helper controleert Restic, de buitenste SHA-256, de versleutelde interne
 manifestchecksums en de vaste app-identiteit. Daarna herstelt hij PostgreSQL 15
 en Umami 3.3.1 in één gedeelde netwerknamespace met alleen loopback: PostgreSQL
 draait met `--network none` en Umami deelt uitsluitend die namespace. Er is geen
-bridge, hostgateway, hostpoort of publieke Caddy-route. Hij eist publieke databasetabellen en een gezonde
-`/api/heartbeat`, ruimt alleen zijn eigen tijdelijke containers op en bewaart
+bridge, hostgateway, hostpoort of publieke Caddy-route. Hij vergelijkt een tijdens export vastgelegde
+checksum van de admin- en tweefactorstatus met dezelfde query na herstel, bindt de afzonderlijk opgeslagen
+encryptiesleutel aan de herstelde applicatieconfiguratie, doorloopt adminlogin plus TOTP en eist een gezonde
+`/api/heartbeat`. Daarna ruimt hij alleen zijn eigen tijdelijke containers op en bewaart
 secretvrij herstelbewijs onder `/var/lib/tuinstra-backup/restore-evidence`.
+Het bewijs noemt het volledige snapshot-ID, de werkelijk gecontroleerde sleutel,
+checksum, compatibiliteit en minimumcapaciteit, de database- en applicatiecontroles,
+de gebruikte image-digests, netwerkisolatie, opruiming en totale duur. Een geslaagde
+status wordt pas atomair geschreven nadat containers en tijdelijke werkruimte
+aantoonbaar verwijderd zijn. Een opruimfout maakt de hele hersteltest mislukt.
+De datacontrole leest het versleutelde 2FA-seed en het beheerderswachtwoord via
+een anonieme pipe, ontsleutelt het seed uitsluitend in de geïsoleerde Umami-container,
+maakt daar een verse TOTP en doorloopt login, 2FA en identiteitscontrole via
+loopback. Seed, wachtwoord, TOTP, tokens en HTTP-responses worden niet geschreven
+of gelogd.
 
 Een volledige acceptatie-oefening gebruikt een lege geïsoleerde doelomgeving en
 de recoverycredentials uit 1Password. Noteer begin/eindtijd; het doel is herstel
@@ -172,3 +197,33 @@ autoritatieve hostlock: `/run/lock/tuinstra/operations.host.<host>.lock`,
 `root:tuinstra-ops 0660`. De hostlock wordt altijd vóór applicatie- of
 Restic-locks genomen en blijft gedurende de hele operatie vast. Geplande
 back-ups blijven daarmee ook zonder Console veilig coördineren.
+
+## Vaste productieherstel-adapters
+
+De productieherstel-orchestrator gebruikt twee extra root-only engineacties. Ze
+accepteren alleen allowlisted host/app-ID's, een begrensd operation-ID en vaste
+doelen; er is geen pad- of commando-invoer.
+
+`safety-pull --host HOST --app APP --artifact UUID --operation ID --run-id UUID`
+haalt exact één voorbereid artifact via de bestaande beveiligde overdracht op, maakt een
+volledig gecontroleerd Restic-snapshot en zet bij de eerste opslag de tags
+`tuinstra:production-restore-safety` en `operation:<ID>`. Een bestaand artifact
+zonder exact die pin-identiteit wordt geweigerd.
+
+`materialize --host HOST --app APP --snapshot FULL64 --operation ID --purpose restore|rollback`
+haalt exact één beschikbaar cataloguspunt op, controleert catalogus, buitenste
+checksum, versleuteld manifest en alle inputchecksums, en publiceert de ontsleutelde
+payload atomair onder de root-owned materialisatieroot uit het vaste profiel. De
+JSON-respons bevat geen pad of secret. Herhaling is alleen toegestaan voor exact
+dezelfde operation/snapshot/purpose-binding. Het materiaal blijft root-only staan
+tot de productiehersteloperatie expliciet wordt afgerond, zodat een crash kan
+worden gereconcilieerd en rollback mogelijk blijft.
+
+De dagelijkse cyclus draait als root-owned, vast geconfigureerde systemd-service. De engine accepteert
+geen publieke `ingest`- of `attempt-finish`-primitives en de installer verwijdert het oude
+wildcardvormige sudoersbestand `93-tuinstra-backup-ingest`. Een pull-account kan daardoor geen geslaagde
+status schrijven zonder een exact, volledig gecontroleerd Restic-snapshot voor dezelfde run.
+
+Het versleutelde interne manifest bevat de werkelijk draaiende image-digests, de PostgreSQL-serverversie
+en de gebruikte `pg_dump`-versie. Export stopt wanneer een draaiende container niet overeenkomt met de
+root-owned allowlist van goedgekeurde digests.

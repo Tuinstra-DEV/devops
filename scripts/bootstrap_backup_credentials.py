@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import secrets
 import shutil
 import stat
@@ -37,10 +38,20 @@ def validate_mount() -> int:
     return available
 
 
-def validate_secret(path: Path) -> None:
+def validate_secret(path: Path, allowed_uids: set[int] | None = None) -> None:
+    allowed_uids = {0} if allowed_uids is None else allowed_uids
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
-        raise BootstrapError("existing credential is not a root-owned regular file with mode 0600")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in allowed_uids or stat.S_IMODE(info.st_mode) != 0o600:
+        raise BootstrapError("existing credential has unexpected ownership, type or permissions")
+
+
+def ssh_credential_uids() -> set[int]:
+    allowed = {0}
+    try:
+        allowed.add(pwd.getpwnam("tuinstra-backup").pw_uid)
+    except KeyError:
+        pass
+    return allowed
 
 
 def link_secret(temporary: Path, destination: Path) -> None:
@@ -110,7 +121,7 @@ def ensure_ssh_identity(host: str) -> Path:
             raise BootstrapError("SSH identity generation failed") from exc
         finally:
             shutil.rmtree(temporary_dir, ignore_errors=True)
-    validate_secret(destination)
+    validate_secret(destination, ssh_credential_uids())
     public = run_public(["ssh-keygen", "-y", "-f", str(destination)])
     atomic_public(PUBLIC_ROOT / f"{host}.pub", public.rstrip(b"\n") + f" tuinstra-backup-{host}\n".encode())
     return destination

@@ -4,43 +4,115 @@ set -euo pipefail
 readonly payload="${1:-}"
 readonly postgres_image='docker.io/library/postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b'
 readonly umami_image='ghcr.io/umami-software/umami:3.3.1@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a'
+readonly content_marker_sql="$(/usr/bin/cat <<'SQL'
+SELECT jsonb_build_object('user_count',(SELECT count(*) FROM "user"),'two_factor_count',(SELECT count(*) FROM two_factor_auth),'admin',(SELECT jsonb_build_object('user_id',u.user_id::text,'username',u.username) FROM "user" AS u WHERE u.username='admin'),'admin_two_factor',(SELECT jsonb_build_object('user_id',t.user_id::text,'is_enabled',t.is_enabled,'secret',t.secret) FROM two_factor_auth AS t JOIN "user" AS u ON u.user_id=t.user_id WHERE u.username='admin' AND t.is_enabled IS TRUE))::text
+SQL
+)"
 
 if [[ ! "$payload" =~ ^/run/tuinstra-backup/ ]] || [[ -L "$payload" ]] || [[ ! -d "$payload" ]]; then
   echo 'restore payload is outside the controlled workspace' >&2
   exit 64
 fi
 
-for relative in database.dump files/postgres-env files/umami-env backup-manifest.json; do
+for relative in database.dump files/postgres-env files/umami-env files/two-factor-encryption-key \
+  files/admin-password backup-manifest.json; do
   if [[ ! -f "$payload/$relative" || -L "$payload/$relative" ]]; then
     echo 'restore payload is incomplete' >&2
     exit 65
   fi
 done
 
-/usr/bin/python3 - "$payload/backup-manifest.json" "$postgres_image" "$umami_image" <<'PY'
+readonly expected_content_marker="$(/usr/bin/python3 - "$payload/backup-manifest.json" "$postgres_image" "$umami_image" <<'PY'
 import json
+import re
 import sys
 with open(sys.argv[1], encoding="utf-8") as source:
     manifest = json.load(source)
 if set(manifest.get("images", [])) != {sys.argv[2], sys.argv[3]}:
     raise SystemExit("restore artifact image set is not approved")
+database = manifest.get("database")
+marker = database.get("content_marker") if isinstance(database, dict) else None
+if not isinstance(marker, dict) or set(marker) != {"algorithm", "sha256", "user_count", "two_factor_count"} \
+        or marker.get("algorithm") != "umami-admin-two-factor-v1" \
+        or not isinstance(marker.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", marker["sha256"]) \
+        or not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool) \
+        or marker["user_count"] < 1 or not isinstance(marker.get("two_factor_count"), int) \
+        or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1:
+    raise SystemExit("restore artifact database content marker is invalid")
+print(marker["sha256"])
+PY
+ )"
+
+/usr/bin/python3 - "$payload/files/umami-env" "$payload/files/two-factor-encryption-key" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+values = []
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line.startswith("TWO_FACTOR_ENCRYPTION_KEY="):
+        values.append(line.partition("=")[2])
+key = Path(sys.argv[2]).read_text(encoding="ascii").rstrip("\n")
+if len(values) != 1 or not re.fullmatch(r"[0-9a-fA-F]{64}", key) or values[0] != key:
+    raise SystemExit("restored two-factor encryption key binding is invalid")
 PY
 
-/usr/bin/docker run --rm --network none --entrypoint pg_restore "$postgres_image" --list <"$payload/database.dump" >/dev/null
+/usr/bin/docker run --rm --interactive --network none --entrypoint pg_restore "$postgres_image" \
+  --list <"$payload/database.dump" >/dev/null
 
 readonly operation="restore-$PPID-$$"
 readonly db_container="${operation}-db"
 readonly app_container="${operation}-app"
 readonly work="/run/tuinstra-backup/$operation"
-/usr/bin/install -d -m 0700 "$work/postgres"
+# The pinned Alpine PostgreSQL image runs as uid/gid 70. A root-owned 0700 bind
+# source is inaccessible on Linux even though Docker Desktop may mask that error.
+/usr/bin/install -d -o 70 -g 70 -m 0700 "$work/postgres"
+
+cleanup_done=false
+containers_removed=false
+workspace_removed=false
+
+remove_container() {
+  local container="$1"
+  local container_id
+  container_id="$(/usr/bin/docker container ls --all --quiet --filter "name=^/${container}$")" || return 1
+  if [[ -n "$container_id" ]]; then
+    /usr/bin/docker rm --force "$container" >/dev/null
+  fi
+  container_id="$(/usr/bin/docker container ls --all --quiet --filter "name=^/${container}$")" || return 1
+  [[ -z "$container_id" ]]
+}
 
 cleanup() {
-  /usr/bin/docker rm --force "$app_container" "$db_container" >/dev/null 2>&1 || true
-  if [[ "$work" =~ ^/run/tuinstra-backup/restore-[0-9]+-[0-9]+$ ]]; then
-    /usr/bin/rm -rf -- "$work"
+  local status=0
+  remove_container "$app_container" || status=1
+  remove_container "$db_container" || status=1
+  if (( status == 0 )); then
+    containers_removed=true
   fi
+  if [[ "$work" =~ ^/run/tuinstra-backup/restore-[0-9]+-[0-9]+$ ]]; then
+    /usr/bin/rm -rf -- "$work" || status=1
+    if [[ ! -e "$work" && ! -L "$work" ]]; then
+      workspace_removed=true
+    else
+      status=1
+    fi
+  else
+    status=1
+  fi
+  return "$status"
 }
-trap cleanup EXIT
+
+on_exit() {
+  local original_status="$?"
+  trap - EXIT
+  if [[ "$cleanup_done" != true ]] && ! cleanup; then
+    echo 'isolated restore cleanup failed' >&2
+    exit 70
+  fi
+  exit "$original_status"
+}
+trap on_exit EXIT
 
 /usr/bin/python3 - "$payload/files/postgres-env" "$work/loopback.env" <<'PY'
 from pathlib import Path
@@ -80,6 +152,14 @@ readonly db_container_id="$(/usr/bin/docker inspect --format '{{.Id}}' "$db_cont
   echo 'restore postgres has an external network interface' >&2
   exit 66
 }
+[[ "$(/usr/bin/docker exec "$db_container" sh -eu -c 'wc -l < /proc/net/route')" == 1 ]] || {
+  echo 'restore postgres has an external network route' >&2
+  exit 66
+}
+[[ "$(/usr/bin/docker inspect --format '{{len .HostConfig.PortBindings}}' "$db_container")" == 0 ]] || {
+  echo 'restore postgres publishes a host port' >&2
+  exit 66
+}
 
 ready=false
 for _ in {1..60}; do
@@ -94,6 +174,16 @@ done
 /usr/bin/docker exec -i "$db_container" sh -eu -c \
   'exec pg_restore --exit-on-error --no-owner --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
   <"$payload/database.dump"
+
+readonly actual_content_marker="$(
+  /usr/bin/docker exec "$db_container" sh -eu -c \
+    'exec psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="$1"' \
+    sh "$content_marker_sql" | /usr/bin/sha256sum | /usr/bin/awk '{print $1}'
+)"
+[[ "$actual_content_marker" == "$expected_content_marker" ]] || {
+  echo 'restored database content marker does not match the export' >&2
+  exit 67
+}
 
 table_count="$(/usr/bin/docker exec "$db_container" sh -eu -c \
   'psql --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="select count(*) from information_schema.tables where table_schema = '\''public'\''"')"
@@ -112,6 +202,14 @@ table_count="$(/usr/bin/docker exec "$db_container" sh -eu -c \
   echo 'restore application has an external network interface' >&2
   exit 68
 }
+[[ "$(/usr/bin/docker exec "$app_container" sh -eu -c 'wc -l < /proc/net/route')" == 1 ]] || {
+  echo 'restore application has an external network route' >&2
+  exit 68
+}
+[[ "$(/usr/bin/docker inspect --format '{{len .HostConfig.PortBindings}}' "$app_container")" == 0 ]] || {
+  echo 'restore application publishes a host port' >&2
+  exit 68
+}
 
 healthy=false
 for _ in {1..90}; do
@@ -125,4 +223,89 @@ for _ in {1..90}; do
 done
 [[ "$healthy" == true ]] || { echo 'isolated Umami did not become healthy' >&2; exit 68; }
 
-echo '{"adapter":"postgres-compose-v1","application":"umami","status":"passed","network":"loopback-only-shared-namespace"}'
+if ! {
+  /usr/bin/docker exec "$db_container" sh -eu -c \
+    'exec psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT t.secret FROM two_factor_auth AS t JOIN \"user\" AS u ON u.user_id = t.user_id WHERE u.username = '\''admin'\'' AND t.is_enabled IS TRUE"'
+  /usr/bin/cat -- "$payload/files/admin-password"
+  /usr/bin/printf '\n'
+} | /usr/bin/docker exec -i "$app_container" node -e '
+const { createDecipheriv, createHmac } = require("node:crypto");
+const chunks = [];
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", async () => {
+  const lines = Buffer.concat(chunks).toString("utf8").split("\n");
+  while (lines.at(-1) === "") lines.pop();
+  if (lines.length !== 2 || lines.some(value => value.length < 1 || value.length > 4096)) process.exit(2);
+  const [encrypted, password] = lines;
+  const keyHex = process.env.TWO_FACTOR_ENCRYPTION_KEY || "";
+  const parts = encrypted.split(":");
+  if (!/^[0-9a-fA-F]{64}$/.test(keyHex) || parts.length !== 3 || !/^[0-9a-fA-F]+$/.test(parts[0]) ||
+      parts[0].length % 2 || !/^[0-9a-fA-F]{24}$/.test(parts[1]) || !/^[0-9a-fA-F]{32}$/.test(parts[2])) process.exit(3);
+  const decipher = createDecipheriv("aes-256-gcm", Buffer.from(keyHex, "hex"), Buffer.from(parts[1], "hex"));
+  decipher.setAuthTag(Buffer.from(parts[2], "hex"));
+  const seed = Buffer.concat([decipher.update(Buffer.from(parts[0], "hex")), decipher.final()]).toString("utf8");
+  if (!/^[A-Z2-7]+$/.test(seed) || seed.length > 128) process.exit(4);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const character of seed) bits += alphabet.indexOf(character).toString(2).padStart(5, "0");
+  const secret = Buffer.from((bits.match(/.{8}/g) || []).map(byte => parseInt(byte, 2)));
+  const wait = 30000 - (Date.now() % 30000) + 1000;
+  await new Promise(resolve => setTimeout(resolve, wait));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const digest = createHmac("sha1", secret).update(counter).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const otp = (((digest[offset] & 127) << 24 | digest[offset + 1] << 16 |
+    digest[offset + 2] << 8 | digest[offset + 3]) % 1000000).toString().padStart(6, "0");
+  const call = async (path, body, token) => {
+    const response = await fetch(`http://127.0.0.1:3000${path}`, {
+      method: "POST", signal: AbortSignal.timeout(10000),
+      headers: { Accept: "application/json", "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) process.exit(5);
+    return value;
+  };
+  const login = await call("/api/auth/login", { username: "admin", password });
+  if (login.requiresTwoFactor !== true || typeof login.partialToken !== "string" || login.partialToken.length > 8192) process.exit(6);
+  const verified = await call("/api/2fa/verify", { token: otp }, login.partialToken);
+  if (typeof verified.token !== "string" || verified.token.length > 8192) process.exit(7);
+  const identity = await call("/api/auth/verify", undefined, verified.token);
+  if (identity.username !== "admin" || identity.isAdmin !== true) process.exit(8);
+}).catch(() => process.exit(9));
+' >/dev/null 2>&1; then
+  echo 'restored encrypted two-factor authentication validation failed' >&2
+  exit 69
+fi
+
+if ! cleanup; then
+  echo 'isolated restore cleanup failed' >&2
+  exit 70
+fi
+cleanup_done=true
+trap - EXIT
+
+/usr/bin/python3 - "$table_count" "$postgres_image" "$umami_image" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "schema_version": 1,
+    "adapter": "postgres-compose-v1",
+    "application": "umami",
+    "status": "passed",
+    "public_table_count": int(sys.argv[1]),
+    "application_health": "passed",
+    "encrypted_secret_validation": "passed",
+    "database_content_marker": "passed",
+    "network": "loopback-only-network-namespace",
+    "external_effects_blocked": True,
+    "host_ports": 0,
+    "postgres_image": sys.argv[2],
+    "application_image": sys.argv[3],
+    "containers_removed": True,
+    "workspace_removed": True,
+}, sort_keys=True, separators=(",", ":")))
+PY

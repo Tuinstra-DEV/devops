@@ -16,6 +16,11 @@
       "compose_project": "umami",
       "compose_file": "/var/www/umami/compose.yml",
       "postgres_service": "db",
+      "application_service": "umami",
+      "approved_images": {
+        "db": "docker.io/library/postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b",
+        "umami": "ghcr.io/umami-software/umami:3.3.1@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a"
+      },
       "included_files": [
         {"name": "compose", "path": "/var/www/umami/compose.yml"},
         {"name": "postgres-env", "path": "/etc/tuinstra/umami/postgres.env"},

@@ -24,6 +24,7 @@ class BackupTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
+        backup.ROOT_UID = os.getuid()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -45,10 +46,13 @@ class BackupTests(unittest.TestCase):
         work.mkdir()
         recipient = self.root / "recipient"
         recipient.write_text("age1test\n")
+        recipient.chmod(0o600)
         compose = self.root / "compose.yml"
         compose.write_text("services: {}\n")
         secret = self.root / "secret.env"
         secret.write_text("PASSWORD=do-not-log\n")
+        postgres_image = "docker.io/library/postgres:15-alpine@sha256:" + "a" * 64
+        umami_image = "ghcr.io/umami-software/umami:3.3.1@sha256:" + "b" * 64
         return {
             "schema_version": 1, "host_slug": "tuinstra-prod-01",
             "spool_dir": str(spool), "work_dir": str(work),
@@ -57,26 +61,56 @@ class BackupTests(unittest.TestCase):
             "age_recipient_file": str(recipient),
             "applications": [{"app_id": "umami", "enabled": True,
                 "adapter": "postgres-compose-v1", "compose_project": "umami",
-                "compose_file": str(compose), "postgres_service": "db",
+                "compose_file": str(compose), "postgres_service": "db", "application_service": "umami",
+                "approved_images": {"db": postgres_image, "umami": umami_image},
                 "included_files": [{"name": "compose", "path": str(compose)},
                                    {"name": "secret", "path": str(secret)}]}],
         }
 
+    def fake_export_run(self, config, encrypted_hook=None):
+        app = config["applications"][0]
+
+        def execute(argv, **kwargs):
+            if argv[0] == "age":
+                encrypted = Path(argv[argv.index("--output") + 1])
+                if encrypted_hook:
+                    encrypted_hook(encrypted)
+                shutil.copyfile(argv[-1], encrypted)
+                return mock.Mock(stdout=b"")
+            if argv[:2] != ["docker", "compose"] and argv[:3] != ["docker", "image", "inspect"] \
+                    and argv[:2] != ["docker", "inspect"]:
+                raise AssertionError(argv)
+            if "config" in argv and "--images" in argv:
+                return mock.Mock(stdout=("\n".join(app["approved_images"].values()) + "\n").encode())
+            if "ps" in argv and "--quiet" in argv:
+                service = argv[-1]
+                return mock.Mock(stdout=(("a" if service == "db" else "b") * 64 + "\n").encode())
+            if argv[:2] == ["docker", "inspect"]:
+                return mock.Mock(stdout=("sha256:" + argv[-1] + "\n").encode())
+            if argv[:3] == ["docker", "image", "inspect"]:
+                digest = "a" * 64 if argv[-1].endswith("a" * 64) else "b" * 64
+                return mock.Mock(stdout=json.dumps([f"repo@sha256:{digest}"]).encode())
+            if "exec" in argv and "pg_dump --version" in argv[-1]:
+                return mock.Mock(stdout=b"pg_dump (PostgreSQL) 15.15\n")
+            if "exec" in argv and "show server_version" in argv[-1]:
+                return mock.Mock(stdout=b"15.15\n")
+            if "exec" in argv and "jsonb_build_object" in argv[-1]:
+                marker = {"user_count": 1, "two_factor_count": 1,
+                          "admin": {"user_id": "11111111-1111-4111-8111-111111111111", "username": "admin"},
+                          "admin_two_factor": {"user_id": "11111111-1111-4111-8111-111111111111",
+                                               "is_enabled": True, "secret": "encrypted-marker"}}
+                return mock.Mock(stdout=(json.dumps(marker, sort_keys=True) + "\n").encode())
+            if "exec" in argv:
+                kwargs["stdout"].write(b"PGDMP-test")
+                return mock.Mock(stdout=None)
+            raise AssertionError(argv)
+
+        return execute
+
     def test_export_is_atomic_encrypted_and_public_manifest_is_secret_free(self):
         config = self.producer()
 
-        def fake_run(argv, **kwargs):
-            if argv[0] == "docker" and "exec" in argv:
-                kwargs["stdout"].write(b"PGDMP-test")
-                return mock.Mock(stdout=None)
-            if argv[0] == "docker":
-                return mock.Mock(stdout=b"postgres@sha256:" + b"a" * 64 + b"\n")
-            if argv[0] == "age":
-                shutil.copyfile(argv[-1], argv[argv.index("--output") + 1])
-                return mock.Mock(stdout=b"")
-            raise AssertionError(argv)
-
-        with mock.patch.object(backup, "run", side_effect=fake_run):
+        with mock.patch.object(backup, "run", side_effect=self.fake_export_run(config)):
             result = backup.create_export(config, "umami")
         spool = Path(config["spool_dir"])
         self.assertEqual(len(list(spool.glob("*.age"))), 1)
@@ -85,6 +119,52 @@ class BackupTests(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(result))
         self.assertEqual(result["payload_sha256"], backup.sha256(next(spool.glob("*.age"))))
         self.assertFalse(any(path.suffix == ".tar" for path in spool.iterdir()))
+        with tarfile.open(next(spool.glob("*.age")), "r") as archive:
+            internal = json.load(archive.extractfile("payload/backup-manifest.json"))
+        self.assertEqual(internal["database"], {
+            "engine": "postgresql", "server_version": "15.15",
+            "dump_version": "pg_dump (PostgreSQL) 15.15", "dump_format": "custom", "service": "db",
+            "content_marker": {"algorithm": "umami-admin-two-factor-v1",
+                               "sha256": internal["database"]["content_marker"]["sha256"],
+                               "user_count": 1, "two_factor_count": 1},
+        })
+        self.assertRegex(internal["database"]["content_marker"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(internal["image_services"], config["applications"][0]["approved_images"])
+
+    def test_export_rejects_running_image_that_does_not_match_approved_digest(self):
+        config = self.producer()
+        normal = self.fake_export_run(config)
+
+        def mismatched(argv, **kwargs):
+            if argv[:3] == ["docker", "image", "inspect"]:
+                return mock.Mock(stdout=json.dumps(["repo@sha256:" + "f" * 64]).encode())
+            return normal(argv, **kwargs)
+
+        with mock.patch.object(backup, "run", side_effect=mismatched), \
+             self.assertRaisesRegex(backup.BackupError, "approved image digest"):
+            backup.create_export(config, "umami")
+        self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
+
+    def test_export_stages_ciphertext_on_spool_filesystem_before_atomic_publication(self):
+        config = self.producer()
+        spool = Path(config["spool_dir"])
+        real_replace = backup.os.replace
+        ciphertext_publications = []
+
+        def reject_cross_device_replace(source, destination):
+            source_path, destination_path = Path(source), Path(destination)
+            if destination_path.suffix == ".age":
+                ciphertext_publications.append((source_path, destination_path))
+                self.assertEqual(source_path.parent, destination_path.parent)
+            return real_replace(source, destination)
+
+        with mock.patch.object(backup, "run", side_effect=self.fake_export_run(
+                config, lambda encrypted: self.assertEqual(encrypted.parent, spool))), \
+             mock.patch.object(backup.os, "replace", side_effect=reject_cross_device_replace):
+            backup.create_export(config, "umami")
+        self.assertEqual(len(ciphertext_publications), 1)
+        self.assertEqual(len(list(spool.glob("*.age"))), 1)
+        self.assertFalse(list(spool.glob(".*.age.tmp")))
 
     def test_export_fails_closed_when_spool_quota_is_reached(self):
         config = self.producer()
@@ -118,6 +198,21 @@ class BackupTests(unittest.TestCase):
         backup.dispatch(config, f"ack {artifact} {manifest['payload_sha256']} restic:abc", io.BytesIO())
         self.assertFalse((Path(config["spool_dir"]) / f"{artifact}.age").exists())
         self.assertTrue((Path(config["receipt_dir"]) / f"{artifact}.json").exists())
+        # A lost SSH response may repeat the exact ACK. It returns the persisted receipt
+        # and completes any partially interrupted source cleanup without changing identity.
+        retried = io.BytesIO()
+        backup.dispatch(config, f"ack {artifact} {manifest['payload_sha256']} restic:abc", retried)
+        self.assertEqual(json.loads(retried.getvalue())["receipt_id"], "restic:abc")
+
+    def test_ack_receipt_retry_removes_crash_leftovers_and_rejects_changed_identity(self):
+        config = self.producer()
+        artifact, manifest = self.ready_artifact(config)
+        receipt = {**manifest, "received_at": "2026-09-12T01:00:00Z", "receipt_id": "restic:abc"}
+        backup.atomic_json(Path(config["receipt_dir"]) / f"{artifact}.json", receipt)
+        backup.dispatch(config, f"ack {artifact} {manifest['payload_sha256']} restic:abc", io.BytesIO())
+        self.assertFalse((Path(config["spool_dir"]) / f"{artifact}.json").exists())
+        with self.assertRaisesRegex(backup.BackupError, "receipt identity"):
+            backup.dispatch(config, f"ack {artifact} {manifest['payload_sha256']} restic:different", io.BytesIO())
 
     def test_dispatch_rejects_commands_and_path_traversal(self):
         config = self.producer()
@@ -155,6 +250,7 @@ class BackupTests(unittest.TestCase):
         password = self.root / "passwords" / "tuinstra-prod-01"
         password.mkdir(parents=True)
         (password / "umami.password").write_text("secret")
+        (password / "umami.password").chmod(0o600)
         artifact = "12345678-1234-4123-8123-123456789abc"
         payload = b"cipher"
         manifest = {"schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
@@ -173,23 +269,25 @@ class BackupTests(unittest.TestCase):
             calls.append(("ssh", command))
             return [manifest] if command == "list" else {"received": True}
 
+        stored = {**manifest, "snapshot_id": "a" * 64, "stored_at": "x",
+                  "integrity_checked_at": "x", "integrity_coverage": "full-repository-data"}
+
         def fake_run(argv, **kwargs):
             calls.append((argv[0], argv[1:3]))
             if argv[0] == "ssh":
                 kwargs["stdout"].write(payload)
                 return mock.Mock(stdout=None)
-            if argv[0] == "sudo":
-                stored = {**manifest, "snapshot_id": "a" * 64, "stored_at": "x",
-                          "integrity_checked_at": "x", "integrity_coverage": "full-repository-data"}
-                return mock.Mock(stdout=json.dumps(stored).encode())
             return mock.Mock(stdout=b"")
 
         with mock.patch.object(backup, "ssh_json", side_effect=fake_remote), \
-             mock.patch.object(backup, "run", side_effect=fake_run):
+             mock.patch.object(backup, "run", side_effect=fake_run), \
+             mock.patch.object(backup, "ingest_artifact", return_value=stored) as ingest, \
+             mock.patch.object(backup, "cleanup_ingest"):
             result = backup.pull_host(config, "tuinstra-prod-01")
         self.assertEqual(result[0]["snapshot_id"], "a" * 64)
         self.assertTrue(any(call[0] == "ssh" and str(call[1]).startswith("ack ") for call in calls))
-        self.assertTrue(any(call[0] == "sudo" and "-n" in call[1] for call in calls))
+        ingest.assert_called_once()
+        self.assertFalse((self.root / "incoming" / artifact).exists())
 
     def test_failed_integrity_check_never_acknowledges_remote(self):
         # This invariant protects unreceived exports during an offline/corrupt destination event.
@@ -240,6 +338,7 @@ class BackupTests(unittest.TestCase):
         password = self.root / "passwords" / "tuinstra-prod-01"
         password.mkdir(parents=True)
         (password / "umami.password").write_text("secret")
+        (password / "umami.password").chmod(0o600)
         policies = self.root / "policies" / "tuinstra-prod-01"
         policies.mkdir(parents=True)
         policy = backup.policy_document("tuinstra-prod-01", "umami", "production-v1", 2, 0, 7, 4, 12)
@@ -280,6 +379,196 @@ class BackupTests(unittest.TestCase):
                                              "87654321-4321-4321-8321-cba987654321", "scheduled")
         self.assertEqual(retried["snapshot_id"], "a" * 64)
 
+    def test_safety_ingest_pins_exact_operation_and_returns_full_checked_snapshot(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        run_id = "87654321-4321-4321-8321-cba987654321"
+        operation = "restore-op-123"
+        incoming = self.root / "incoming" / artifact
+        incoming.mkdir(parents=True)
+        payload = incoming / "payload.age"
+        payload.write_bytes(b"cipher")
+        manifest = {"schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
+                    "app_id": "umami", "adapter": "postgres-compose-v1",
+                    "created_at": "2026-09-12T00:00:00Z", "payload_sha256": backup.sha256(payload),
+                    "payload_bytes": payload.stat().st_size}
+        backup.atomic_json(incoming / "manifest.json", manifest, 0o600)
+        password = self.root / "passwords/tuinstra-prod-01"
+        password.mkdir(parents=True)
+        (password / "umami.password").write_text("secret")
+        (password / "umami.password").chmod(0o600)
+        policy = backup.policy_document("tuinstra-prod-01", "umami", "production-v1", 2, 0, 7, 4, 12)
+        policy_path = self.root / "policies/tuinstra-prod-01"
+        policy_path.mkdir(parents=True)
+        backup.atomic_json(policy_path / "umami.json", {**policy, "plan_hash": backup.document_hash(policy)})
+        config = {
+            "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}],
+            "incoming_root": str(self.root / "incoming"), "ingest_root": str(self.root / "ingest"),
+            "max_artifact_bytes": 1024, "repository_root": str(self.root / "repositories"),
+            "password_root": str(self.root / "passwords"), "operation_lock_root": str(self.root / "locks"),
+            "catalog_root": str(self.root / "catalog"), "policy_root": str(self.root / "policies"),
+        }
+        self.add_host_lock(config)
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            if argv[:2] == ["restic", "snapshots"]:
+                return mock.Mock(stdout=b"[]")
+            if argv[:2] == ["restic", "backup"]:
+                return mock.Mock(stdout=(json.dumps({"message_type": "summary", "snapshot_id": "a" * 64}) + "\n").encode())
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            result = backup.safety_ingest(config, "tuinstra-prod-01", "umami", artifact, operation, run_id)
+        command = next(argv for argv in calls if argv[:2] == ["restic", "backup"])
+        tags = [command[index + 1] for index, value in enumerate(command) if value == "--tag"]
+        self.assertIn("tuinstra:production-restore-safety", tags)
+        self.assertIn(f"operation:{operation}", tags)
+        self.assertEqual(result["status"], "safety-stored")
+        self.assertEqual(result["snapshot_id"], "a" * 64)
+        self.assertEqual(result["tags"], ["tuinstra:production-restore-safety", f"operation:{operation}"])
+        self.assertEqual(result["integrity_coverage"], "full-repository-data")
+
+    def test_safety_ingest_rejects_existing_artifact_without_matching_pin(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        staged = self.root / "staged"
+        staged.mkdir()
+        payload = staged / "payload.age"
+        payload.write_bytes(b"cipher")
+        backup.atomic_json(staged / "manifest.json", {
+            "schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
+            "app_id": "umami", "adapter": "postgres-compose-v1",
+            "created_at": "2026-09-12T00:00:00Z", "payload_sha256": backup.sha256(payload),
+            "payload_bytes": payload.stat().st_size,
+        }, 0o600)
+        config = {"hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}],
+                  "operation_lock_root": str(self.root / "locks"), "max_artifact_bytes": 1024}
+        self.add_host_lock(config)
+        with mock.patch.object(backup, "materialize_ingest", return_value=staged), \
+             mock.patch.object(backup, "run", return_value=mock.Mock(stdout=json.dumps([{
+                 "id": "a" * 64, "tags": [f"artifact:{artifact}"]}]).encode())), \
+             mock.patch.object(backup, "restic_env", return_value=({}, self.root)):
+            with self.assertRaisesRegex(backup.BackupError, "safety pin"):
+                backup.safety_ingest(config, "tuinstra-prod-01", "umami",
+                    artifact, "restore-op-123",
+                    "87654321-4321-4321-8321-cba987654321")
+
+    def test_safety_pull_fetches_only_exact_artifact_and_acks_after_local_cleanup(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        run_id = "87654321-4321-4321-8321-cba987654321"
+        operation = "restore-op-123"
+        payload = self.root / "cipher"
+        payload.write_bytes(b"cipher")
+        manifest = {"schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
+                    "app_id": "umami", "adapter": "postgres-compose-v1",
+                    "created_at": "2026-09-12T00:00:00Z", "payload_sha256": backup.sha256(payload),
+                    "payload_bytes": payload.stat().st_size}
+        host = {"host_slug": "tuinstra-prod-01", "applications": ["umami"], "ssh_user": "pull",
+                "ssh_host": "prod", "identity_file": "/key", "known_hosts_file": "/known"}
+        config = {"hosts": [host], "pull_lock_root": str(self.root / "pull-locks"),
+                  "incoming_root": str(self.root / "incoming"), "ingest_root": str(self.root / "ingest"),
+                  "max_artifact_bytes": 1024}
+        self.add_host_lock(config)
+        incoming = Path(config["incoming_root"]) / artifact
+        ingest = Path(config["ingest_root"]) / artifact
+        stored = {**manifest, "snapshot_id": "a" * 64, "stored_at": backup.now(),
+                  "integrity_checked_at": backup.now(), "integrity_coverage": "full-repository-data"}
+        remote_calls = []
+
+        def stage(*_args):
+            incoming.mkdir(parents=True)
+            incoming.chmod(0o700)
+            return incoming
+
+        def fake_remote(_host, command):
+            remote_calls.append(command)
+            if command == "list":
+                return [manifest]
+            self.assertTrue(command.startswith("ack "))
+            self.assertFalse(incoming.exists())
+            self.assertFalse(ingest.exists())
+            return {"received": True}
+
+        with mock.patch.object(backup, "reconcile_safety_point", return_value=None), \
+             mock.patch.object(backup, "stage_remote_artifact", side_effect=stage), \
+             mock.patch.object(backup, "ingest_artifact", return_value=stored) as durable, \
+             mock.patch.object(backup, "ssh_json", side_effect=fake_remote):
+            result = backup.safety_pull(config, "tuinstra-prod-01", "umami", artifact, operation, run_id)
+        durable.assert_called_once_with(config, "tuinstra-prod-01", "umami", artifact, run_id, "console",
+                                        safety_operation=operation)
+        self.assertEqual(remote_calls[0], "list")
+        self.assertTrue(remote_calls[-1].startswith("ack "))
+        self.assertEqual(result["status"], "safety-stored")
+
+    def test_safety_pull_reconciles_checked_snapshot_and_retries_exact_ack_without_duplicate(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        result = {"status": "safety-stored", "host_slug": "tuinstra-prod-01", "app_id": "umami",
+                  "artifact_id": artifact, "operation_id": "restore-op-123", "snapshot_id": "a" * 64,
+                  "tags": [backup.SAFETY_TAG, "operation:restore-op-123"],
+                  "integrity_checked_at": backup.now(), "integrity_coverage": "full-repository-data"}
+        config = {"hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}],
+                  "pull_lock_root": str(self.root / "pull-locks")}
+        self.add_host_lock(config)
+        with mock.patch.object(backup, "reconcile_safety_point", return_value=(result, "b" * 64)), \
+             mock.patch.object(backup, "ssh_json", return_value={"received": True}) as remote, \
+             mock.patch.object(backup, "ingest_artifact") as ingest:
+            actual = backup.safety_pull(config, "tuinstra-prod-01", "umami", artifact,
+                                        "restore-op-123", "87654321-4321-4321-8321-cba987654321")
+        remote.assert_called_once_with(config["hosts"][0],
+            f"ack {artifact} {'b' * 64} restic:{'a' * 64}")
+        ingest.assert_not_called()
+        self.assertEqual(actual, result)
+
+    def test_safety_pull_ack_failure_retries_ack_from_durable_pin_without_second_ingest(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        operation = "restore-op-123"
+        run_id = "87654321-4321-4321-8321-cba987654321"
+        manifest = {"schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
+                    "app_id": "umami", "adapter": "postgres-compose-v1", "created_at": backup.now(),
+                    "payload_sha256": "b" * 64, "payload_bytes": 6}
+        stored = {**manifest, "snapshot_id": "a" * 64, "stored_at": backup.now(),
+                  "integrity_checked_at": backup.now(), "integrity_coverage": "full-repository-data"}
+        result = backup.safety_result(stored, operation)
+        host = {"host_slug": "tuinstra-prod-01", "applications": ["umami"]}
+        config = {"hosts": [host], "pull_lock_root": str(self.root / "pull-locks"),
+                  "max_artifact_bytes": 1024}
+        self.add_host_lock(config)
+        with mock.patch.object(backup, "reconcile_safety_point",
+                               side_effect=[None, (result, manifest["payload_sha256"])]), \
+             mock.patch.object(backup, "stage_remote_artifact", return_value=self.root), \
+             mock.patch.object(backup, "cleanup_ingest"), \
+             mock.patch.object(backup, "cleanup_worker_staging"), \
+             mock.patch.object(backup, "ingest_artifact", return_value=stored) as ingest, \
+             mock.patch.object(backup, "ssh_json", side_effect=[
+                 [manifest], backup.BackupError("source unreachable"), {"received": True},
+             ]) as remote:
+            with self.assertRaisesRegex(backup.BackupError, "unreachable"):
+                backup.safety_pull(config, "tuinstra-prod-01", "umami", artifact, operation, run_id)
+            retried = backup.safety_pull(config, "tuinstra-prod-01", "umami", artifact, operation, run_id)
+        self.assertEqual(ingest.call_count, 1)
+        self.assertEqual(remote.call_args_list[-1], mock.call(
+            host, f"ack {artifact} {manifest['payload_sha256']} restic:{stored['snapshot_id']}"))
+        self.assertEqual(retried, result)
+
+    def test_safety_pull_never_acks_when_durable_ingest_fails(self):
+        artifact = "12345678-1234-4123-8123-123456789abc"
+        manifest = {"schema_version": 1, "artifact_id": artifact, "host_slug": "tuinstra-prod-01",
+                    "app_id": "umami", "adapter": "postgres-compose-v1",
+                    "created_at": "2026-09-12T00:00:00Z", "payload_sha256": "a" * 64,
+                    "payload_bytes": 6}
+        host = {"host_slug": "tuinstra-prod-01", "applications": ["umami"]}
+        config = {"hosts": [host], "pull_lock_root": str(self.root / "pull-locks"),
+                  "max_artifact_bytes": 1024}
+        self.add_host_lock(config)
+        with mock.patch.object(backup, "reconcile_safety_point", return_value=None), \
+             mock.patch.object(backup, "ssh_json", return_value=[manifest]) as remote, \
+             mock.patch.object(backup, "stage_remote_artifact", return_value=self.root), \
+             mock.patch.object(backup, "ingest_artifact", side_effect=backup.BackupError("integrity failed")):
+            with self.assertRaisesRegex(backup.BackupError, "integrity"):
+                backup.safety_pull(config, "tuinstra-prod-01", "umami", artifact, "restore-op-123",
+                                   "87654321-4321-4321-8321-cba987654321")
+        self.assertEqual(remote.call_args_list, [mock.call(host, "list")])
+
     def test_ingest_materializes_only_allowlisted_files_into_private_staging(self):
         artifact = "12345678-1234-4123-8123-123456789abc"
         incoming = self.root / "incoming" / artifact
@@ -305,6 +594,7 @@ class BackupTests(unittest.TestCase):
         password = self.root / "passwords" / "prod"
         password.mkdir(parents=True)
         (password / "app.password").write_text("secret")
+        (password / "app.password").chmod(0o600)
         policies = self.root / "policies" / "prod"
         policies.mkdir(parents=True)
         document = backup.policy_document("prod", "app", "production-v1", 2, 0, 7, 4, 12)
@@ -372,6 +662,7 @@ class BackupTests(unittest.TestCase):
         password = self.root / "passwords" / "prod"
         password.mkdir(parents=True)
         (password / "app.password").write_text("secret")
+        (password / "app.password").chmod(0o600)
         policies = self.root / "policies" / "prod"
         policies.mkdir(parents=True)
         document = backup.policy_document("prod", "app", "v1", 2, 0, 1, 1, 1)
@@ -399,6 +690,23 @@ class BackupTests(unittest.TestCase):
         with self.assertRaisesRegex(backup.BackupError, "unsafe"):
             with backup.host_operation_lock(config, "tuinstra-prod-01"):
                 pass
+
+    def test_inherited_host_lock_descriptor_must_be_the_exact_authoritative_inode(self):
+        config = self.add_host_lock({})
+        authoritative = backup.host_operation_lock_path(config, "tuinstra-prod-01")
+        descriptor = os.open(authoritative, os.O_RDWR)
+        wrong = self.root / "wrong.lock"
+        wrong.touch()
+        wrong.chmod(0o660)
+        wrong_descriptor = os.open(wrong, os.O_RDWR)
+        try:
+            backup.fcntl.flock(descriptor, backup.fcntl.LOCK_EX | backup.fcntl.LOCK_NB)
+            backup.validate_host_lock_descriptor(config, "tuinstra-prod-01", descriptor)
+            with self.assertRaisesRegex(backup.BackupError, "authoritative lock"):
+                backup.validate_host_lock_descriptor(config, "tuinstra-prod-01", wrong_descriptor)
+        finally:
+            os.close(wrong_descriptor)
+            os.close(descriptor)
 
     def test_catalog_marks_retention_removed_points_without_losing_history(self):
         config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024}
@@ -446,6 +754,32 @@ class BackupTests(unittest.TestCase):
         run_cycle.assert_not_called()
         self.assertEqual(result["status"], "already-durable-today")
 
+    def test_manual_run_resolves_immutable_active_policy_without_cli_hash(self):
+        config = {"hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}],
+                  "policy_root": str(self.root / "policies")}
+        document = backup.policy_document("tuinstra-prod-01", "umami", "updated-v2", 3, 15, 9, 5, 13)
+        path = self.root / "policies/tuinstra-prod-01"
+        path.mkdir(parents=True)
+        plan_hash = backup.document_hash(document)
+        backup.atomic_json(path / "umami.json", {**document, "plan_hash": plan_hash})
+        with mock.patch.object(backup, "cycle", return_value={"status": "durable"}) as execute:
+            result = backup.run_active(config, "tuinstra-prod-01", "umami", "manual")
+        execute.assert_called_once_with(config, "tuinstra-prod-01", "umami", "updated-v2",
+                                        plan_hash, "manual")
+        self.assertEqual(result["status"], "durable")
+
+    def test_ssh_exit_codes_distinguish_remote_export_failure_from_unreachable_source(self):
+        with mock.patch.object(backup.subprocess, "run", side_effect=__import__("subprocess").CalledProcessError(
+                1, ["ssh"])):
+            with self.assertRaisesRegex(backup.BackupError, "export") as failure:
+                backup.run(["ssh", "fixed-host", "export"])
+        self.assertEqual(backup.failure_code(failure.exception), "source_export_failed")
+        with mock.patch.object(backup.subprocess, "run", side_effect=__import__("subprocess").CalledProcessError(
+                255, ["ssh"])):
+            with self.assertRaisesRegex(backup.BackupError, "unreachable") as failure:
+                backup.run(["ssh", "fixed-host", "export"])
+        self.assertEqual(backup.failure_code(failure.exception), "source_unreachable")
+
     def test_attempt_failure_updates_status_without_removing_last_good_point(self):
         config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,
                   "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}]}
@@ -457,6 +791,419 @@ class BackupTests(unittest.TestCase):
         current = backup.catalog(config, "tuinstra-prod-01", "umami")
         self.assertEqual(current["latest_attempt"]["error_code"], "source_unreachable")
         self.assertEqual(current["recovery_points"], [])
+
+    def test_attempt_cannot_report_success_without_exact_durable_run_proof(self):
+        config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,
+                  "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}]}
+        started = backup.attempt_start(config, "tuinstra-prod-01", "umami", "scheduled")
+        with self.assertRaisesRegex(backup.BackupError, "durable snapshot"):
+            backup.attempt_finish(config, "tuinstra-prod-01", "umami", started["run_id"],
+                                  "succeeded", None)
+        current = backup.load_catalog(config, "tuinstra-prod-01", "umami")
+        current["recovery_points"].append({
+            "snapshot_id": "a" * 64, "artifact_id": "12345678-1234-4123-8123-123456789abc",
+            "host_slug": "tuinstra-prod-01", "app_id": "umami", "created_at": backup.now(),
+            "stored_at": backup.now(), "integrity_checked_at": backup.now(),
+            "integrity_coverage": "full-repository-data", "payload_bytes": 10,
+            "payload_sha256": "b" * 64, "policy_version": "production-v1",
+            "engine": "tuinstra-backup-v1", "state": "available", "removed_at": None,
+            "repository_observed_at": backup.now(), "run_id": started["run_id"], "trigger": "scheduled",
+            "source_id": "tuinstra-prod-01", "destination_id": "sanctuary-restic",
+        })
+        backup.write_catalog(config, current)
+        finished = backup.attempt_finish(config, "tuinstra-prod-01", "umami", started["run_id"],
+                                         "succeeded", None)
+        self.assertEqual(finished["status"], "succeeded")
+
+    def restore_fixture(self):
+        host_slug = "tuinstra-prod-01"
+        app_id = "umami"
+        artifact_id = "12345678-1234-4123-8123-123456789abc"
+        snapshot_id = "a" * 64
+        payload = self.root / "payload.age"
+        payload.write_bytes(b"encrypted-payload")
+        public = {
+            "schema_version": 1, "artifact_id": artifact_id, "host_slug": host_slug,
+            "app_id": app_id, "adapter": "postgres-compose-v1",
+            "created_at": "2026-09-12T00:00:00Z", "payload_sha256": backup.sha256(payload),
+            "payload_bytes": payload.stat().st_size,
+        }
+        extracted = self.root / "archive-source" / "payload"
+        extracted.mkdir(parents=True)
+        files = {
+            "database.dump": b"PGDMP-test",
+            "files/postgres-env": b"POSTGRES_DB=umami\nPOSTGRES_USER=umami\nPOSTGRES_PASSWORD=test\n",
+            "files/umami-env": b"APP_SECRET=test\nTWO_FACTOR_ENCRYPTION_KEY=" + b"d" * 64 + b"\n",
+            "files/two-factor-encryption-key": b"d" * 64 + b"\n",
+            "files/admin-password": b"admin-test-password\n",
+        }
+        inputs = []
+        for name, content in files.items():
+            target = extracted / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            inputs.append({"name": name, "sha256": backup.sha256(target), "bytes": len(content)})
+        internal = {"schema_version": 1, "artifact_id": artifact_id, "host_slug": host_slug,
+            "app_id": app_id, "adapter": "postgres-compose-v1", "created_at": public["created_at"],
+            "database_service": "db", "inputs": inputs, "images": [
+            "docker.io/library/postgres:15-alpine@sha256:" + "b" * 64,
+            "ghcr.io/umami-software/umami:3.3.1@sha256:" + "c" * 64,
+        ], "image_services": {
+            "db": "docker.io/library/postgres:15-alpine@sha256:" + "b" * 64,
+            "umami": "ghcr.io/umami-software/umami:3.3.1@sha256:" + "c" * 64,
+        }, "database": {
+            "engine": "postgresql", "server_version": "15.15",
+            "dump_version": "pg_dump (PostgreSQL) 15.15", "dump_format": "custom", "service": "db",
+            "content_marker": {"algorithm": backup.UMAMI_CONTENT_MARKER_ALGORITHM,
+                               "sha256": "d" * 64, "user_count": 1, "two_factor_count": 1},
+        }}
+        (extracted / "backup-manifest.json").write_text(json.dumps(internal))
+        archive = self.root / "payload.tar"
+        with tarfile.open(archive, "w") as handle:
+            handle.add(extracted.parent / "payload", arcname="payload")
+
+        password = self.root / "passwords" / host_slug
+        password.mkdir(parents=True)
+        (password / f"{app_id}.password").write_text("restic-password")
+        (password / f"{app_id}.password").chmod(0o600)
+        identity = self.root / "age-identity.txt"
+        identity.write_text("AGE-SECRET-KEY-test")
+        identity.chmod(0o600)
+        config = {
+            "hosts": [{"host_slug": host_slug, "applications": [app_id]}],
+            "repository_root": str(self.root / "repositories"),
+            "password_root": str(self.root / "passwords"),
+            "restore_work_dir": str(self.root / "restore-work"),
+            "restore_lock_file": str(self.root / "restore.lock"),
+            "operation_lock_root": str(self.root / "operation-locks"),
+            "evidence_root": str(self.root / "evidence"),
+            "catalog_root": str(self.root / "catalog"),
+            "max_artifact_bytes": 1024 * 1024,
+            "age_identity_file": str(identity),
+            "restore_adapter": "/fixed/restore-umami",
+        }
+        self.add_host_lock(config, host_slug)
+        point = {
+            "snapshot_id": snapshot_id, "artifact_id": artifact_id, "host_slug": host_slug,
+            "app_id": app_id, "created_at": public["created_at"],
+            "stored_at": "2026-09-12T00:01:00Z", "integrity_checked_at": "2026-09-12T00:02:00Z",
+            "integrity_coverage": "full-repository-data", "payload_bytes": public["payload_bytes"],
+            "payload_sha256": public["payload_sha256"], "policy_version": "production-v1",
+            "engine": "tuinstra-backup-v1", "state": "available", "removed_at": None,
+            "repository_observed_at": "2026-09-12T00:02:00Z",
+            "run_id": "87654321-4321-4321-8321-cba987654321", "trigger": "scheduled",
+            "source_id": host_slug, "destination_id": "sanctuary-restic",
+        }
+        catalog = backup.empty_catalog(host_slug, app_id)
+        catalog["recovery_points"] = [point]
+        backup.write_catalog(config, catalog)
+        return config, public, payload, archive, snapshot_id
+
+    def test_payload_manifest_rejects_unsafe_duplicate_or_unmanifested_inputs(self):
+        _config, public, _payload, _archive, _snapshot = self.restore_fixture()
+        root = self.root / "archive-source"
+        manifest_path = root / "payload/backup-manifest.json"
+        original = json.loads(manifest_path.read_text())
+        cases = []
+        absolute = json.loads(json.dumps(original))
+        absolute["inputs"][0]["name"] = "/etc/passwd"
+        cases.append(("absolute", absolute, "input name"))
+        traversal = json.loads(json.dumps(original))
+        traversal["inputs"][0]["name"] = "files/../database.dump"
+        cases.append(("traversal", traversal, "input name"))
+        duplicate = json.loads(json.dumps(original))
+        duplicate["inputs"][1]["name"] = duplicate["inputs"][0]["name"]
+        cases.append(("duplicate", duplicate, "unique"))
+        extra_key = json.loads(json.dumps(original))
+        extra_key["inputs"][0]["path"] = "/tmp/attacker"
+        cases.append(("extra-key", extra_key, "input schema"))
+        invalid_marker = json.loads(json.dumps(original))
+        invalid_marker["database"]["content_marker"]["sha256"] = "not-a-checksum"
+        cases.append(("invalid-content-marker", invalid_marker, "database version evidence"))
+        for label, changed, error in cases:
+            with self.subTest(label=label):
+                manifest_path.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(backup.BackupError, error):
+                    backup.validate_payload(root, public)
+        manifest_path.write_text(json.dumps(original))
+        (root / "payload/unmanifested").write_text("unexpected")
+        with self.assertRaisesRegex(backup.BackupError, "unmanifested"):
+            backup.validate_payload(root, public)
+
+    def test_payload_manifest_rejects_symlink_in_input_path(self):
+        _config, public, _payload, _archive, _snapshot = self.restore_fixture()
+        root = self.root / "archive-source"
+        manifest_path = root / "payload/backup-manifest.json"
+        internal = json.loads(manifest_path.read_text())
+        target = root / "outside"
+        target.mkdir()
+        (target / "secret").write_text("secret")
+        (root / "payload/link").symlink_to(target, target_is_directory=True)
+        secret = target / "secret"
+        internal["inputs"].append({"name": "link/secret", "sha256": backup.sha256(secret),
+                                   "bytes": secret.stat().st_size})
+        manifest_path.write_text(json.dumps(internal))
+        with self.assertRaisesRegex(backup.BackupError, "symbolic link"):
+            backup.validate_payload(root, public)
+
+    def test_restore_test_records_only_truthful_explicit_evidence_after_cleanup(self):
+        config, public, payload, archive, snapshot_id = self.restore_fixture()
+        restore_targets = []
+        postgres_image = "docker.io/library/postgres:15-alpine@sha256:" + "b" * 64
+        application_image = "ghcr.io/umami-software/umami:3.3.1@sha256:" + "c" * 64
+
+        def fake_run(argv, **_kwargs):
+            if argv == ["restic", "check", "--read-data"]:
+                return mock.Mock(stdout=b"")
+            if argv[:2] == ["restic", "restore"]:
+                self.assertEqual(argv[2], snapshot_id)
+                target = Path(argv[argv.index("--target") + 1])
+                restore_targets.append(target.parent)
+                artifact = target / "artifact"
+                artifact.mkdir(parents=True)
+                (artifact / "manifest.json").write_text(json.dumps(public))
+                shutil.copyfile(payload, artifact / "payload.age")
+                return mock.Mock(stdout=b"")
+            if argv[0] == "age":
+                shutil.copyfile(archive, argv[argv.index("--output") + 1])
+                return mock.Mock(stdout=b"")
+            if argv[0] == config["restore_adapter"]:
+                adapter = {
+                    "schema_version": 1, "adapter": "postgres-compose-v1", "application": "umami",
+                    "status": "passed", "public_table_count": 12,
+                    "application_health": "passed", "encrypted_secret_validation": "passed",
+                    "database_content_marker": "passed",
+                    "network": "loopback-only-network-namespace",
+                    "external_effects_blocked": True, "host_ports": 0,
+                    "postgres_image": postgres_image, "application_image": application_image,
+                    "containers_removed": True, "workspace_removed": True,
+                }
+                return mock.Mock(stdout=json.dumps(adapter).encode())
+            raise AssertionError(argv)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run), \
+             mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=2 * 1024**3)):
+            evidence = backup.restore_test(config, "tuinstra-prod-01", "umami", "latest")
+
+        self.assertEqual(evidence["snapshot_id"], snapshot_id)
+        self.assertRegex(evidence["manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(evidence["restore_status"], "passed")
+        self.assertEqual(evidence["preflight"]["key"], "passed")
+        self.assertEqual(evidence["preflight"]["payload_checksum"], "passed")
+        self.assertEqual(evidence["preflight"]["compatibility"], "passed")
+        self.assertGreaterEqual(evidence["preflight"]["available_bytes"], evidence["preflight"]["required_bytes"])
+        self.assertEqual(evidence["validation"]["schema"], "passed")
+        self.assertEqual(evidence["validation"]["data"], "passed")
+        self.assertEqual(evidence["validation"]["public_table_count"], 12)
+        self.assertEqual(evidence["validation"]["input_files_verified"], 5)
+        self.assertEqual(evidence["validation"]["database_content_marker"], "passed")
+        self.assertEqual(evidence["validation"]["encrypted_two_factor_authentication"], "passed")
+        self.assertEqual(evidence["validation"]["application_health"], "passed")
+        self.assertEqual(evidence["versions"]["postgres_image"], postgres_image)
+        self.assertTrue(evidence["isolation"]["external_effects_blocked"])
+        self.assertEqual(evidence["isolation"]["host_ports"], 0)
+        self.assertEqual(evidence["cleanup"], {"status": "passed", "containers_removed": True,
+                                                "workspace_removed": True})
+        self.assertGreaterEqual(evidence["duration_seconds"], 0)
+        self.assertLessEqual(evidence["duration_seconds"], 14400)
+        self.assertEqual(evidence["engine_version"], "tuinstra-backup-v1")
+        self.assertTrue(restore_targets)
+        self.assertTrue(all(not target.exists() for target in restore_targets))
+        persisted = json.loads((self.root / "evidence/tuinstra-prod-01/umami" /
+                                f'{public["artifact_id"]}.json').read_text())
+        self.assertEqual(persisted, evidence)
+
+    def test_restore_test_rejects_adapter_cleanup_failure_without_success_evidence(self):
+        config, public, payload, archive, snapshot_id = self.restore_fixture()
+
+        def fake_run(argv, **_kwargs):
+            if argv == ["restic", "check", "--read-data"]:
+                return mock.Mock(stdout=b"")
+            if argv[:2] == ["restic", "restore"]:
+                target = Path(argv[argv.index("--target") + 1]) / "artifact"
+                target.mkdir(parents=True)
+                (target / "manifest.json").write_text(json.dumps(public))
+                shutil.copyfile(payload, target / "payload.age")
+                return mock.Mock(stdout=b"")
+            if argv[0] == "age":
+                shutil.copyfile(archive, argv[argv.index("--output") + 1])
+                return mock.Mock(stdout=b"")
+            return mock.Mock(stdout=json.dumps({"schema_version": 1, "adapter": "postgres-compose-v1",
+                "application": "umami", "status": "passed", "public_table_count": 1,
+                "application_health": "passed", "encrypted_secret_validation": "passed",
+                "database_content_marker": "passed",
+                "network": "loopback-only-network-namespace",
+                "external_effects_blocked": True, "host_ports": 0,
+                "postgres_image": "postgres@sha256:" + "b" * 64,
+                "application_image": "umami@sha256:" + "c" * 64,
+                "containers_removed": False, "workspace_removed": True}).encode())
+
+        with mock.patch.object(backup, "run", side_effect=fake_run), \
+             mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=2 * 1024**3)):
+            with self.assertRaisesRegex(backup.BackupError, "cleanup"):
+                backup.restore_test(config, "tuinstra-prod-01", "umami", snapshot_id)
+        self.assertFalse((self.root / "evidence/tuinstra-prod-01/umami" /
+                          f'{public["artifact_id"]}.json').exists())
+
+    def test_restore_test_fails_capacity_preflight_before_restic_or_decryption(self):
+        config, _public, _payload, _archive, snapshot_id = self.restore_fixture()
+        with mock.patch.object(backup, "run") as execute, \
+             mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=1)):
+            with self.assertRaisesRegex(backup.BackupError, "capacity"):
+                backup.restore_test(config, "tuinstra-prod-01", "umami", snapshot_id)
+        execute.assert_not_called()
+
+    def recovery_bundle(self):
+        source = self.root / "recovery.json"
+        private_key = ("-----BEGIN OPENSSH PRIVATE KEY-----\n" + "a" * 64
+                       + "\n-----END OPENSSH PRIVATE KEY-----\n")
+        source.write_text(json.dumps({
+            "schema_version": 1, "source_host": "sanctuary", "secrets": {
+                "age_identity": "# created: 2026-09-12T00:00:00Z\n# public key: age1example\n"
+                                + "AGE-SECRET-KEY-1" + "A" * 58 + "\n",
+                "restic_prod01_umami": "restic-password-from-vault",
+                "ssh_prod01": private_key, "ssh_prod02": private_key,
+            },
+        }))
+        source.chmod(0o600)
+        return source
+
+    def test_escrow_recovery_test_uses_fixed_independent_keys_and_removes_all_staging(self):
+        source = self.recovery_bundle()
+        restore_work = self.root / "restore-work"
+        config = {"restore_work_dir": str(restore_work), "max_artifact_bytes": 1024 * 1024, "hosts": [
+            {"host_slug": "tuinstra-prod-01", "applications": ["umami"],
+             "known_hosts_file": "/fixed/known", "ssh_user": "pull", "ssh_host": "prod01"},
+            {"host_slug": "tuinstra-prod-02", "applications": [],
+             "known_hosts_file": "/fixed/known", "ssh_user": "pull", "ssh_host": "prod02"},
+        ]}
+        seen = []
+
+        def verify(host, identity, maximum_bytes):
+            self.assertEqual(maximum_bytes, 1024 * 1024)
+            seen.append((host["host_slug"], identity.read_text()))
+
+        evidence = {"snapshot_id": "a" * 64}
+        with mock.patch.object(backup.pwd, "getpwnam", return_value=mock.Mock(pw_uid=os.getuid())), \
+             mock.patch.object(backup, "verify_recovered_transport", side_effect=verify), \
+             mock.patch.object(backup, "restore_test", return_value=evidence) as restore:
+            old_root_uid = backup.ROOT_UID
+            backup.ROOT_UID = os.geteuid()
+            try:
+                result = backup.escrow_recovery_test(config, source)
+            finally:
+                backup.ROOT_UID = old_root_uid
+        self.assertFalse(source.exists())
+        self.assertEqual([item[0] for item in seen], ["tuinstra-prod-01", "tuinstra-prod-02"])
+        recovered_config = restore.call_args.args[0]
+        self.assertNotEqual(recovered_config["age_identity_file"], config.get("age_identity_file"))
+        self.assertEqual(restore.call_args.args[1:], ("tuinstra-prod-01", "umami", "latest"))
+        self.assertEqual(result["credential_source"], "independent-escrow-copy")
+        self.assertNotIn("password", json.dumps(result))
+        self.assertEqual(list(restore_work.iterdir()), [])
+
+    def test_escrow_recovery_failure_preserves_user_bundle_and_removes_root_private_copies(self):
+        source = self.recovery_bundle()
+        restore_work = self.root / "restore-work"
+        config = {"restore_work_dir": str(restore_work), "max_artifact_bytes": 1024 * 1024, "hosts": [
+            {"host_slug": "tuinstra-prod-01", "applications": ["umami"]},
+            {"host_slug": "tuinstra-prod-02", "applications": []},
+        ]}
+        with mock.patch.object(backup.pwd, "getpwnam", return_value=mock.Mock(pw_uid=os.getuid())), \
+             mock.patch.object(backup, "verify_recovered_transport"), \
+             mock.patch.object(backup, "restore_test",
+                               side_effect=backup.BackupError("restore validation failed")):
+            old_root_uid = backup.ROOT_UID
+            backup.ROOT_UID = os.geteuid()
+            try:
+                with self.assertRaisesRegex(backup.BackupError, "restore validation"):
+                    backup.escrow_recovery_test(config, source)
+            finally:
+                backup.ROOT_UID = old_root_uid
+        self.assertTrue(source.exists())
+        self.assertEqual(list(restore_work.iterdir()), [])
+
+    def test_materialize_snapshot_uses_fixed_private_destination_and_is_idempotent(self):
+        config, public, payload, archive, snapshot_id = self.restore_fixture()
+        config["materialized_root"] = str(self.root / "materialized")
+
+        def fake_run(argv, **_kwargs):
+            if argv[:2] == ["restic", "restore"]:
+                target = Path(argv[argv.index("--target") + 1]) / "artifact"
+                target.mkdir(parents=True)
+                (target / "manifest.json").write_text(json.dumps(public))
+                shutil.copyfile(payload, target / "payload.age")
+                return mock.Mock(stdout=b"")
+            if argv[0] == "age":
+                shutil.copyfile(archive, argv[argv.index("--output") + 1])
+                return mock.Mock(stdout=b"")
+            if argv == ["restic", "check", "--read-data"]:
+                return mock.Mock(stdout=b"")
+            raise AssertionError(argv)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            result = backup.materialize_snapshot(config, "tuinstra-prod-01", "umami", snapshot_id,
+                                                 "restore-op-123", "restore")
+        self.assertEqual(result["status"], "materialized")
+        self.assertEqual(result["snapshot_id"], snapshot_id)
+        self.assertNotIn(str(self.root), json.dumps(result))
+        self.assertTrue((self.root / "materialized/restore-op-123/restore/payload/database.dump").is_file())
+        with mock.patch.object(backup, "run") as execute:
+            retried = backup.materialize_snapshot(config, "tuinstra-prod-01", "umami", snapshot_id,
+                                                   "restore-op-123", "restore")
+        execute.assert_not_called()
+        self.assertEqual(retried, result)
+
+    def test_materialize_rejects_wrong_target_binding_and_unsafe_operation(self):
+        config, _public, _payload, _archive, snapshot_id = self.restore_fixture()
+        config["materialized_root"] = str(self.root / "materialized")
+        with mock.patch.object(backup, "run") as execute:
+            with self.assertRaisesRegex(backup.BackupError, "operation id"):
+                backup.materialize_snapshot(config, "tuinstra-prod-01", "umami", snapshot_id,
+                                             "../escape", "restore")
+            with self.assertRaisesRegex(backup.BackupError, "allowlisted"):
+                backup.materialize_snapshot(config, "tuinstra-prod-02", "umami", snapshot_id,
+                                             "restore-op-123", "restore")
+        execute.assert_not_called()
+
+    def test_materialize_rejects_snapshot_artifact_or_payload_checksum_mismatch(self):
+        config, public, payload, _archive, snapshot_id = self.restore_fixture()
+        config["materialized_root"] = str(self.root / "materialized")
+
+        def artifact_mismatch(argv, **_kwargs):
+            if argv == ["restic", "check", "--read-data"]:
+                return mock.Mock(stdout=b"")
+            target = Path(argv[argv.index("--target") + 1]) / "artifact"
+            target.mkdir(parents=True)
+            changed = {**public, "artifact_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+            (target / "manifest.json").write_text(json.dumps(changed))
+            shutil.copyfile(payload, target / "payload.age")
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=artifact_mismatch):
+            with self.assertRaisesRegex(backup.BackupError, "catalog identity"):
+                backup.materialize_snapshot(config, "tuinstra-prod-01", "umami", snapshot_id,
+                                             "restore-op-artifact", "restore")
+
+        def checksum_mismatch(argv, **_kwargs):
+            if argv == ["restic", "check", "--read-data"]:
+                return mock.Mock(stdout=b"")
+            target = Path(argv[argv.index("--target") + 1]) / "artifact"
+            target.mkdir(parents=True)
+            (target / "manifest.json").write_text(json.dumps(public))
+            (target / "payload.age").write_bytes(b"different-ciphertext")
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=checksum_mismatch):
+            with self.assertRaisesRegex(backup.BackupError, "checksum"):
+                backup.materialize_snapshot(config, "tuinstra-prod-01", "umami", snapshot_id,
+                                             "restore-op-checksum", "restore")
+
+    def test_materialize_cli_has_no_path_parameter(self):
+        with mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+            backup.parser().parse_args(["--config", "/fixed", "materialize", "--host", "tuinstra-prod-01",
+                "--app", "umami", "--snapshot", "a" * 64, "--operation", "restore-op-123",
+                "--purpose", "restore", "--path", "/tmp/escape"])
 
 
 if __name__ == "__main__":

@@ -74,6 +74,7 @@ python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(
 python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
 python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
 python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
+python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
 python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
 bash -n backup/restore-umami
 bash -n backup/tuinstra-backup-admin

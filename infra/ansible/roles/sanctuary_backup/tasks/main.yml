@@ -45,20 +45,22 @@
     - { path: /etc/tuinstra-backup/restic-passwords, owner: root, group: root, mode: '0700' }
     - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01, owner: root, group: root, mode: '0700' }
     - { path: /usr/local/libexec/tuinstra-backup, owner: root, group: root, mode: '0755' }
-    - { path: /var/lib/tuinstra-backup/work, owner: tuinstra-backup, group: tuinstra-backup, mode: '0700' }
-    - { path: /var/lib/tuinstra-backup/incoming, owner: tuinstra-backup, group: tuinstra-backup, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/work, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/incoming, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/ingest, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/locks, owner: root, group: root, mode: '0711' }
-    - { path: /var/lib/tuinstra-backup/locks/pull, owner: tuinstra-backup, group: tuinstra-backup, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/locks/pull, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/locks/operations, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/restore-evidence, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/production-restore, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/production-restore/journal, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/production-restore/work, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/materialized, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/catalog, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/tuinstra-backup/retention-audit, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/policies, owner: root, group: root, mode: '0755' }
     - { path: /run/lock/tuinstra, owner: root, group: tuinstra-ops, mode: '0750' }
+    - { path: /run/tuinstra-backup, owner: root, group: root, mode: '0700' }
     - { path: "{{ sanctuary_backup_repository_root }}", owner: root, group: root, mode: '0711' }
 
 - name: Precreate authoritative host-operation locks
@@ -77,6 +79,7 @@
 - name: Persist authoritative host-operation locks across reboot
   ansible.builtin.copy:
     content: |
+      d /run/tuinstra-backup 0700 root root -
       d /run/lock/tuinstra 0750 root tuinstra-ops -
       f /run/lock/tuinstra/operations.host.tuinstra-prod-01.lock 0660 root tuinstra-ops -
       f /run/lock/tuinstra/operations.host.tuinstra-prod-02.lock 0660 root tuinstra-ops -
@@ -114,8 +117,8 @@
     src: "{{ sanctuary_backup_profile_source }}"
     dest: /etc/tuinstra-backup/worker.json
     owner: root
-    group: tuinstra-backup
-    mode: '0640'
+    group: root
+    mode: '0600'
 
 - name: Install privileged retention service
   ansible.builtin.copy:
@@ -181,7 +184,7 @@
   loop: "{{ sanctuary_backup_credentials.results }}"
   no_log: true
 
-- name: Enforce worker credential ownership and permissions
+- name: Enforce backup credential ownership and permissions
   ansible.builtin.file:
     path: "{{ item.path }}"
     owner: "{{ item.owner }}"
@@ -191,23 +194,14 @@
     - { path: /etc/tuinstra-backup/ssh/prod01, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/ssh/prod02, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/ssh/prod01-restore, owner: root, group: root, mode: '0600' }
-    - { path: /etc/tuinstra-backup/ssh/known_hosts, owner: root, group: tuinstra-backup, mode: '0644' }
+    - { path: /etc/tuinstra-backup/ssh/known_hosts, owner: root, group: root, mode: '0644' }
     - { path: /etc/tuinstra-backup/age-identity.txt, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password, owner: root, group: root, mode: '0600' }
 
-- name: Allow worker to invoke only validated repository ingestion
-  ansible.builtin.copy:
-    content: |
-      tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json ingest --host * --app * --artifact *
-      tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json ingest-cleanup --artifact *
-      tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json attempt-start --host * --app * --trigger *
-      tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json attempt-finish --host * --app * --run-id * --status *
-      tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json attempt-finish --host * --app * --run-id * --status * --error-code *
-    dest: /etc/sudoers.d/93-tuinstra-backup-ingest
-    owner: root
-    group: root
-    mode: '0440'
-    validate: /usr/sbin/visudo -cf %s
+- name: Remove obsolete delegated ingest sudo policy
+  ansible.builtin.file:
+    path: /etc/sudoers.d/93-tuinstra-backup-ingest
+    state: absent
 
 - name: Install bounded backup administration sudo policy
   ansible.builtin.copy:
@@ -218,6 +212,7 @@
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test *
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
     dest: /etc/sudoers.d/94-tuinstra-backup-admin
     owner: root
     group: root
