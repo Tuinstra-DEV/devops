@@ -121,15 +121,18 @@ from pathlib import Path
 import sys
 from urllib.parse import quote
 
+required_keys = {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}
+allowed_keys = required_keys | {"TZ"}
 values = {}
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     if not line or line.startswith("#"):
         continue
     key, separator, value = line.partition("=")
-    if separator != "=" or key in values or key not in {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}:
+    if (separator != "=" or key in values or key not in allowed_keys
+            or (key == "TZ" and value != "UTC")):
         raise SystemExit("postgres restore environment is invalid")
     values[key] = value
-if set(values) != {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}:
+if set(values) not in (required_keys, allowed_keys):
     raise SystemExit("postgres restore environment is incomplete")
 url = "postgresql://{}:{}@127.0.0.1:5432/{}".format(
     quote(values["POSTGRES_USER"], safe=""), quote(values["POSTGRES_PASSWORD"], safe=""),
