@@ -10,6 +10,7 @@ python3 -c 'import pathlib,sys; [compile(pathlib.Path(p).read_text(encoding="utf
   "$repo_root/backup/tuinstra_backup.py" "$repo_root/scripts/test_production_backup.py" \
   "$repo_root/scripts/bootstrap_backup_credentials.py" "$repo_root/scripts/test_backup_credential_bootstrap.py" \
   "$repo_root/scripts/stage_backup_escrow.py" "$repo_root/scripts/test_stage_backup_escrow.py" \
+  "$repo_root/scripts/test_sanctuary_installer_contract.py" \
   "$repo_root/backup/onepassword-escrow.py" "$repo_root/scripts/test_backup_onepassword_escrow.py"
 bash -n "$repo_root/backup/restore-umami"
 bash -n "$repo_root/backup/tuinstra-backup-admin"

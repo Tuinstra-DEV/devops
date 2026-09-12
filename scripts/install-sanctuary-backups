@@ -61,11 +61,11 @@ fi
 if ! getent group tuinstra-backup >/dev/null; then
   groupadd --system tuinstra-backup
 fi
-usermod -a -G tuinstra-ops tuinstra-backup
 if ! id tuinstra-backup >/dev/null 2>&1; then
   useradd --system --gid tuinstra-backup --home-dir /var/lib/tuinstra-backup \
     --create-home --shell /usr/sbin/nologin tuinstra-backup
 fi
+usermod -a -G tuinstra-ops tuinstra-backup
 
 install -d -o root -g root -m 0755 /var/lib/tuinstra-backup
 python3 "$bootstrap_source"
@@ -75,9 +75,10 @@ install -d -o root -g tuinstra-backup -m 0750 /etc/tuinstra-backup /etc/tuinstra
 install -d -o root -g root -m 0700 /etc/tuinstra-backup/restic-passwords \
   /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01
 install -d -o root -g root -m 0755 /usr/local/libexec/tuinstra-backup
+install -d -o root -g root -m 0711 /var/lib/tuinstra-backup/locks
 install -d -o tuinstra-backup -g tuinstra-backup -m 0700 \
   /var/lib/tuinstra-backup/work /var/lib/tuinstra-backup/incoming \
-  /var/lib/tuinstra-backup/locks /var/lib/tuinstra-backup/locks/pull
+  /var/lib/tuinstra-backup/locks/pull
 install -d -o root -g root -m 0700 /var/lib/tuinstra-backup/ingest \
   /var/lib/tuinstra-backup/locks/operations /var/lib/tuinstra-backup/restore-evidence \
   /var/lib/tuinstra-backup/retention-audit
@@ -101,8 +102,9 @@ install -o root -g root -m 0755 "$engine_source" /usr/local/libexec/tuinstra-bac
 install -o root -g root -m 0755 "$restore_source" /usr/local/libexec/tuinstra-backup/restore-umami
 install -o root -g root -m 0755 "$admin_source" /usr/local/sbin/tuinstra-backup-admin
 install -o root -g tuinstra-backup -m 0640 "$profile_source" /etc/tuinstra-backup/worker.json
-chown root:root /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
-  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+chown root:root /etc/tuinstra-backup/age-identity.txt \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+chown tuinstra-backup:tuinstra-backup /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02
 chmod 0600 /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
   /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
 

@@ -18,7 +18,7 @@ De volgende bestanden worden buiten Git aangeleverd:
 |---|---|---|---|
 | Sanctuary | `/etc/tuinstra-backup/age-identity.txt` | `root:root 0600` | Ontsleuteling en onafhankelijk herstel |
 | Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password` | `root:root 0600` | Losse Umami-repository |
-| Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys via systemd-credentials |
+| Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `tuinstra-backup:tuinstra-backup 0600` | Hostgebonden pull-keys voor alleen de backupworker |
 | Sanctuary | `/etc/tuinstra-backup/ssh/known_hosts` | `root:tuinstra-backup 0644` | Handmatig geverifieerde hostkeys |
 | Productie | `/etc/tuinstra-backup/age-recipient.txt` | `root:root 0600` | Alleen de publieke, afgeleide age-recipient |
 
@@ -40,8 +40,7 @@ De installer controleert mount en vrije ruimte voordat hij iets wijzigt. Daarna
 installeert hij dependencies, maakt credentials idempotent, plaatst de vaste
 engine en profielen, valideert sudoers vóór installatie en activeert alleen de
 vaste timers. Private age-, Restic- en Ed25519-sleutels blijven root-owned mode
-0600. Systemd geeft de niet-loginworker alleen tijdens een cyclus een tijdelijke
-kopie van de juiste hostkey.
+0600. Alleen de niet-loginworker kan de hostgebonden SSH-sleutels lezen.
 
 De eerste installatie maakt één handoffbestand
 `/home/mtuinstra/.local/share/tuinstra-backup-escrow.json` als `mtuinstra:0600`.
