@@ -34,6 +34,7 @@ services:
         condition: service_healthy
     volumes:
       - {{ production_umami_root }}/admin-bootstrap.mjs:/opt/tuinstra/admin-bootstrap.mjs:ro
+      - {{ production_umami_root }}/onepassword-handoff.mjs:/opt/tuinstra/onepassword-handoff.mjs:ro
     read_only: true
     healthcheck:
       test: [CMD-SHELL, 'curl --fail --silent http://127.0.0.1:3000/api/heartbeat']

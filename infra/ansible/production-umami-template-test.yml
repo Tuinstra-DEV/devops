@@ -55,11 +55,15 @@
           loop:
             - { source: compose.yml.j2, destination: compose.yml }
             - { source: admin-bootstrap.mjs.j2, destination: admin-bootstrap.mjs }
+            - { source: onepassword-handoff.mjs.j2, destination: onepassword-handoff.mjs }
             - { source: umami.caddy.j2, destination: umami.caddy }
 
-        - name: Validate the administrator bootstrap JavaScript syntax
+        - name: Validate Umami helper JavaScript syntax
           ansible.builtin.command:
-            argv: [node, --check, "{{ rendered.path }}/admin-bootstrap.mjs"]
+            argv: [node, --check, "{{ rendered.path }}/{{ item }}"]
+          loop:
+            - admin-bootstrap.mjs
+            - onepassword-handoff.mjs
           changed_when: false
 
         - name: Validate the rendered Umami Compose model

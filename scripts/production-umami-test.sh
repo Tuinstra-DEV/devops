@@ -12,6 +12,13 @@ grep -q 'docker.io/library/postgres:15-alpine@sha256:' "$role/defaults/main.yml"
 grep -q 'TWO_FACTOR_ENCRYPTION_KEY=' "$role/templates/umami.env.j2"
 grep -q '/api/admin/2fa/global' "$role/templates/admin-bootstrap.mjs.j2"
 grep -q "await login('umami')" "$role/templates/admin-bootstrap.mjs.j2"
+grep -q "path: '/api/2fa/setup/initiate'" "$role/templates/onepassword-handoff.mjs.j2"
+grep -q "path: '/api/2fa/setup/confirm'" "$role/templates/onepassword-handoff.mjs.j2"
+grep -q "path: '/api/2fa/verify'" "$role/templates/onepassword-handoff.mjs.j2"
+if grep -qE 'request\.(path|method|url)' "$role/templates/onepassword-handoff.mjs.j2"; then
+  echo "Umami handoff RPC must not accept free URL paths or methods" >&2
+  exit 1
+fi
 grep -q 'internal: true' "$role/templates/compose.yml.j2"
 grep -q 'external: true' "$role/templates/compose.yml.j2"
 if grep -q '^      - port$' "$role/tasks/verify.yml"; then
@@ -54,5 +61,6 @@ for playbook in \
     --syntax-check "$repo_root/infra/ansible/$playbook"
 done
 "$ansible_playbook" "$repo_root/infra/ansible/production-umami-template-test.yml"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test_umami_onepassword_handoff.py"
 
 echo "production Umami contract passed"

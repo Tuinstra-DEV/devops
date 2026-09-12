@@ -106,6 +106,14 @@
     group: root
     mode: '0644'
 
+- name: Install the constrained Umami 1Password handoff RPC
+  ansible.builtin.template:
+    src: onepassword-handoff.mjs.j2
+    dest: "{{ production_umami_root }}/onepassword-handoff.mjs"
+    owner: root
+    group: root
+    mode: '0644'
+
 - name: Install the Umami Compose definition
   ansible.builtin.template:
     src: compose.yml.j2

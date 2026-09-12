@@ -33,19 +33,36 @@ en bestaande secrets worden behouden. Vóór de Caddy-route wordt geplaatst,
 vervangt de bootstrap de standaardlogin `admin`/`umami` door een willekeurig
 wachtwoord en stelt hij de globale 2FA-verplichting in.
 
-Kopieer het eenmalige beheerwachtwoord rechtstreeks naar een wachtwoordkluis;
-laat het niet in shellgeschiedenis of logs terechtkomen. Op macOS kan dit zonder
-terminaluitvoer:
+## Login en 2FA naar 1Password overdragen
+
+Gebruik bij voorkeur de begrensde handoff nadat de deploy met de laatste
+DEV-24-versie opnieuw is uitgevoerd. Zoek in 1Password de ID van het gekozen
+vault en voer uit:
 
 ```bash
-ssh mtuinstra@vps01.tuinstra.dev \
-  'sudo cat /etc/tuinstra/umami/admin-password' | pbcopy
+./scripts/umami-onepassword-handoff.py \
+  --op /absoluut/pad/naar/op \
+  --vault '<26-teken-vault-id>'
 ```
 
-Log in als `admin`. Umami blokkeert de rest van de applicatie totdat een
-authenticator is gekoppeld. Sla de tien eenmalige herstelcodes buiten de server
-op. De controle in dit draaiboek kan de globale verplichting bewijzen; alleen de
-beheerder kan het daadwerkelijke TOTP-apparaat en de herstelcodes afronden.
+De tool beheert uitsluitend het exacte Login-item `Umami — prod01`. Het leest
+alleen metadata om een dubbele titel te voorkomen en daarna alleen dat eigen
+item. Het wachtwoord, de TOTP-seed, tokens en herstelcodes reizen via stdin en
+procesgeheugen; succesvolle uitvoer bevat alleen het item-ID en booleans. De
+desktopintegratie van 1Password verzorgt de gebruikersauthenticatie.
+
+De handoff slaat eerst de seed in het Login-item op en controleert dat 1Password
+een OTP kan genereren. Pas daarna bevestigt hij 2FA bij Umami. Vervolgens worden
+de tien herstelcodes direct als verborgen veld opgeslagen en wordt een verse
+2FA-login getest. Bij een onzekere vaultmutatie maakt hij geen tweede item. Als
+alleen het opslaan van reeds uitgegeven herstelcodes mislukt, bewaart hij die in
+een expliciet gemeld tijdelijk bestand met modus `0600`; verwerk en verwijder
+dat bestand daarna handmatig.
+
+Een bestaande, niet door deze tool beheerde 2FA-configuratie wordt nooit gereset.
+Handmatige enrollment via de Umami-interface en een eigen authenticator blijft
+mogelijk, maar gebruik dan niet hetzelfde beheerde item zonder de staat eerst te
+controleren.
 
 ## Back-upkoppeling
 
