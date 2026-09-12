@@ -59,6 +59,86 @@ grep -q 'database_content_marker' "$repo_root/backup/restore-umami"
 grep -q 'files/two-factor-encryption-key' "$repo_root/backup/restore-umami"
 grep -q 'restored database content marker does not match the export' "$repo_root/backup/restore-umami"
 grep -q 'JOIN \\"user\\" AS u ON u.user_id = t.user_id' "$repo_root/backup/restore-umami"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root/backup/restore-umami" <<'PY'
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+restore = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = '/usr/bin/python3 - "$payload/files/postgres-env" "$work/loopback.env" <<\'PY\'\n'
+if restore.count(start) != 1:
+    raise SystemExit("postgres environment parser marker is ambiguous")
+parser, separator, _ = restore.partition(start)[2].partition("\nPY\n")
+if not separator:
+    raise SystemExit("postgres environment parser terminator is missing")
+
+required = (
+    "POSTGRES_DB=umami db\n"
+    "POSTGRES_USER=umami\n"
+    "POSTGRES_PASSWORD=synthetic-p@ss/word\n"
+)
+cases = {
+    "required only": (required, True),
+    "deployed optional timezone": (required + "TZ=UTC\n", True),
+    "wrong timezone": (required + "TZ=Europe/Amsterdam\n", False),
+    "timezone is case sensitive": (required + "TZ=utc\n", False),
+    "duplicate timezone": (required + "TZ=UTC\nTZ=UTC\n", False),
+    "unknown key": (required + "PGTZ=UTC\n", False),
+    "malformed line": (required + "TZ\n", False),
+    "missing credential": (required.replace("POSTGRES_PASSWORD=synthetic-p@ss/word\n", ""), False),
+}
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    for name, (contents, should_pass) in cases.items():
+        source = root / "postgres.env"
+        target = root / "loopback.env"
+        source.write_text(contents, encoding="utf-8")
+        target.unlink(missing_ok=True)
+        result = subprocess.run(
+            [sys.executable, "-c", parser, str(source), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if "synthetic-p@ss/word" in result.stdout + result.stderr:
+            raise SystemExit(f"{name}: parser exposed a database credential")
+        if should_pass:
+            if result.returncode != 0:
+                raise SystemExit(f"{name}: valid environment was rejected")
+            expected = "DATABASE_URL=postgresql://umami:synthetic-p%40ss%2Fword@127.0.0.1:5432/umami%20db\n"
+            if target.read_text(encoding="utf-8") != expected:
+                raise SystemExit(f"{name}: loopback URL is incorrect")
+            if stat.S_IMODE(target.stat().st_mode) != 0o600:
+                raise SystemExit(f"{name}: loopback environment permissions are unsafe")
+        elif result.returncode == 0 or target.exists():
+            raise SystemExit(f"{name}: invalid environment was accepted")
+PY
+PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root/backup/restore-umami" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+restore = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = '| /usr/bin/docker exec -i "$app_container" node -e \'\n'
+end = "\n' >/dev/null 2>&1; then"
+if restore.count(start) != 1:
+    raise SystemExit("two-factor validation script marker is ambiguous")
+validator, separator, _ = restore.partition(start)[2].partition(end)
+if not separator:
+    raise SystemExit("two-factor validation script terminator is missing")
+
+# Empty synthetic input must reach the validator's fixed input-shape rejection.
+# This catches synchronous Promise-wiring failures without requiring a database,
+# secret, token, or HTTP request.
+result = subprocess.run(
+    ["node", "-e", validator], input="", capture_output=True, text=True, check=False,
+)
+if result.returncode != 2:
+    raise SystemExit("two-factor validator failed before processing bounded input")
+PY
 grep -q 'duration_seconds' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'external_effects_blocked' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'commands.add_parser("safety-ingest")' "$repo_root/backup/tuinstra_backup.py"

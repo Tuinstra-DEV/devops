@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import stat
 import tempfile
 import unittest
@@ -79,6 +80,57 @@ class CredentialBootstrapTests(unittest.TestCase):
         with mock.patch.object(bootstrap, 'run_public', side_effect=[b'key-a\n', b'key-b\n', b'key-a\n']):
             with self.assertRaisesRegex(bootstrap.BootstrapError, 'must be distinct'):
                 bootstrap.require_distinct_ssh_identities(identities)
+
+    def test_legacy_service_owned_identity_is_normalized_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            secret_root = Path(temporary)
+            identity = secret_root / "ssh/prod01"
+            identity.parent.mkdir()
+            original = b"preserved-private-key\n"
+            identity.write_bytes(original)
+            identity.chmod(0o600)
+            legacy_uid = os.getuid()
+            legacy = mock.Mock(st_mode=stat.S_IFREG | 0o600, st_uid=legacy_uid, st_gid=legacy_uid)
+            normalized = mock.Mock(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0)
+
+            with mock.patch.object(bootstrap, "SECRET_ROOT", secret_root), \
+                 mock.patch.object(bootstrap, "ssh_credential_uids", return_value={0, legacy_uid}), \
+                 mock.patch.object(bootstrap.os, "open", return_value=41) as open_file, \
+                 mock.patch.object(bootstrap.os, "fstat", side_effect=[legacy, normalized]), \
+                 mock.patch.object(bootstrap.os, "fchown") as chown_file, \
+                 mock.patch.object(bootstrap.os, "fchmod") as chmod_file, \
+                 mock.patch.object(bootstrap.os, "close") as close_file, \
+                 mock.patch.object(bootstrap, "run_public", return_value=b"ssh-ed25519 public"), \
+                 mock.patch.object(bootstrap, "atomic_public"):
+                self.assertEqual(bootstrap.ensure_ssh_identity("prod01"), identity)
+
+            open_file.assert_called_once_with(
+                identity, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            chown_file.assert_called_once_with(41, 0, 0)
+            chmod_file.assert_called_once_with(41, 0o600)
+            close_file.assert_called_once_with(41)
+            self.assertEqual(identity.read_bytes(), original)
+
+    def test_ssh_identity_migration_rejects_unknown_owner_without_mutation(self):
+        identity = bootstrap.SECRET_ROOT / "ssh/prod01"
+        unsafe = mock.Mock(st_mode=stat.S_IFREG | 0o600, st_uid=9384, st_gid=9384)
+        with mock.patch.object(bootstrap, "ssh_credential_uids", return_value={0, 993}), \
+             mock.patch.object(bootstrap.os, "open", return_value=42), \
+             mock.patch.object(bootstrap.os, "fstat", return_value=unsafe), \
+             mock.patch.object(bootstrap.os, "fchown") as chown_file, \
+             mock.patch.object(bootstrap.os, "fchmod") as chmod_file, \
+             mock.patch.object(bootstrap.os, "close"):
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "unexpected ownership"):
+                bootstrap.normalize_ssh_identity(identity)
+        chown_file.assert_not_called()
+        chmod_file.assert_not_called()
+
+    def test_ssh_identity_migration_accepts_only_fixed_paths_and_names(self):
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "not allowlisted"):
+            bootstrap.normalize_ssh_identity(Path("/tmp/prod01"))
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "name is not allowlisted"):
+            bootstrap.ensure_ssh_identity("../admin")
 
 
 if __name__ == "__main__":
