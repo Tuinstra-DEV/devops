@@ -8,6 +8,7 @@ import os
 import pwd
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -20,8 +21,11 @@ SOURCES = {
     "restic_prod01_umami": SECRET_ROOT / "restic-passwords/tuinstra-prod-01/umami.password",
     "ssh_prod01": SECRET_ROOT / "ssh/prod01",
     "ssh_prod02": SECRET_ROOT / "ssh/prod02",
+    "ssh_prod01_restore": SECRET_ROOT / "ssh/prod01-restore",
 }
 MAX_SECRET_BYTES = 16 * 1024
+CURRENT_MARKER = "schema-version=2\n"
+LEGACY_MARKER = "schema-version=1\n"
 
 
 class StageError(RuntimeError):
@@ -73,13 +77,16 @@ def ensure_private_parent(path: Path, uid: int, gid: int) -> None:
 
 def stage(destination: Path, marker: Path, uid: int, gid: int,
           sources: dict[str, Path] = SOURCES) -> str:
-    if marker.exists():
+    if marker.exists() or marker.is_symlink():
         info = marker.lstat()
         if (marker.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != ROOT_UID
-                or stat.S_IMODE(info.st_mode) != 0o600
-                or marker.read_text(encoding="ascii") != "schema-version=1\n"):
+                or stat.S_IMODE(info.st_mode) != 0o600):
             raise StageError("escrow staging marker is unsafe")
-        return "already-staged"
+        marker_value = marker.read_text(encoding="ascii")
+        if marker_value not in {LEGACY_MARKER, CURRENT_MARKER}:
+            raise StageError("escrow staging marker is unsafe")
+        if marker_value == CURRENT_MARKER:
+            return "already-staged"
     if destination.exists() or destination.is_symlink():
         raise StageError("escrow handoff already exists without a completed marker")
     values = {name: read_secret(path) for name, path in sources.items()}
@@ -98,12 +105,19 @@ def stage(destination: Path, marker: Path, uid: int, gid: int,
     finally:
         os.close(descriptor)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker_descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    marker_descriptor, marker_temporary_name = tempfile.mkstemp(prefix=".escrow-staged.", dir=marker.parent)
+    marker_temporary = Path(marker_temporary_name)
     try:
-        os.write(marker_descriptor, b"schema-version=1\n")
+        os.write(marker_descriptor, CURRENT_MARKER.encode("ascii"))
         os.fsync(marker_descriptor)
+        os.fchown(marker_descriptor, ROOT_UID, os.getegid())
+        os.fchmod(marker_descriptor, 0o600)
     finally:
         os.close(marker_descriptor)
+    try:
+        os.replace(marker_temporary, marker)
+    finally:
+        marker_temporary.unlink(missing_ok=True)
     return "staged"
 
 

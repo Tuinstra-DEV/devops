@@ -127,6 +127,15 @@ def ensure_ssh_identity(host: str) -> Path:
     return destination
 
 
+def require_distinct_ssh_identities(identities: list[Path]) -> None:
+    public_keys = {
+        run_public(["ssh-keygen", "-y", "-f", str(identity)]).strip()
+        for identity in identities
+    }
+    if len(public_keys) != len(identities) or b"" in public_keys:
+        raise BootstrapError("backup and production restore SSH identities must be distinct")
+
+
 def ensure_restic_password() -> Path:
     destination = SECRET_ROOT / "restic-passwords" / "tuinstra-prod-01" / "umami.password"
     try:
@@ -158,8 +167,12 @@ def main() -> int:
             os.chown(path, 0, 0)
             os.chmod(path, mode)
         ensure_age_identity()
-        ensure_ssh_identity("prod01")
-        ensure_ssh_identity("prod02")
+        identities = [
+            ensure_ssh_identity("prod01"),
+            ensure_ssh_identity("prod02"),
+            ensure_ssh_identity("prod01-restore"),
+        ]
+        require_distinct_ssh_identities(identities)
         ensure_restic_password()
         print(f"backup credential bootstrap complete; destination_free_gib={available // 1024**3}; public_dir={PUBLIC_ROOT}")
         return 0

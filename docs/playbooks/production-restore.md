@@ -20,7 +20,7 @@ Console bezit geen SSH-key en geen Docker socket.
 
 Richt de lege host eerst in met het exact beoordeelde productieprofiel
 `2026.09.12.1` uit broncommit
-`e5c39016aa00bbe4f40a51f6981b1514dd3de6ac`. Dat profiel maakt de Caddy
+`37954b00b5a83a0194a067a2760211a9b3a230bc`. Dat profiel maakt de Caddy
 edge-route en het netwerk, de Compose-hulpbestanden en de vaste mappen opnieuw
 aan. Controleer daarna de profielafwijkingen en start pas vervolgens de
 applicatierestore. De applicatieback-up dupliceert deze deterministische
@@ -31,6 +31,33 @@ Productieactivatie blijft geblokkeerd totdat de profielworker deze vaste
 volgorde daadwerkelijk uitvoert: hostbaseline, het gebonden `production_umami`
 app-profiel, profielcontrole en pas daarna DEV-34. Alleen de hostbaseline is
 niet voldoende voor herstel op een lege server.
+
+Bij de eerste installatie of een lege doelhost is de herhaalbare volgorde:
+
+1. Gebruik broncommit `37954b00b5a83a0194a067a2760211a9b3a230bc` en voer op `prod01`
+   `configure`, `configure-umami-restore`, `verify` en `verify-umami-restore` uit. Draai de twee
+   configure-stappen eerst met `--check`.
+2. Gebruik daarna de beoordeelde DEV-34-releasebron en voer `configure` en `verify` opnieuw uit.
+   Deze tweede baseline-installatie is nodig omdat DEV-34 de gedeelde
+   `/usr/local/sbin/tuinstra-compose-deploy` uitbreidt met dezelfde hostlock en maintenance-weigering.
+3. Voer met diezelfde DEV-34-releasebron `infra/ansible/production-backup.yml` eerst met
+   `--check --diff` en daarna zonder checkmodus uit. Geef de vaste lokale public-key-map mee als
+   `production_backup_public_key_root`; die map bevat ook `prod01-restore.pub`.
+4. Controleer opnieuw beide profielverificaties en verifieer dat back-up, deploy en restore dezelfde
+   `/run/lock/tuinstra/operations.host.tuinstra-prod-01.lock` gebruiken. Activeer de Console-actie pas
+   na enrollment van het beperkte worker-token en de afzonderlijke forced-command restore-account.
+
+Met de wrapper uit commit `37954b00b5a83a0194a067a2760211a9b3a230bc` zijn stap 1 en de
+baseline-herhaling uit stap 2 concreet:
+
+```bash
+./scripts/production-host-baseline --as-admin --check configure
+./scripts/production-host-baseline --as-admin configure
+./scripts/production-host-baseline --as-admin --check configure-umami-restore
+./scripts/production-host-baseline --as-admin configure-umami-restore
+./scripts/production-host-baseline --as-admin verify
+./scripts/production-host-baseline --as-admin verify-umami-restore
+```
 
 ## Herstelvolgorde
 

@@ -30,6 +30,8 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         self.assertIn("chown root:root /etc/tuinstra-backup/age-identity.txt", INSTALLER)
         self.assertIn("rm -f /etc/sudoers.d/93-tuinstra-backup-ingest", INSTALLER)
         self.assertNotIn("tuinstra-backup ALL=(root)", INSTALLER)
+        self.assertIn('ensure_ssh_identity("prod01-restore")', BOOTSTRAP)
+        self.assertIn('PUBLIC_ROOT / f"{host}.pub"', BOOTSTRAP)
 
     def test_root_owns_lock_parent_and_all_cycle_state(self):
         commands = [line.strip() for line in INSTALLER.replace("\\\n", " ").splitlines()]

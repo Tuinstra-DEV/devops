@@ -27,14 +27,18 @@ AGE = "# created: 2026-09-12T00:00:00Z\n# public key: age1example\nAGE-SECRET-KE
 RESTIC = "a" * 64 + "\n"
 SSH_ONE_BODY = base64.b64encode(b"openssh-key-v1\0" + b"one" * 32).decode()
 SSH_TWO_BODY = base64.b64encode(b"openssh-key-v1\0" + b"two" * 32).decode()
+SSH_RESTORE_BODY = base64.b64encode(b"openssh-key-v1\0" + b"restore" * 32).decode()
 SSH_ONE = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_ONE_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
 SSH_TWO = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_TWO_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
+SSH_RESTORE = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_RESTORE_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
 SECRETS = {
     "age_identity": AGE,
     "restic_prod01_umami": RESTIC,
     "ssh_prod01": SSH_ONE,
     "ssh_prod02": SSH_TWO,
+    "ssh_prod01_restore": SSH_RESTORE,
 }
+LEGACY_SECRETS = {name: value for name, value in SECRETS.items() if name != "ssh_prod01_restore"}
 
 
 def bundle(overrides=None):
@@ -50,13 +54,14 @@ def bundle(overrides=None):
 class FakeRunner:
     def __init__(self, *, existing=None, duplicate=False, uncertain_create=False,
                  uncertain_create_timeout=False, truncate_readback=False,
-                 command_secret_error=False):
+                 command_secret_error=False, uncertain_edit=False):
         self.item = existing
         self.duplicate = duplicate
         self.uncertain_create = uncertain_create
         self.uncertain_create_timeout = uncertain_create_timeout
         self.truncate_readback = truncate_readback
         self.command_secret_error = command_secret_error
+        self.uncertain_edit = uncertain_edit
         self.calls = []
         self.timeouts = []
 
@@ -86,6 +91,12 @@ class FakeRunner:
             if self.uncertain_create:
                 error = RESTIC if self.command_secret_error else "failed"
                 return self.result(args, returncode=1, stderr=error)
+            return self.result(args, stdout=json.dumps({"id": ITEM_ID}))
+        if args[1:3] == ["item", "edit"]:
+            self.item = json.loads(input_text)
+            self.item["id"] = ITEM_ID
+            if self.uncertain_edit:
+                return self.result(args, returncode=1, stderr=SSH_RESTORE)
             return self.result(args, stdout=json.dumps({"id": ITEM_ID}))
         if args[1:3] == ["item", "get"]:
             value = json.loads(json.dumps(self.item))
@@ -119,7 +130,7 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
 
         self.assertEqual(result, {
             "itemId": ITEM_ID, "created": True, "escrowed": True,
-            "verified": True, "secretCount": 4,
+            "verified": True, "secretCount": 5,
         })
         arguments = "\n".join(" ".join(args) for args, _input in runner.calls)
         for secret in SECRETS.values():
@@ -129,6 +140,43 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
         created_item = {**json.loads(create_inputs[0]), "id": ITEM_ID}
         self.assertEqual(escrow.item_secrets(created_item), SECRETS)
         self.assertFalse(any(args[1:3] == ["item", "edit"] for args, _ in runner.calls))
+
+    def test_existing_four_field_item_is_upgraded_with_restore_key_via_stdin_and_read_back(self):
+        existing = escrow.build_item(LEGACY_SECRETS)
+        existing["id"] = ITEM_ID
+        runner = FakeRunner(existing=existing)
+
+        result = self.make_service(runner).escrow(SECRETS)
+
+        self.assertFalse(result["created"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["secretCount"], 5)
+        edits = [(args, input_text) for args, input_text in runner.calls if args[1:3] == ["item", "edit"]]
+        self.assertEqual(len(edits), 1)
+        self.assertIn("--template=-", edits[0][0])
+        for secret in SECRETS.values():
+            self.assertNotIn(secret.strip(), " ".join(edits[0][0]))
+        self.assertEqual(escrow.item_secrets(runner.item), SECRETS)
+
+    def test_legacy_four_field_bundle_remains_recoverable(self):
+        document = {"schema_version": 1, "source_host": "sanctuary", "secrets": LEGACY_SECRETS}
+        parsed = escrow.parse_bundle(_BytesInput(json.dumps(document).encode()))
+        self.assertEqual(parsed, LEGACY_SECRETS)
+
+    def test_restore_identity_must_be_distinct_from_pull_identities(self):
+        duplicate = bundle({"ssh_prod01_restore": SSH_ONE})
+        with self.assertRaisesRegex(escrow.EscrowError, "restore must use a distinct"):
+            escrow.parse_bundle(_BytesInput(json.dumps(duplicate).encode()))
+
+    def test_uncertain_upgrade_is_reconciled_once_without_secret_output(self):
+        existing = escrow.build_item(LEGACY_SECRETS)
+        existing["id"] = ITEM_ID
+        runner = FakeRunner(existing=existing, uncertain_edit=True)
+
+        result = self.make_service(runner).escrow(SECRETS)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(sum(args[1:3] == ["item", "edit"] for args, _ in runner.calls), 1)
 
     def test_identical_existing_item_is_idempotently_reused_without_mutation(self):
         existing = escrow.build_item(SECRETS)
