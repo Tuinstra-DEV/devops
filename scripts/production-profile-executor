@@ -191,7 +191,7 @@ def parse_recap(stdout: str, limit: str) -> tuple[int, int, int, list[str]]:
     tasks: set[str] = set()
     current: str | None = None
     for line in stdout.splitlines():
-        task = re.fullmatch(r"TASK \[(.+)]", line.strip())
+        task = re.fullmatch(r"TASK \[(.+?)](?:\s+\*+)?", line.strip())
         if task:
             current = task.group(1).strip()[:160]
         elif current and re.fullmatch(rf"changed: \[{re.escape(limit)}]", line.strip()):

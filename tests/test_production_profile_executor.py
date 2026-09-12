@@ -75,6 +75,20 @@ class ProductionProfileExecutorTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, changed)
 
+    def test_real_ansible_recap_records_changed_task_names(self) -> None:
+        output = """TASK [production_host_baseline : Configure Docker] ****************************
+changed: [prod01]
+TASK [production_host_baseline : Keep Caddy running] **************************
+ok: [prod01]
+PLAY RECAP *********************************************************************
+prod01 : ok=47 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
+"""
+
+        changed, failed, unreachable, tasks = EXECUTOR.parse_recap(output, "prod01")
+
+        self.assertEqual((1, 0, 0), (changed, failed, unreachable))
+        self.assertEqual(["production_host_baseline : Configure Docker"], tasks)
+
     def test_umami_procedure_aggregates_baseline_then_restore_scaffolding(self) -> None:
         results = [
             {"successful": True, "exit_code": 0, "changed_count": 2, "failed_count": 0, "unreachable_count": 0, "changed_tasks": ["baseline"], "stdout_hash": "a" * 64, "stderr_hash": "b" * 64, "output_truncated": False},
