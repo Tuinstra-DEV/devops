@@ -42,8 +42,8 @@
     - { path: /var/lib/tuinstra-backup, owner: root, group: root, mode: '0755' }
     - { path: /etc/tuinstra-backup, owner: root, group: tuinstra-backup, mode: '0750' }
     - { path: /etc/tuinstra-backup/ssh, owner: root, group: tuinstra-backup, mode: '0750' }
-    - { path: /etc/tuinstra-backup/restic-passwords, owner: root, group: tuinstra-backup, mode: '0750' }
-    - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01, owner: root, group: tuinstra-backup, mode: '0750' }
+    - { path: /etc/tuinstra-backup/restic-passwords, owner: root, group: root, mode: '0700' }
+    - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01, owner: root, group: root, mode: '0700' }
     - { path: /usr/local/libexec/tuinstra-backup, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/tuinstra-backup/work, owner: tuinstra-backup, group: tuinstra-backup, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/incoming, owner: tuinstra-backup, group: tuinstra-backup, mode: '0700' }
@@ -102,6 +102,7 @@
     - { src: "{{ playbook_dir }}/../../backup/tuinstra_backup.py", dest: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py }
     - { src: "{{ playbook_dir }}/../../backup/restore-umami", dest: /usr/local/libexec/tuinstra-backup/restore-umami }
     - { src: "{{ playbook_dir }}/../../scripts/bootstrap_backup_credentials.py", dest: /usr/local/libexec/tuinstra-backup/bootstrap_backup_credentials.py }
+    - { src: "{{ playbook_dir }}/../../backup/tuinstra-backup-admin", dest: /usr/local/sbin/tuinstra-backup-admin }
 
 - name: Install Sanctuary worker profile
   ansible.builtin.copy:
@@ -196,6 +197,21 @@
       tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json attempt-finish --host * --app * --run-id * --status *
       tuinstra-backup ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json attempt-finish --host * --app * --run-id * --status * --error-code *
     dest: /etc/sudoers.d/93-tuinstra-backup-ingest
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Install bounded backup administration sudo policy
+  ansible.builtin.copy:
+    content: |
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin status
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test *
+    dest: /etc/sudoers.d/94-tuinstra-backup-admin
     owner: root
     group: root
     mode: '0440'
