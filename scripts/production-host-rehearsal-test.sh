@@ -6,11 +6,15 @@ inventory="$repo_root/infra/ansible/rehearsal/inventory.yml"
 profile_contract="$repo_root/infra/ansible/rehearsal/profile-contract.yml"
 lima_profile="$repo_root/infra/lima/tuinstra-rehearsal-01.yaml"
 docker_repository_tasks="$repo_root/infra/ansible/roles/production_host_baseline/tasks/docker_repository.yml"
+umami_restore_playbook="$repo_root/infra/ansible/production-host-umami-restore.yml"
+umami_restore_verify_playbook="$repo_root/infra/ansible/production-host-umami-restore-verify.yml"
+umami_restore_tasks="$repo_root/infra/ansible/roles/production_umami/tasks/provision_restore.yml"
 wrapper="$repo_root/scripts/production-host-baseline"
 run_dir="$(mktemp -d "${TMPDIR:-/tmp}/tuinstra-rehearsal-contract.XXXXXX")"
 trap 'rm -rf -- "$run_dir"' EXIT
 
-for path in "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" "$wrapper"; do
+for path in "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" \
+  "$umami_restore_playbook" "$umami_restore_verify_playbook" "$umami_restore_tasks" "$wrapper"; do
   [[ -f "$path" ]] || { echo "missing rehearsal fixture: $path" >&2; exit 1; }
 done
 
@@ -21,7 +25,8 @@ if grep -R -E '(PRIVATE KEY|BEGIN OPENSSH|password[[:space:]]*:)' \
   exit 1
 fi
 
-ruby - "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" <<'RUBY'
+ruby - "$inventory" "$profile_contract" "$lima_profile" "$docker_repository_tasks" \
+  "$umami_restore_playbook" "$umami_restore_verify_playbook" "$umami_restore_tasks" <<'RUBY'
 require "yaml"
 
 inventory = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
@@ -106,6 +111,26 @@ raise "check-mode compatibility must preserve the signature gate" unless
   signature_gate.dig("ansible.builtin.assert", "that") == [
     "production_docker_apt_key_fingerprint in production_docker_key_details.stdout"
   ]
+
+restore_play = YAML.safe_load(File.read(ARGV.fetch(4)), aliases: false).fetch(0)
+raise "restore profile must target only the fixed production host group" unless restore_play.fetch("hosts") == "production_hosts"
+raise "restore profile must apply the baseline first" unless restore_play.fetch("roles") == ["production_host_baseline"]
+raise "restore profile may import only the fixed Umami restore task file" unless
+  restore_play.fetch("tasks").fetch(0).dig("ansible.builtin.import_role") == {
+    "name" => "production_umami", "tasks_from" => "provision_restore"
+  }
+
+restore_verify = YAML.safe_load(File.read(ARGV.fetch(5)), aliases: false).fetch(0)
+verify_imports = restore_verify.fetch("tasks").map { |task| task.fetch("ansible.builtin.import_role") }
+raise "restore verification must preserve baseline-first ordering" unless verify_imports == [
+  {"name" => "production_host_baseline", "tasks_from" => "verify"},
+  {"name" => "production_umami", "tasks_from" => "verify_restore"},
+]
+
+restore_tasks = YAML.safe_load(File.read(ARGV.fetch(6)), aliases: false)
+forbidden_modules = %w[ansible.builtin.command ansible.builtin.shell ansible.builtin.systemd_service]
+raise "restore profile must remain inert" if restore_tasks.any? { |task| forbidden_modules.any? { |mod| task.key?(mod) } }
+raise "restore profile must not create application secrets" if File.read(ARGV.fetch(6)).match?(/rand|database-password|app-secret|admin-password/)
 RUBY
 
 fake_ansible="$run_dir/ansible-playbook"
@@ -146,6 +171,24 @@ if grep -Fx -- "--check" "$capture" >/dev/null; then
   exit 1
 fi
 
+capture="$run_dir/umami-restore-check.args"
+ANSIBLE_PLAYBOOK="$fake_ansible" REHEARSAL_ANSIBLE_CAPTURE="$capture" \
+  "$wrapper" --inventory "$inventory" --limit rehearsal01 --extra-vars "$vars" \
+  --as-admin --check configure-umami-restore
+grep -Fx -- "--check" "$capture" >/dev/null
+grep -Fx -- "--diff" "$capture" >/dev/null
+grep -Fx -- "$umami_restore_playbook" "$capture" >/dev/null
+
+capture="$run_dir/umami-restore-verify.args"
+ANSIBLE_PLAYBOOK="$fake_ansible" REHEARSAL_ANSIBLE_CAPTURE="$capture" \
+  "$wrapper" --inventory "$inventory" --limit rehearsal01 --extra-vars "$vars" \
+  --as-admin verify-umami-restore
+grep -Fx -- "$umami_restore_verify_playbook" "$capture" >/dev/null
+if grep -Fx -- "--check" "$capture" >/dev/null; then
+  echo "Umami restore verification unexpectedly entered check mode" >&2
+  exit 1
+fi
+
 ansible_playbook=""
 if command -v ansible-playbook >/dev/null 2>&1; then
   ansible_playbook="$(command -v ansible-playbook)"
@@ -160,5 +203,11 @@ ANSIBLE_HOME="$run_dir/ansible" ANSIBLE_LOCAL_TEMP="$run_dir/local" ANSIBLE_REMO
 ANSIBLE_HOME="$run_dir/ansible" ANSIBLE_LOCAL_TEMP="$run_dir/local" ANSIBLE_REMOTE_TEMP=/tmp/tuinstra-rehearsal-ansible \
   "$ansible_playbook" --inventory "$inventory" --limit rehearsal01 --syntax-check \
   "$repo_root/infra/ansible/production-host-verify.yml" >/dev/null
+ANSIBLE_HOME="$run_dir/ansible" ANSIBLE_LOCAL_TEMP="$run_dir/local" ANSIBLE_REMOTE_TEMP=/tmp/tuinstra-rehearsal-ansible \
+  "$ansible_playbook" --inventory "$inventory" --limit rehearsal01 --syntax-check \
+  "$umami_restore_playbook" >/dev/null
+ANSIBLE_HOME="$run_dir/ansible" ANSIBLE_LOCAL_TEMP="$run_dir/local" ANSIBLE_REMOTE_TEMP=/tmp/tuinstra-rehearsal-ansible \
+  "$ansible_playbook" --inventory "$inventory" --limit rehearsal01 --syntax-check \
+  "$umami_restore_verify_playbook" >/dev/null
 
 echo "production host rehearsal contract passed"
