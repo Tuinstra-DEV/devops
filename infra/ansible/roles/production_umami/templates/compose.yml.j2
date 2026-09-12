@@ -1,0 +1,60 @@
+---
+services:
+  db:
+    image: {{ production_umami_postgres_image }}
+    user: '70:70'
+    restart: unless-stopped
+    env_file:
+      - {{ production_umami_secret_root }}/postgres.env
+    volumes:
+      - {{ production_umami_data_root }}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /run/postgresql:rw,noexec,nosuid,nodev,uid=70,gid=70,size=16m
+      - /tmp:rw,noexec,nosuid,nodev,uid=70,gid=70,size=32m
+    networks:
+      - data
+
+  umami:
+    image: {{ production_umami_image }}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - {{ production_umami_secret_root }}/umami.env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - {{ production_umami_root }}/admin-bootstrap.mjs:/opt/tuinstra/admin-bootstrap.mjs:ro
+    read_only: true
+    healthcheck:
+      test: [CMD-SHELL, 'curl --fail --silent http://127.0.0.1:3000/api/heartbeat']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1001,gid=1001,size=32m
+    networks:
+      data:
+      edge:
+        aliases:
+          - umami
+
+networks:
+  data:
+    internal: true
+  edge:
+    external: true
+    name: {{ production_umami_edge_network }}

@@ -1,6 +1,8 @@
 {
 	admin 127.0.0.1:2019
+{% if not production_caddy_enable_https | bool %}
 	auto_https off
+{% endif %}
 }
 
 import /etc/caddy/sites/*.caddy

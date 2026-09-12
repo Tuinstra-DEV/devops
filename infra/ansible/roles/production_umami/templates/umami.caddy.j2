@@ -1,0 +1,6 @@
+{{ production_umami_domain }} {
+	encode zstd gzip
+	reverse_proxy umami:3000 {
+		health_uri /api/heartbeat
+	}
+}

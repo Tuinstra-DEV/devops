@@ -1,0 +1,154 @@
+---
+- name: Inspect Umami secret and bootstrap files
+  ansible.builtin.stat:
+    path: "{{ production_umami_secret_root }}/{{ item }}"
+  loop:
+    - database-password
+    - app-secret
+    - two-factor-encryption-key
+    - admin-password
+    - umami.env
+    - postgres.env
+    - admin-bootstrap.complete
+  register: production_umami_protected_files
+  no_log: true
+
+- name: Verify Umami protected file permissions
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == '0600'
+    quiet: true
+  loop: "{{ production_umami_protected_files.results }}"
+  no_log: true
+
+- name: Read Umami Compose services
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - ps
+      - --services
+      - --status
+      - running
+  register: production_umami_running_services
+  changed_when: false
+
+- name: Require both Umami services to be running
+  ansible.builtin.assert:
+    that:
+      - "'db' in production_umami_running_services.stdout_lines"
+      - "'umami' in production_umami_running_services.stdout_lines"
+
+- name: Verify no Umami application or database port is published
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - port
+      - "{{ item.service }}"
+      - "{{ item.port }}"
+  loop:
+    - { service: umami, port: '3000' }
+    - { service: db, port: '5432' }
+  register: production_umami_published_ports
+  changed_when: false
+  failed_when: production_umami_published_ports.stdout | trim | length > 0
+
+- name: Verify the Umami heartbeat from the application container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - exec
+      - -T
+      - umami
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - http://127.0.0.1:3000/api/heartbeat
+  changed_when: false
+
+- name: Verify the database major version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - exec
+      - -T
+      - db
+      - postgres
+      - --version
+  register: production_umami_postgres_version
+  changed_when: false
+  failed_when: production_umami_postgres_version.stdout is not match('^postgres \\(PostgreSQL\\) 15\\.')
+
+- name: Verify global 2FA remains required in Umami
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - exec
+      - -T
+      - db
+      - psql
+      - -U
+      - "{{ production_umami_database_user }}"
+      - -d
+      - "{{ production_umami_database_name }}"
+      - -Atc
+      - SELECT value FROM app_setting WHERE key = 'twoFactorRequiredGlobal';
+  register: production_umami_two_factor_required
+  changed_when: false
+  failed_when: production_umami_two_factor_required.stdout | trim != 'true'
+
+- name: Verify the Caddy edge can reach Umami
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-directory
+      - /var/www/_platform/caddy
+      - --file
+      - /var/www/_platform/caddy/compose.yml
+      - exec
+      - -T
+      - caddy
+      - wget
+      - --quiet
+      - --spider
+      - http://umami:3000/api/heartbeat
+  changed_when: false
