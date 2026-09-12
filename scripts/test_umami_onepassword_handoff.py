@@ -21,7 +21,7 @@ spec.loader.exec_module(handoff)
 PASSWORD = 'a' * 48
 ITEM_ID = 'abcdefghijklmnopqrstuvwxzy'
 VAULT_ID = 'zyxwvutsrqponmlkjihgfedcba'
-RECOVERY_CODES = [f'{index:032X}-{index + 1:032X}' for index in range(10)]
+RECOVERY_CODES = [f'{index:016X}-{index + 1:016X}' for index in range(10)]
 
 
 class FakeRunner:
@@ -116,6 +116,13 @@ class HandoffTests(unittest.TestCase):
             '/opt/op', VAULT_ID, runner=runner,
             recovery_dir=recovery_dir, sleeper=lambda _seconds: None,
         )
+
+    def test_recovery_pattern_matches_umami_3_3_1_contract(self):
+        actual_shape = '0123456789ABCDEF-FEDCBA9876543210'
+        obsolete_mock_shape = 'A' * 32 + '-' + 'B' * 32
+
+        self.assertIsNotNone(handoff.RECOVERY_PATTERN.fullmatch(actual_shape))
+        self.assertIsNone(handoff.RECOVERY_PATTERN.fullmatch(obsolete_mock_shape))
 
     def test_happy_flow_keeps_all_secrets_out_of_process_arguments(self):
         runner = FakeRunner()

@@ -42,7 +42,7 @@ ITEM_ID_PATTERN = re.compile(r'^[a-z0-9]{26}$')
 PASSWORD_PATTERN = re.compile(r'^[a-f0-9]{48}$')
 TOTP_SECRET_PATTERN = re.compile(r'^[A-Z2-7]{16,128}$')
 OTP_PATTERN = re.compile(r'^\d{6}$')
-RECOVERY_PATTERN = re.compile(r'^[A-F0-9]{32}-[A-F0-9]{32}$')
+RECOVERY_PATTERN = re.compile(r'^[A-F0-9]{16}-[A-F0-9]{16}$')
 VALID_STATES = {
     'credential-stored', 'seed-stored', 'two-factor-enabled', 'complete',
 }
