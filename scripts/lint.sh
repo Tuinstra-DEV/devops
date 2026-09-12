@@ -70,6 +70,7 @@ bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
+bash -n scripts/production-host-rehearsal-test.sh
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

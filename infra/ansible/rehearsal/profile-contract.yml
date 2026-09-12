@@ -1,0 +1,30 @@
+---
+schema_version: 1
+profile_version: 2026.09.12.rehearsal.1
+host_slug: tuinstra-rehearsal-01
+inventory_id: rehearsal01
+inventory_path: infra/ansible/rehearsal/inventory.yml
+inventory_limit: rehearsal01
+credential_directory: tuinstra-rehearsal-01
+source_repository: git@github.com:Tuinstra-DEV/devops.git
+source_path: infra/ansible/rehearsal/inventory.yml
+source_sha_binding: exact-bundle-head
+owner: platform
+applications:
+  - id: caddy
+    kind: platform
+    owner: platform
+    domains: []
+    secret_refs: []
+  - id: umami
+    kind: workload
+    owner: platform
+    domains:
+      - umami.rehearsal.invalid
+    secret_refs:
+      - secretref://rehearsal/umami/app
+      - secretref://rehearsal/umami/database
+deferred_checks:
+  - production-dns-routing
+  - public-tls
+  - sanctuary-failure-domain

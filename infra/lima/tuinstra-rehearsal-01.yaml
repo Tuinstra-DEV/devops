@@ -1,0 +1,49 @@
+minimumLimaVersion: 2.1.1
+
+# Ubuntu 26.04 ARM64 image published under resolute/current. The digest was
+# recorded from Ubuntu's SHA256SUMS on 2026-09-12; a changed current image fails
+# closed until this reviewed profile is updated.
+images:
+  - location: https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:00e2d9f09373125eb9040952ae3b8d5553fe3df8f5004c08838473a1f61b74bf
+
+vmType: vz
+arch: aarch64
+cpus: 4
+memory: 8GiB
+disk: 64GiB
+mounts: []
+additionalDisks:
+  - name: tuinstra-rehearsal-backup-01
+    format: true
+    fsType: ext4
+
+ssh:
+  localPort: 60022
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+  forwardX11: false
+  forwardX11Trusted: false
+
+# The production baseline installs and configures Docker. Lima must not install
+# a competing container runtime.
+containerd:
+  system: false
+  user: false
+
+networks: []
+portForwards:
+  - guestIP: 0.0.0.0
+    proto: any
+    ignore: true
+
+propagateProxyEnv: false
+hostResolver:
+  enabled: true
+  ipv6: false
+upgradePackages: false
+timezone: Europe/Amsterdam
+nestedVirtualization: false
+video:
+  display: none
