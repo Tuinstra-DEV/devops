@@ -49,13 +49,16 @@ def bundle(overrides=None):
 
 class FakeRunner:
     def __init__(self, *, existing=None, duplicate=False, uncertain_create=False,
-                 truncate_readback=False, command_secret_error=False):
+                 uncertain_create_timeout=False, truncate_readback=False,
+                 command_secret_error=False):
         self.item = existing
         self.duplicate = duplicate
         self.uncertain_create = uncertain_create
+        self.uncertain_create_timeout = uncertain_create_timeout
         self.truncate_readback = truncate_readback
         self.command_secret_error = command_secret_error
         self.calls = []
+        self.timeouts = []
 
     @staticmethod
     def result(args, returncode=0, stdout="", stderr=""):
@@ -64,6 +67,7 @@ class FakeRunner:
     def run(self, args, *, input_text=None, timeout=30):
         args = list(args)
         self.calls.append((args, input_text))
+        self.timeouts.append(timeout)
         if args[1:3] == ["item", "list"]:
             entries = [] if self.item is None else [{"id": ITEM_ID, "title": escrow.ITEM_TITLE}]
             if self.duplicate:
@@ -72,6 +76,13 @@ class FakeRunner:
         if args[1:3] == ["item", "create"]:
             self.item = json.loads(input_text)
             self.item["id"] = ITEM_ID
+            if self.uncertain_create_timeout:
+                raise subprocess.TimeoutExpired(
+                    args,
+                    timeout,
+                    output=RESTIC,
+                    stderr=SSH_ONE,
+                )
             if self.uncertain_create:
                 error = RESTIC if self.command_secret_error else "failed"
                 return self.result(args, returncode=1, stderr=error)
@@ -160,6 +171,16 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
         self.assertEqual(result["itemId"], ITEM_ID)
         self.assertEqual(sum(args[1:3] == ["item", "create"] for args, _ in runner.calls), 1)
 
+    def test_timed_out_create_is_reconciled_without_retry_or_secret_output(self):
+        runner = FakeRunner(uncertain_create_timeout=True)
+
+        result = self.make_service(runner).escrow(SECRETS)
+
+        self.assertEqual(result["itemId"], ITEM_ID)
+        self.assertTrue(result["verified"])
+        self.assertEqual(sum(args[1:3] == ["item", "create"] for args, _ in runner.calls), 1)
+        self.assertEqual(runner.timeouts, [120] * len(runner.timeouts))
+
     def test_partial_or_invalid_readback_fails_closed(self):
         runner = FakeRunner(truncate_readback=True)
         with self.assertRaises(escrow.EscrowError) as caught:
@@ -211,8 +232,17 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
                 escrow.subprocess, "run", return_value=completed) as run:
             escrow.ProcessRunner().run(["/opt/op", "--version"])
         environment = run.call_args.kwargs["env"]
+        self.assertEqual(run.call_args.kwargs["timeout"], 120)
         for name in injected:
             self.assertNotIn(name, environment)
+
+    def test_all_op_calls_use_the_fixed_desktop_approval_timeout(self):
+        runner = FakeRunner()
+
+        self.make_service(runner).escrow(SECRETS)
+
+        self.assertGreaterEqual(len(runner.timeouts), 3)
+        self.assertEqual(runner.timeouts, [120] * len(runner.timeouts))
 
     def test_sanitized_command_failure_never_includes_process_output(self):
         class FailedRunner:
@@ -221,6 +251,22 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
 
         commands = escrow.SafeCommands(FailedRunner())
         with self.assertRaises(escrow.EscrowError) as caught:
+            commands.run(["/opt/op", "item", "list"])
+        self.assertNotIn(RESTIC.strip(), str(caught.exception))
+        self.assertNotIn(SSH_ONE.strip(), str(caught.exception))
+
+    def test_sanitized_timeout_never_includes_process_output(self):
+        class TimedOutRunner:
+            def run(self, args, *, input_text=None, timeout=30):
+                raise subprocess.TimeoutExpired(
+                    args,
+                    timeout,
+                    output=RESTIC,
+                    stderr=SSH_ONE,
+                )
+
+        commands = escrow.SafeCommands(TimedOutRunner())
+        with self.assertRaisesRegex(escrow.EscrowError, "timed out") as caught:
             commands.run(["/opt/op", "item", "list"])
         self.assertNotIn(RESTIC.strip(), str(caught.exception))
         self.assertNotIn(SSH_ONE.strip(), str(caught.exception))

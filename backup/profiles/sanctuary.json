@@ -12,6 +12,7 @@
   "host_lock_root": "/run/lock/tuinstra",
   "restore_lock_file": "/run/lock/tuinstra-backup-restore.lock",
   "restore_work_dir": "/run/tuinstra-backup",
+  "materialized_root": "/var/lib/tuinstra-backup/materialized",
   "evidence_root": "/var/lib/tuinstra-backup/restore-evidence",
   "catalog_root": "/var/lib/tuinstra-backup/catalog",
   "retention_audit_root": "/var/lib/tuinstra-backup/retention-audit",

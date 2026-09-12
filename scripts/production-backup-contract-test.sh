@@ -21,11 +21,54 @@ bash -n "$repo_root/scripts/restore-network-isolation-integration-test.sh"
 grep -q 'umami:3.3.1@sha256:' "$repo_root/backup/restore-umami"
 grep -q 'postgres:15-alpine@sha256:' "$repo_root/backup/restore-umami"
 grep -q -- '--network none' "$repo_root/backup/restore-umami"
+grep -q -- 'docker run --rm --interactive --network none --entrypoint pg_restore' \
+  "$repo_root/backup/restore-umami"
 grep -q -- '--network "container:' "$repo_root/backup/restore-umami"
+grep -q '/usr/bin/install -d -o 70 -g 70 -m 0700 "$work/postgres"' \
+  "$repo_root/backup/restore-umami"
 if grep -q -- 'network create --internal' "$repo_root/backup/restore-umami"; then
   echo 'restore adapter must not use a bridge-backed internal network' >&2
   exit 1
 fi
+if grep -Eq 'docker rm[^\n]*\|\| true' "$repo_root/backup/restore-umami"; then
+  echo 'restore adapter must not suppress container cleanup failures' >&2
+  exit 1
+fi
+grep -q 'isolated restore cleanup failed' "$repo_root/backup/restore-umami"
+grep -q '"containers_removed": True' "$repo_root/backup/restore-umami"
+grep -q '"workspace_removed": True' "$repo_root/backup/restore-umami"
+grep -q 'encrypted_secret_validation' "$repo_root/backup/restore-umami"
+grep -q 'database_content_marker' "$repo_root/backup/restore-umami"
+grep -q 'files/two-factor-encryption-key' "$repo_root/backup/restore-umami"
+grep -q 'restored database content marker does not match the export' "$repo_root/backup/restore-umami"
+grep -q 'JOIN \\"user\\" AS u ON u.user_id = t.user_id' "$repo_root/backup/restore-umami"
+grep -q 'duration_seconds' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'external_effects_blocked' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'commands.add_parser("safety-ingest")' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'commands.add_parser("safety-pull")' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'commands.add_parser("materialize")' "$repo_root/backup/tuinstra_backup.py"
+if grep -Eq 'commands.add_parser\("(ingest|attempt-start|attempt-finish)"\)' \
+    "$repo_root/backup/tuinstra_backup.py"; then
+  echo 'privileged internal evidence and ingest primitives must not be public CLI commands' >&2
+  exit 1
+fi
+if grep -q 'tuinstra-backup ALL=(root)' "$repo_root/scripts/install-sanctuary-backups"; then
+  echo 'scheduled backup account must not have wildcard-shaped root sudo commands' >&2
+  exit 1
+fi
+grep -q '"User=root\\nGroup=root\\nUMask=0077\\n"' "$repo_root/backup/tuinstra_backup.py"
+grep -q '"approved_images"' "$repo_root/backup/profiles/prod01.json"
+grep -q '"database": database_versions' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'run-active --host "$host" --app "$app" --trigger manual' \
+  "$repo_root/backup/tuinstra-backup-admin"
+grep -q 'exec "$engine" --config "$config" escrow-recovery-test' \
+  "$repo_root/backup/tuinstra-backup-admin"
+if grep -q -- '--plan-hash "$plan_hash"' "$repo_root/backup/tuinstra-backup-admin"; then
+  echo 'manual recovery CLI must resolve the trusted active policy instead of hardcoding a plan hash' >&2
+  exit 1
+fi
+grep -q '"materialized_root": "/var/lib/tuinstra-backup/materialized"' \
+  "$repo_root/backup/profiles/sanctuary.json"
 grep -q 'spool_quota_bytes.*10737418240' "$repo_root/backup/profiles/prod01.json"
 grep -q '658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e' \
   "$repo_root/infra/ansible/roles/sanctuary_backup/defaults/main.yml"

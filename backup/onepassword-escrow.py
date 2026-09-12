@@ -33,6 +33,7 @@ SSH_PRIVATE_BEGIN = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 SSH_PRIVATE_END = "-----END OPENSSH " + "PRIVATE KEY-----"
 MAX_DOCUMENT_BYTES = 64 * 1024
 MAX_OP_OUTPUT_BYTES = 256 * 1024
+OP_COMMAND_TIMEOUT_SECONDS = 120
 RECOVERY_PREFIX = "tuinstra-backup-recovery-v1-"
 RECOVERY_MARKER = ".tuinstra-backup-recovery-v1"
 MARKER_CONTENT = "managed-by=tuinstra-backup-onepassword-escrow\nschema-version=1\n"
@@ -80,7 +81,13 @@ class EscrowError(RuntimeError):
 class ProcessRunner:
     """Run a process while requiring the user's interactive 1Password session."""
 
-    def run(self, args: list[str], *, input_text: str | None = None, timeout: int = 30):
+    def run(
+        self,
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        timeout: int = OP_COMMAND_TIMEOUT_SECONDS,
+    ):
         environment = os.environ.copy()
         for name in list(environment):
             if name in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN"} \
@@ -104,7 +111,11 @@ class SafeCommands:
     def run(self, args: list[str], *, input_text: str | None = None,
             operation: str = "Command") -> str:
         try:
-            result = self.runner.run(args, input_text=input_text, timeout=30)
+            result = self.runner.run(
+                args,
+                input_text=input_text,
+                timeout=OP_COMMAND_TIMEOUT_SECONDS,
+            )
         except subprocess.TimeoutExpired:
             raise EscrowError(f"{operation} timed out; its outcome may be uncertain") from None
         except OSError:

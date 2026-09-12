@@ -19,25 +19,32 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         self.assertLess(account_guard, useradd)
         self.assertLess(useradd, usermod)
 
-    def test_worker_owns_only_host_keys_while_other_credentials_remain_root_only(self):
+    def test_complete_root_cycle_owns_host_keys_and_other_credentials(self):
         self.assertIn(
-            "chown tuinstra-backup:tuinstra-backup /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02",
+            "chown root:root /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02",
             INSTALLER,
         )
-        self.assertIn("owner: tuinstra-backup, group: tuinstra-backup, mode: '0600'", ROLE)
+        self.assertIn('chown root:root "$known_hosts_temp"', INSTALLER)
+        self.assertIn("path: /etc/tuinstra-backup/ssh/prod01, owner: root, group: root, mode: '0600'", ROLE)
         self.assertIn("validate_secret(destination, ssh_credential_uids())", BOOTSTRAP)
         self.assertIn("chown root:root /etc/tuinstra-backup/age-identity.txt", INSTALLER)
+        self.assertIn("rm -f /etc/sudoers.d/93-tuinstra-backup-ingest", INSTALLER)
+        self.assertNotIn("tuinstra-backup ALL=(root)", INSTALLER)
 
-    def test_root_owns_lock_parent_and_worker_only_owns_pull_subdirectory(self):
+    def test_root_owns_lock_parent_and_all_cycle_state(self):
         commands = [line.strip() for line in INSTALLER.replace("\\\n", " ").splitlines()]
         self.assertIn("install -d -o root -g root -m 0711 /var/lib/tuinstra-backup/locks", commands)
         worker_commands = [line for line in commands if line.startswith(
             "install -d -o tuinstra-backup -g tuinstra-backup")]
-        self.assertEqual(len(worker_commands), 1)
-        worker_paths = worker_commands[0].split()[8:]
-        self.assertNotIn("/var/lib/tuinstra-backup/locks", worker_paths)
-        self.assertIn("/var/lib/tuinstra-backup/locks/pull", worker_paths)
+        self.assertEqual(worker_commands, [])
+        root_cycle_commands = [line for line in commands if line.startswith("install -d -o root -g root -m 0700")]
+        self.assertTrue(any("/var/lib/tuinstra-backup/locks/pull" in line for line in root_cycle_commands))
         self.assertIn("path: /var/lib/tuinstra-backup/locks, owner: root, group: root, mode: '0711'", ROLE)
+        self.assertIn("path: /var/lib/tuinstra-backup/locks/pull, owner: root, group: root, mode: '0700'", ROLE)
+
+    def test_tmpfiles_recreates_root_private_restore_runtime_on_boot(self):
+        self.assertIn("d /run/tuinstra-backup 0700 root root -", INSTALLER)
+        self.assertIn("d /run/tuinstra-backup 0700 root root -", ROLE)
 
 
 if __name__ == "__main__":

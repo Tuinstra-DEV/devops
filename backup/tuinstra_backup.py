@@ -13,7 +13,9 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
+import pwd
 import re
 import shutil
 import stat
@@ -21,12 +23,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 
 SCHEMA_VERSION = 1
+ENGINE_VERSION = "tuinstra-backup-v1"
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 ARTIFACT_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -44,7 +48,38 @@ CATALOG_POINT_KEYS = {"snapshot_id", "artifact_id", "host_slug", "app_id", "crea
 TRIGGERS = {"scheduled", "console", "manual"}
 ATTEMPT_STATUSES = {"running", "failed", "succeeded", "uncertain"}
 ERROR_CODES = {None, "backup_failed", "capacity_exhausted", "source_unreachable", "transfer_integrity",
-               "operation_busy", "policy_invalid", "interrupted"}
+               "source_export_failed", "operation_busy", "policy_invalid", "interrupted"}
+RESTORE_MIN_FREE_BYTES = 512 * 1024 * 1024
+RESTORE_SPACE_MULTIPLIER = 4
+RESTORE_MAX_DURATION_SECONDS = 4 * 60 * 60
+RESTORE_ADAPTER_KEYS = {
+    "schema_version", "adapter", "application", "status", "public_table_count",
+    "application_health", "encrypted_secret_validation", "database_content_marker", "network",
+    "external_effects_blocked", "host_ports",
+    "postgres_image", "application_image", "containers_removed", "workspace_removed",
+}
+INTERNAL_MANIFEST_BASE_KEYS = {
+    "schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at",
+    "database_service", "images", "inputs",
+}
+INTERNAL_MANIFEST_VERSION_KEYS = {"image_services", "database"}
+INPUT_KEYS = {"name", "sha256", "bytes"}
+SAFETY_TAG = "tuinstra:production-restore-safety"
+RECOVERY_BUNDLE = Path("/home/mtuinstra/.local/share/tuinstra-backup-recovery.json")
+AGE_SECRET_PREFIX = "AGE-" + "SECRET-KEY-1"
+SSH_PRIVATE_BEGIN = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+SSH_PRIVATE_END = "-----END OPENSSH " + "PRIVATE KEY-----"
+UMAMI_CONTENT_MARKER_ALGORITHM = "umami-admin-two-factor-v1"
+UMAMI_CONTENT_MARKER_SQL = (
+    "SELECT jsonb_build_object("
+    "'user_count',(SELECT count(*) FROM \"user\"),"
+    "'two_factor_count',(SELECT count(*) FROM two_factor_auth),"
+    "'admin',(SELECT jsonb_build_object('user_id',u.user_id::text,'username',u.username) "
+    "FROM \"user\" AS u WHERE u.username='admin'),"
+    "'admin_two_factor',(SELECT jsonb_build_object('user_id',t.user_id::text,'is_enabled',t.is_enabled,"
+    "'secret',t.secret) FROM two_factor_auth AS t JOIN \"user\" AS u ON u.user_id=t.user_id "
+    "WHERE u.username='admin' AND t.is_enabled IS TRUE))::text"
+)
 
 
 class BackupError(RuntimeError):
@@ -97,6 +132,9 @@ def ensure_directory(path: Path, mode: int) -> None:
     if not path.is_dir():
         raise BackupError("configured directory is unavailable")
     os.chmod(path, mode)
+    info = path.lstat()
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != mode:
+        raise BackupError("configured directory has unsafe ownership or permissions")
 
 
 def validate_public_manifest(value: dict[str, Any], maximum_bytes: int) -> dict[str, Any]:
@@ -157,7 +195,8 @@ def materialize_ingest(config: dict[str, Any], artifact_id: str) -> Path:
     ensure_private_runtime_directory(ingest_root)
     final = ingest_root / artifact_id
     if final.exists():
-        if final.is_symlink() or not final.is_dir() or final.stat().st_uid != os.geteuid():
+        if (final.is_symlink() or not final.is_dir() or final.stat().st_uid != os.geteuid()
+                or stat.S_IMODE(final.stat().st_mode) != 0o700):
             raise BackupError("privileged ingest artifact is not controlled")
         members = {item.name for item in final.iterdir()}
         if members != {"manifest.json", "payload.age"}:
@@ -178,6 +217,7 @@ def materialize_ingest(config: dict[str, Any], artifact_id: str) -> Path:
             copy_from_directory_fd(artifact_fd, "payload.age", temporary / "payload.age",
                                    int(config["max_artifact_bytes"]))
             os.replace(temporary, final)
+            fsync_directory(ingest_root)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -226,8 +266,33 @@ def host_operation_lock_path(config: dict[str, Any], host_slug: str) -> Path:
     return Path(config["host_lock_root"]) / f"operations.host.{host_slug}.lock"
 
 
+def validate_host_lock_descriptor(config: dict[str, Any], host_slug: str, descriptor: int) -> None:
+    path = host_operation_lock_path(config, host_slug)
+    reject_symlink_components(path.parent)
+    try:
+        path_info = path.stat(follow_symlinks=False)
+        descriptor_info = os.fstat(descriptor)
+    except OSError as exc:
+        raise BackupError("inherited host operation lock is unavailable") from exc
+    expected = (path_info.st_dev, path_info.st_ino)
+    actual = (descriptor_info.st_dev, descriptor_info.st_ino)
+    if (expected != actual or not stat.S_ISREG(path_info.st_mode)
+            or path_info.st_uid != ROOT_UID or stat.S_IMODE(path_info.st_mode) != 0o660
+            or not stat.S_ISREG(descriptor_info.st_mode)
+            or descriptor_info.st_uid != ROOT_UID or stat.S_IMODE(descriptor_info.st_mode) != 0o660):
+        raise BackupError("inherited host operation lock does not match the authoritative lock")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError) as exc:
+        raise BackupError("inherited host operation lock is not held by this operation") from exc
+
+
 @contextlib.contextmanager
-def host_operation_lock(config: dict[str, Any], host_slug: str):
+def host_operation_lock(config: dict[str, Any], host_slug: str, inherited_descriptor: int | None = None):
+    if inherited_descriptor is not None:
+        validate_host_lock_descriptor(config, host_slug, inherited_descriptor)
+        yield
+        return
     path = host_operation_lock_path(config, host_slug)
     reject_symlink_components(path.parent)
     flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
@@ -296,12 +361,11 @@ def reconcile_policy(config: dict[str, Any], document: dict[str, Any], plan_hash
         config_path = config.get("installed_config", "/etc/tuinstra-backup/worker.json")
         service_text = ("[Unit]\nDescription=Durable backup cycle for " + unit_id + "\n"
             "After=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\n"
-            "User=tuinstra-backup\nGroup=tuinstra-backup\nUMask=0077\n"
-            "SupplementaryGroups=tuinstra-ops\n"
+            "User=root\nGroup=root\nUMask=0077\n"
             f"LoadCredential={host['credential_name']}:{host['identity_file']}\n"
             f"ExecStart={executable} --config {config_path} cycle --host {host_slug} --app {app_id} "
             f"--policy-version {document['policy_version']} --plan-hash {plan_hash} --trigger scheduled\n"
-            "PrivateTmp=true\nProtectHome=true\nProtectSystem=strict\n"
+            "PrivateTmp=true\nNoNewPrivileges=true\nProtectHome=true\nProtectSystem=strict\n"
             f"ReadWritePaths={config['work_dir']} {config['incoming_root']} {config['pull_lock_root']} "
             f"{config['ingest_root']} {config['operation_lock_root']} {config['catalog_root']} "
             f"{config['repository_root']} {config['host_lock_root']}\n")
@@ -372,7 +436,11 @@ def atomic_json(path: Path, value: dict[str, Any], mode: int = 0o640) -> None:
         os.fsync(handle.fileno())
     os.chmod(temporary, mode)
     os.replace(temporary, path)
-    directory_fd = os.open(path.parent, os.O_DIRECTORY)
+    fsync_directory(path.parent)
+
+
+def fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(directory_fd)
     finally:
@@ -395,7 +463,12 @@ def run(argv: list[str], *, stdin: BinaryIO | None = None, stdout: BinaryIO | No
     try:
         return subprocess.run(argv, stdin=stdin, stdout=stdout or subprocess.PIPE,
                               stderr=subprocess.PIPE, env=env, timeout=timeout, check=True)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except subprocess.CalledProcessError as exc:
+        if Path(argv[0]).name == "ssh":
+            failure = "source unreachable" if exc.returncode == 255 else "source export failed"
+            raise BackupError(failure) from exc
+        raise BackupError(f"external command failed: {Path(argv[0]).name}") from exc
+    except subprocess.TimeoutExpired as exc:
         raise BackupError(f"external command failed: {Path(argv[0]).name}") from exc
 
 
@@ -429,6 +502,83 @@ def compose_images(app: dict[str, Any]) -> list[str]:
     return images
 
 
+def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
+    approved = app.get("approved_images")
+    services = {app.get("postgres_service"), app.get("application_service")}
+    if (not isinstance(approved, dict) or set(approved) != services
+            or any(not isinstance(image, str) or not SHA_RE.fullmatch(image.rpartition("@sha256:")[2])
+                   for image in approved.values())):
+        raise BackupError("approved application image mapping is invalid")
+    configured = set(compose_images(app))
+    if configured != set(approved.values()):
+        raise BackupError("compose image configuration does not match the approved digests")
+    compose = ["docker", "compose", "--project-name", app["compose_project"],
+               "--file", app["compose_file"]]
+    observed: dict[str, str] = {}
+    for service, expected in approved.items():
+        container_id = run([*compose, "ps", "--quiet", service]).stdout.decode().strip()
+        if not re.fullmatch(r"^[0-9a-f]{64}$", container_id):
+            raise BackupError("approved compose service is not running")
+        image_id = run(["docker", "inspect", "--format", "{{.Image}}", container_id]).stdout.decode().strip()
+        if not re.fullmatch(r"^sha256:[0-9a-f]{64}$", image_id):
+            raise BackupError("running container image identity is invalid")
+        try:
+            repo_digests = json.loads(run(
+                ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_id]
+            ).stdout)
+        except json.JSONDecodeError as exc:
+            raise BackupError("running container image digest evidence is invalid") from exc
+        expected_digest = expected.rpartition("@sha256:")[2]
+        if (not isinstance(repo_digests, list)
+                or not any(isinstance(value, str) and value.endswith(f"@sha256:{expected_digest}")
+                           for value in repo_digests)):
+            raise BackupError("running container does not use the approved image digest")
+        observed[service] = expected
+    return observed
+
+
+def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
+    compose = ["docker", "compose", "--project-name", app["compose_project"],
+               "--file", app["compose_file"], "exec", "-T", app["postgres_service"], "sh", "-eu", "-c"]
+    server = run([*compose, 'psql --tuples-only --no-align --username="$POSTGRES_USER" '
+                           '--dbname="$POSTGRES_DB" --command="show server_version"']).stdout.decode().strip()
+    dump = run([*compose, "pg_dump --version"]).stdout.decode().strip()
+    if not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", server):
+        raise BackupError("running PostgreSQL server version is not approved")
+    if not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", dump):
+        raise BackupError("running pg_dump version is not approved")
+    marker_output = run([*compose, f'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 '
+                                  f'--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" '
+                                  f'--command={json.dumps(UMAMI_CONTENT_MARKER_SQL)}']).stdout
+    if not 1 <= len(marker_output) <= 16 * 1024:
+        raise BackupError("database content marker is outside policy")
+    try:
+        marker = json.loads(marker_output)
+    except json.JSONDecodeError as exc:
+        raise BackupError("database content marker is invalid") from exc
+    expected_keys = {"user_count", "two_factor_count", "admin", "admin_two_factor"}
+    if not isinstance(marker, dict) or set(marker) != expected_keys:
+        raise BackupError("database content marker does not prove the required Umami data")
+    admin, two_factor = marker.get("admin"), marker.get("admin_two_factor")
+    if (not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool)
+            or marker["user_count"] < 1
+            or not isinstance(marker.get("two_factor_count"), int)
+            or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1
+            or not isinstance(admin, dict) or set(admin) != {"user_id", "username"}
+            or admin.get("username") != "admin" or not isinstance(admin.get("user_id"), str)
+            or not isinstance(two_factor, dict)
+            or set(two_factor) != {"user_id", "is_enabled", "secret"}
+            or two_factor.get("user_id") != admin["user_id"] or two_factor.get("is_enabled") is not True
+            or not isinstance(two_factor.get("secret"), str) or not 1 <= len(two_factor["secret"]) <= 4096):
+        raise BackupError("database content marker does not prove the required Umami data")
+    return {"engine": "postgresql", "server_version": server, "dump_version": dump,
+            "dump_format": "custom", "service": app["postgres_service"],
+            "content_marker": {"algorithm": UMAMI_CONTENT_MARKER_ALGORITHM,
+                               "sha256": hashlib.sha256(marker_output).hexdigest(),
+                               "user_count": marker["user_count"],
+                               "two_factor_count": marker["two_factor_count"]}}
+
+
 def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     host = require_id(config["host_slug"], "host slug")
     app = application(config, app_id)
@@ -438,7 +588,8 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     receipts = Path(config["receipt_dir"])
     work_root = Path(config["work_dir"])
     recipient = Path(config["age_recipient_file"])
-    if recipient.is_symlink() or not recipient.is_file():
+    if (recipient.is_symlink() or not recipient.is_file() or recipient.stat().st_uid != ROOT_UID
+            or stat.S_IMODE(recipient.stat().st_mode) != 0o600):
         raise BackupError("age recipient file is unavailable")
     ensure_directory(spool, 0o750)
     ensure_directory(receipts, 0o750)
@@ -472,11 +623,14 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
                 copied = copy_regular(Path(item["path"]), payload / "files" / logical)
                 copied["name"] = f"files/{logical}"
                 inputs.append(copied)
+            actual_images = running_compose_images(app)
+            database_versions = postgres_versions(app)
             internal = {
                 "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
                 "host_slug": host, "app_id": app_id, "adapter": app["adapter"],
                 "created_at": now(), "database_service": app["postgres_service"],
-                "images": compose_images(app), "inputs": inputs,
+                "images": sorted(actual_images.values()), "image_services": actual_images,
+                "database": database_versions, "inputs": inputs,
             }
             atomic_json(payload / "backup-manifest.json", internal, 0o600)
             archive = root / "payload.tar"
@@ -529,10 +683,35 @@ def ready_manifests(config: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def validate_receipt(value: Any, artifact_id: str, payload_sha256: str,
+                     receipt_id: str, maximum_bytes: int) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != PUBLIC_MANIFEST_KEYS | {"received_at", "receipt_id"}:
+        raise BackupError("backup receipt schema is invalid")
+    public = {key: value[key] for key in PUBLIC_MANIFEST_KEYS}
+    validate_public_manifest(public, maximum_bytes)
+    if (public["artifact_id"] != artifact_id or public["payload_sha256"] != payload_sha256
+            or value["receipt_id"] != receipt_id or not isinstance(value["received_at"], str)
+            or not value["received_at"].endswith("Z")):
+        raise BackupError("backup receipt identity is invalid")
+    return value
+
+
+def remove_published_export(spool: Path, manifest_path: Path, payload_path: Path) -> None:
+    for target in (payload_path, manifest_path):
+        if target.exists() or target.is_symlink():
+            info = target.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise BackupError("published export cleanup target is unsafe")
+            target.unlink()
+    fsync_directory(spool)
+
+
 def dispatch(config: dict[str, Any], original: str, output: BinaryIO) -> None:
     parts = original.split()
     if parts == ["list"]:
-        output.write((json.dumps(ready_manifests(config), separators=(",", ":")) + "\n").encode())
+        with lock(Path(config["lock_file"])):
+            values = ready_manifests(config)
+        output.write((json.dumps(values, separators=(",", ":")) + "\n").encode())
         return
     if len(parts) == 2 and parts[0] == "export":
         app_id = require_id(parts[1], "application id")
@@ -542,28 +721,52 @@ def dispatch(config: dict[str, Any], original: str, output: BinaryIO) -> None:
     if len(parts) == 2 and parts[0] == "fetch":
         artifact_id = require_artifact(parts[1])
         payload = Path(config["spool_dir"]) / f"{artifact_id}.age"
-        known = {item["artifact_id"] for item in ready_manifests(config)}
-        if artifact_id not in known:
-            raise BackupError("artifact is not ready")
-        with payload.open("rb") as handle:
-            shutil.copyfileobj(handle, output)
+        with lock(Path(config["lock_file"])):
+            known = {item["artifact_id"] for item in ready_manifests(config)}
+            if artifact_id not in known:
+                raise BackupError("artifact is not ready")
+            with payload.open("rb") as handle:
+                shutil.copyfileobj(handle, output)
         return
     if len(parts) == 4 and parts[0] == "ack":
         artifact_id = require_artifact(parts[1])
         if not SHA_RE.fullmatch(parts[2]) or not RECEIPT_RE.fullmatch(parts[3]):
             raise BackupError("invalid acknowledgement")
         spool = Path(config["spool_dir"])
-        manifest_path = spool / f"{artifact_id}.json"
-        payload_path = spool / f"{artifact_id}.age"
-        if not manifest_path.is_file() or not payload_path.is_file():
-            raise BackupError("artifact is not ready")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest["payload_sha256"] != parts[2] or sha256(payload_path) != parts[2]:
-            raise BackupError("acknowledgement checksum mismatch")
-        receipt = {**manifest, "received_at": now(), "receipt_id": parts[3]}
-        atomic_json(Path(config["receipt_dir"]) / f"{artifact_id}.json", receipt)
-        payload_path.unlink()
-        manifest_path.unlink()
+        ensure_directory(spool, 0o750)
+        ensure_directory(Path(config["receipt_dir"]), 0o750)
+        manifest_path, payload_path = spool / f"{artifact_id}.json", spool / f"{artifact_id}.age"
+        receipt_path = Path(config["receipt_dir"]) / f"{artifact_id}.json"
+        with lock(Path(config["lock_file"])):
+            if receipt_path.exists() or receipt_path.is_symlink():
+                if receipt_path.is_symlink() or not receipt_path.is_file():
+                    raise BackupError("backup receipt is unsafe")
+                receipt = validate_receipt(json.loads(receipt_path.read_text(encoding="utf-8")), artifact_id,
+                                           parts[2], parts[3], int(config["spool_quota_bytes"]))
+                public = {key: receipt[key] for key in PUBLIC_MANIFEST_KEYS}
+                if manifest_path.exists() or manifest_path.is_symlink():
+                    if manifest_path.is_symlink() or not manifest_path.is_file() \
+                            or json.loads(manifest_path.read_text(encoding="utf-8")) != public:
+                        raise BackupError("published export cleanup identity changed")
+                if payload_path.exists() or payload_path.is_symlink():
+                    if (payload_path.is_symlink() or not payload_path.is_file()
+                            or payload_path.stat().st_size != public["payload_bytes"]
+                            or sha256(payload_path) != public["payload_sha256"]):
+                        raise BackupError("published export cleanup content changed")
+                remove_published_export(spool, manifest_path, payload_path)
+            else:
+                if (manifest_path.is_symlink() or payload_path.is_symlink()
+                        or not manifest_path.is_file() or not payload_path.is_file()):
+                    raise BackupError("artifact is not ready")
+                manifest = validate_public_manifest(json.loads(manifest_path.read_text(encoding="utf-8")),
+                                                    int(config["spool_quota_bytes"]))
+                if (manifest["artifact_id"] != artifact_id or manifest["payload_sha256"] != parts[2]
+                        or sha256(payload_path) != parts[2]
+                        or payload_path.stat().st_size != manifest["payload_bytes"]):
+                    raise BackupError("acknowledgement checksum mismatch")
+                receipt = {**manifest, "received_at": now(), "receipt_id": parts[3]}
+                atomic_json(receipt_path, receipt)
+                remove_published_export(spool, manifest_path, payload_path)
         output.write((json.dumps(receipt, separators=(",", ":")) + "\n").encode())
         return
     raise BackupError("unsupported backup transport command")
@@ -590,7 +793,10 @@ def ssh_identity(host: dict[str, Any]) -> str:
 def restic_env(config: dict[str, Any], host: str, app: str) -> tuple[dict[str, str], Path]:
     repository = Path(config["repository_root"]) / host / app
     password = Path(config["password_root"]) / host / f"{app}.password"
-    if password.is_symlink() or not password.is_file():
+    reject_symlink_components(repository)
+    reject_symlink_components(password)
+    if (password.is_symlink() or not password.is_file() or password.stat().st_uid != ROOT_UID
+            or stat.S_IMODE(password.stat().st_mode) != 0o600):
         raise BackupError("restic password file is unavailable")
     env = os.environ.copy()
     env.update({"RESTIC_REPOSITORY": str(repository), "RESTIC_PASSWORD_FILE": str(password)})
@@ -617,7 +823,7 @@ def validate_catalog_point(value: dict[str, Any], host_slug: str, app_id: str,
         raise BackupError("backup catalog point size is invalid")
     if value.get("policy_version") is None or not POLICY_RE.fullmatch(value["policy_version"]):
         raise BackupError("backup catalog point policy is invalid")
-    if value.get("engine") != "tuinstra-backup-v1" or value.get("integrity_coverage") != "full-repository-data":
+    if value.get("engine") != ENGINE_VERSION or value.get("integrity_coverage") != "full-repository-data":
         raise BackupError("backup catalog point evidence is invalid")
     require_artifact(value.get("run_id", ""))
     if (value.get("trigger") not in TRIGGERS or value.get("source_id") != host_slug
@@ -686,7 +892,7 @@ def record_catalog_point(config: dict[str, Any], manifest: dict[str, Any], snaps
         "stored_at": stored_at, "integrity_checked_at": checked_at,
         "integrity_coverage": "full-repository-data", "payload_bytes": manifest["payload_bytes"],
         "payload_sha256": manifest["payload_sha256"], "policy_version": policy["policy_version"],
-        "engine": "tuinstra-backup-v1", "state": "available", "removed_at": None,
+        "engine": ENGINE_VERSION, "state": "available", "removed_at": None,
         "repository_observed_at": checked_at,
         "run_id": require_artifact(run_id), "trigger": require_trigger(trigger),
         "source_id": host_slug, "destination_id": "sanctuary-restic",
@@ -754,6 +960,12 @@ def attempt_finish(config: dict[str, Any], host_slug: str, app_id: str, run_id: 
     attempt = value.get("latest_attempt")
     if not isinstance(attempt, dict) or attempt.get("run_id") != run_id or attempt.get("status") != "running":
         raise BackupError("backup attempt result does not match active run")
+    if status == "succeeded":
+        durable = [point for point in value["recovery_points"] if point.get("state") == "available"
+                   and point.get("run_id") == run_id and point.get("host_slug") == host_slug
+                   and point.get("app_id") == app_id and point.get("integrity_coverage") == "full-repository-data"]
+        if len(durable) != 1:
+            raise BackupError("successful backup attempt lacks exact durable snapshot evidence")
     attempt.update({"finished_at": now(), "status": status, "error_code": error_code})
     write_catalog(config, value)
     return attempt
@@ -783,72 +995,120 @@ def validate_durable_result(manifest: dict[str, Any], stored: dict[str, Any]) ->
     return stored
 
 
+def stage_remote_artifact(config: dict[str, Any], host: dict[str, Any],
+                          manifest: dict[str, Any]) -> Path:
+    artifact_id = manifest["artifact_id"]
+    incoming_root = Path(config["incoming_root"])
+    ensure_private_runtime_directory(incoming_root)
+    incoming = incoming_root / artifact_id
+    if not incoming.exists():
+        temporary = Path(tempfile.mkdtemp(prefix=f".{artifact_id}-", dir=incoming_root))
+        payload = temporary / "payload.age"
+        argv = ["ssh", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
+                "-o", f'UserKnownHostsFile={host["known_hosts_file"]}', "-i", ssh_identity(host),
+                f'{host["ssh_user"]}@{host["ssh_host"]}', f"fetch {artifact_id}"]
+        try:
+            with payload.open("xb") as output:
+                run(argv, stdout=output)
+                output.flush()
+                os.fsync(output.fileno())
+            if sha256(payload) != manifest["payload_sha256"] or payload.stat().st_size != manifest["payload_bytes"]:
+                raise BackupError("received artifact failed checksum or size validation")
+            atomic_json(temporary / "manifest.json", manifest, 0o600)
+            os.replace(temporary, incoming)
+            fsync_directory(incoming_root)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+    else:
+        info = incoming.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise BackupError("incoming artifact is not a controlled directory")
+        members = {item.name for item in incoming.iterdir()}
+        if members != {"manifest.json", "payload.age"}:
+            raise BackupError("incoming artifact has unexpected members")
+        manifest_path, payload_path = incoming / "manifest.json", incoming / "payload.age"
+        if (manifest_path.is_symlink() or payload_path.is_symlink()
+                or not manifest_path.is_file() or not payload_path.is_file()):
+            raise BackupError("incoming artifact members are unsafe")
+        local_manifest = validate_public_manifest(json.loads(manifest_path.read_text(encoding="utf-8")),
+                                                  int(config["max_artifact_bytes"]))
+        if local_manifest != manifest:
+            raise BackupError("incoming artifact identity changed during retry")
+        if (payload_path.stat().st_size != manifest["payload_bytes"]
+                or sha256(payload_path) != manifest["payload_sha256"]):
+            raise BackupError("incoming artifact content changed during retry")
+    return incoming
+
+
+def cleanup_worker_staging(config: dict[str, Any], artifact_id: str) -> None:
+    artifact_id = require_artifact(artifact_id)
+    incoming_root = Path(config["incoming_root"])
+    target = incoming_root / artifact_id
+    reject_symlink_components(incoming_root)
+    if target.exists() or target.is_symlink():
+        info = target.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise BackupError("incoming artifact cleanup target is unsafe")
+        shutil.rmtree(target)
+        fsync_directory(incoming_root)
+
+
 def pull_host(config: dict[str, Any], host_slug: str, run_id: str | None = None,
-              trigger: str = "manual") -> list[dict[str, Any]]:
+              trigger: str = "manual", expected_artifact_id: str | None = None) -> list[dict[str, Any]]:
     require_id(host_slug, "host slug")
     matches = [item for item in config["hosts"] if item["host_slug"] == host_slug]
     if len(matches) != 1:
         raise BackupError("host is not allowlisted")
     host = matches[0]
     run_id = require_artifact(run_id or str(uuid.uuid4()))
+    if expected_artifact_id is not None:
+        require_artifact(expected_artifact_id)
     trigger = require_trigger(trigger)
     if not host["applications"]:
         return [{"status": "not-applicable", "host_slug": host_slug,
                  "reason": "no-enabled-production-applications"}]
     received = []
     Path(config["work_dir"]).mkdir(parents=True, exist_ok=True)
-    incoming_root = Path(config["incoming_root"])
-    incoming_root.mkdir(parents=True, exist_ok=True)
     with lock(Path(config["pull_lock_root"]) / f"{host_slug}.lock"):
         manifests = ssh_json(host, "list")
+        if not isinstance(manifests, list) or len(manifests) > 1000:
+            raise BackupError("remote artifact listing is invalid")
         for manifest in manifests:
+            if not isinstance(manifest, dict):
+                raise BackupError("remote artifact listing is invalid")
             manifest = validate_public_manifest(manifest, int(config["max_artifact_bytes"]))
             artifact_id = require_artifact(manifest["artifact_id"])
             app_id = require_id(manifest["app_id"], "application id")
             if manifest["host_slug"] != host_slug or app_id not in host["applications"]:
                 raise BackupError("remote artifact identity is not allowlisted")
-            incoming = incoming_root / artifact_id
-            if not incoming.exists():
-                temporary = Path(tempfile.mkdtemp(prefix=f".{artifact_id}-", dir=incoming_root))
-                payload = temporary / "payload.age"
-                argv = ["ssh", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
-                        "-o", f'UserKnownHostsFile={host["known_hosts_file"]}', "-i", ssh_identity(host),
-                        f'{host["ssh_user"]}@{host["ssh_host"]}', f"fetch {artifact_id}"]
-                try:
-                    with payload.open("xb") as output:
-                        run(argv, stdout=output)
-                    if sha256(payload) != manifest["payload_sha256"] or payload.stat().st_size != manifest["payload_bytes"]:
-                        raise BackupError("received artifact failed checksum or size validation")
-                    atomic_json(temporary / "manifest.json", manifest, 0o600)
-                    os.replace(temporary, incoming)
-                except Exception:
-                    shutil.rmtree(temporary, ignore_errors=True)
-                    raise
-            else:
-                if incoming.is_symlink() or not incoming.is_dir():
-                    raise BackupError("incoming artifact is not a controlled directory")
-                local_manifest = json.loads((incoming / "manifest.json").read_text(encoding="utf-8"))
-                if local_manifest != manifest:
-                    raise BackupError("incoming artifact identity changed during retry")
-            ingest_argv = ["sudo", "-n", config["executable"], "--config", config["installed_config"],
-                           "ingest", "--host", host_slug, "--app", app_id, "--artifact", artifact_id,
-                           "--run-id", run_id, "--trigger", trigger]
-            stored = validate_durable_result(manifest, json.loads(run(ingest_argv).stdout))
+            incoming = stage_remote_artifact(config, host, manifest)
+            artifact_run_id = run_id if expected_artifact_id is None or artifact_id == expected_artifact_id \
+                else str(uuid.uuid4())
+            stored = validate_durable_result(
+                manifest, ingest_artifact(config, host_slug, app_id, artifact_id, artifact_run_id, trigger)
+            )
             snapshot_id = stored["snapshot_id"]
             receipt_id = f"restic:{snapshot_id}"
+            # Local ciphertext staging is removed before the remote ACK. If cleanup or ACK
+            # fails, the source artifact stays listable (or has an idempotent receipt), and
+            # the terminal attempt exposes the failure without deleting the durable point.
+            cleanup_ingest(config, artifact_id)
+            cleanup_worker_staging(config, artifact_id)
             ssh_json(host, f'ack {artifact_id} {manifest["payload_sha256"]} {receipt_id}')
-            cleanup_argv = ["sudo", "-n", config["executable"], "--config", config["installed_config"],
-                            "ingest-cleanup", "--artifact", artifact_id]
-            run(cleanup_argv)
-            shutil.rmtree(incoming)
             received.append(stored)
     return received
 
 
 def ingest_artifact(config: dict[str, Any], host_slug: str, app_id: str, artifact_id: str,
-                    run_id: str, trigger: str) -> dict[str, Any]:
+                    run_id: str, trigger: str, safety_operation: str | None = None) -> dict[str, Any]:
     require_artifact(artifact_id)
     assert_allowlisted_target(config, host_slug, app_id)
+    operation_id = require_id(safety_operation, "operation id") if safety_operation is not None else None
+    safety_tags = ([SAFETY_TAG, f"operation:{operation_id}"]
+                   if operation_id is not None else [])
     with lock(operation_lock_path(config, host_slug, app_id)):
         incoming = materialize_ingest(config, artifact_id)
         manifest_path, payload = incoming / "manifest.json", incoming / "payload.age"
@@ -865,21 +1125,111 @@ def ingest_artifact(config: dict[str, Any], host_slug: str, app_id: str, artifac
         if not (repository / "config").exists():
             run(["restic", "init"], env=env)
         known = json.loads(run(["restic", "snapshots", "--json", "--tag", f"artifact:{artifact_id}"], env=env).stdout)
+        if not isinstance(known, list) or len(known) > CATALOG_LIMIT:
+            raise BackupError("restic artifact lookup returned invalid evidence")
         if known:
+            expected_tags = set(safety_tags)
+            if expected_tags and (len(known) != 1
+                                  or any(not expected_tags.issubset(set(item.get("tags", []))) for item in known)):
+                raise BackupError("existing artifact does not have the approved safety pin identity")
             snapshot_id = known[-1]["id"]
         else:
-            result = run(["restic", "backup", "--json", "--tag", f"host:{host_slug}",
-                          "--tag", f"app:{app_id}", "--tag", f"artifact:{artifact_id}", str(incoming)], env=env)
+            tags = [f"host:{host_slug}", f"app:{app_id}", f"artifact:{artifact_id}", *safety_tags]
+            backup_command = ["restic", "backup", "--json"]
+            for tag in tags:
+                backup_command.extend(["--tag", tag])
+            result = run([*backup_command, str(incoming)], env=env)
             messages = [json.loads(line) for line in result.stdout.decode().splitlines() if line.startswith("{")]
             summaries = [item for item in messages if item.get("message_type") == "summary"]
             if not summaries or not summaries[-1].get("snapshot_id"):
                 raise BackupError("restic did not return a durable snapshot id")
             snapshot_id = summaries[-1]["snapshot_id"]
+        if not SHA_RE.fullmatch(snapshot_id):
+            raise BackupError("restic did not return a full snapshot id")
         run(["restic", "check", "--read-data"], env=env)
         stored_at, checked_at = now(), now()
         record_catalog_point(config, manifest, snapshot_id, stored_at, checked_at, run_id, trigger)
         return {**manifest, "snapshot_id": snapshot_id, "stored_at": stored_at, "integrity_checked_at": checked_at,
                 "integrity_coverage": "full-repository-data"}
+
+
+def safety_ingest(config: dict[str, Any], host_slug: str, app_id: str, artifact_id: str,
+                  operation_id: str, run_id: str, inherited_host_lock_fd: int | None = None) -> dict[str, Any]:
+    operation_id = require_id(operation_id, "operation id")
+    with host_operation_lock(config, host_slug, inherited_host_lock_fd):
+        stored = ingest_artifact(config, host_slug, app_id, artifact_id, require_artifact(run_id), "console",
+                                 safety_operation=operation_id)
+    return safety_result(stored, operation_id)
+
+
+def safety_result(stored: dict[str, Any], operation_id: str) -> dict[str, Any]:
+    return {
+        "status": "safety-stored", "host_slug": stored["host_slug"], "app_id": stored["app_id"],
+        "artifact_id": stored["artifact_id"], "operation_id": operation_id,
+        "snapshot_id": stored["snapshot_id"],
+        "tags": [SAFETY_TAG, f"operation:{operation_id}"],
+        "integrity_checked_at": stored["integrity_checked_at"],
+        "integrity_coverage": stored["integrity_coverage"],
+    }
+
+
+def safety_pull(config: dict[str, Any], host_slug: str, app_id: str, artifact_id: str,
+                operation_id: str, run_id: str, inherited_host_lock_fd: int | None = None) -> dict[str, Any]:
+    require_artifact(artifact_id)
+    require_artifact(run_id)
+    operation_id = require_id(operation_id, "operation id")
+    host = assert_allowlisted_target(config, host_slug, app_id)
+    with (host_operation_lock(config, host_slug, inherited_host_lock_fd),
+          lock(Path(config["pull_lock_root"]) / f"{host_slug}.lock")):
+        reconciled = reconcile_safety_point(config, host_slug, app_id, artifact_id, operation_id)
+        if reconciled is not None:
+            result, payload_sha256 = reconciled
+            ssh_json(host, f'ack {artifact_id} {payload_sha256} restic:{result["snapshot_id"]}')
+            return result
+        listed = ssh_json(host, "list")
+        if not isinstance(listed, list) or len(listed) > 1000:
+            raise BackupError("remote artifact listing is invalid")
+        matches = [value for value in listed if isinstance(value, dict) and value.get("artifact_id") == artifact_id]
+        if len(matches) != 1:
+            raise BackupError("requested safety artifact is unavailable or ambiguous")
+        manifest = validate_public_manifest(matches[0], int(config["max_artifact_bytes"]))
+        if manifest["host_slug"] != host_slug or manifest["app_id"] != app_id:
+            raise BackupError("remote safety artifact identity is not allowlisted")
+        incoming = stage_remote_artifact(config, host, manifest)
+        stored = ingest_artifact(config, host_slug, app_id, artifact_id, run_id, "console",
+                                 safety_operation=operation_id)
+        cleanup_ingest(config, artifact_id)
+        cleanup_worker_staging(config, artifact_id)
+        ssh_json(host, f'ack {artifact_id} {manifest["payload_sha256"]} restic:{stored["snapshot_id"]}')
+        return safety_result(stored, operation_id)
+
+
+def reconcile_safety_point(config: dict[str, Any], host_slug: str, app_id: str,
+                           artifact_id: str, operation_id: str) -> tuple[dict[str, Any], str] | None:
+    env, repository = restic_env(config, host_slug, app_id)
+    if not (repository / "config").is_file():
+        return None
+    known = json.loads(run(
+        ["restic", "snapshots", "--json", "--tag", f"artifact:{artifact_id}"], env=env
+    ).stdout)
+    if not isinstance(known, list) or len(known) > CATALOG_LIMIT:
+        raise BackupError("restic safety lookup returned invalid evidence")
+    required_tags = {SAFETY_TAG, f"operation:{operation_id}"}
+    matching = [item for item in known if isinstance(item, dict) and SHA_RE.fullmatch(item.get("id", ""))
+                and required_tags.issubset(set(item.get("tags", [])))]
+    if not matching:
+        return None
+    if len(matching) != 1:
+        raise BackupError("durable safety artifact identity is ambiguous")
+    snapshot_id = matching[0]["id"]
+    points = [point for point in load_catalog(config, host_slug, app_id)["recovery_points"]
+              if point["state"] == "available" and point["snapshot_id"] == snapshot_id
+              and point["artifact_id"] == artifact_id]
+    if len(points) != 1:
+        raise BackupError("durable safety artifact lacks exact catalog evidence")
+    run(["restic", "check", "--read-data"], env=env)
+    stored = {**points[0], "integrity_checked_at": now(), "integrity_coverage": "full-repository-data"}
+    return safety_result(stored, operation_id), points[0]["payload_sha256"]
 
 
 def cleanup_ingest(config: dict[str, Any], artifact_id: str) -> None:
@@ -891,6 +1241,7 @@ def cleanup_ingest(config: dict[str, Any], artifact_id: str) -> None:
         if target.is_symlink() or not target.is_dir() or target.stat().st_uid != os.geteuid():
             raise BackupError("privileged ingest cleanup target is not controlled")
         shutil.rmtree(target)
+        fsync_directory(ingest_root)
 
 
 def check_repository(config: dict[str, Any], host_slug: str, app_id: str) -> dict[str, Any]:
@@ -953,25 +1304,26 @@ def cycle(config: dict[str, Any], host_slug: str, app_id: str, policy_version: s
     lock_context = contextlib.nullcontext() if host_lock_held else host_operation_lock(config, host_slug)
     with lock_context:
         trigger = require_trigger(trigger)
-        start_argv = ["sudo", "-n", config["executable"], "--config", config["installed_config"],
-                      "attempt-start", "--host", host_slug, "--app", app_id, "--trigger", trigger]
-        attempt = json.loads(run(start_argv).stdout)
+        attempt = attempt_start(config, host_slug, app_id, trigger)
         validate_attempt(attempt)
         run_id = attempt["run_id"]
         try:
             policy = load_policy(config, host_slug, app_id)
             if policy["policy_version"] != policy_version or policy["plan_hash"] != plan_hash:
                 raise BackupError("active policy does not match approved backup cycle")
-            exported = ssh_json(host, f"export {app_id}")
-            stored = pull_host(config, host_slug, run_id, trigger)
-            matches = [item for item in stored if item.get("artifact_id") == exported.get("artifact_id")]
+            exported = validate_public_manifest(ssh_json(host, f"export {app_id}"),
+                                                int(config["max_artifact_bytes"]))
+            if exported["host_slug"] != host_slug or exported["app_id"] != app_id:
+                raise BackupError("export identity does not match the approved backup cycle")
+            stored = pull_host(config, host_slug, run_id, trigger, exported["artifact_id"])
+            matches = [item for item in stored if item.get("artifact_id") == exported["artifact_id"]]
             if len(matches) != 1:
                 raise BackupError("export did not reach durable checked storage")
             result = matches[0]
         except Exception as exc:
-            finish_attempt_via_sudo(config, host_slug, app_id, run_id, "failed", failure_code(exc))
+            attempt_finish(config, host_slug, app_id, run_id, "failed", failure_code(exc))
             raise
-        finish_attempt_via_sudo(config, host_slug, app_id, run_id, "succeeded", None)
+        attempt_finish(config, host_slug, app_id, run_id, "succeeded", None)
         return {**result, "run_id": run_id, "trigger": trigger}
 
 
@@ -979,6 +1331,8 @@ def failure_code(exc: Exception) -> str:
     message = str(exc).lower()
     if "quota" in message or "filesystem is full" in message or "outside policy" in message:
         return "capacity_exhausted"
+    if "source export failed" in message:
+        return "source_export_failed"
     if "external command failed: ssh" in message or "offline" in message or "unreachable" in message:
         return "source_unreachable"
     if "checksum" in message or "integrity" in message:
@@ -988,16 +1342,6 @@ def failure_code(exc: Exception) -> str:
     if "policy" in message:
         return "policy_invalid"
     return "backup_failed"
-
-
-def finish_attempt_via_sudo(config: dict[str, Any], host_slug: str, app_id: str, run_id: str,
-                            status: str, error_code: str | None) -> None:
-    argv = ["sudo", "-n", config["executable"], "--config", config["installed_config"],
-            "attempt-finish", "--host", host_slug, "--app", app_id, "--run-id", run_id,
-            "--status", status]
-    if error_code is not None:
-        argv.extend(["--error-code", error_code])
-    run(argv)
 
 
 def ensure_daily(config: dict[str, Any], host_slug: str, app_id: str, policy_version: str,
@@ -1018,65 +1362,492 @@ def ensure_daily(config: dict[str, Any], host_slug: str, app_id: str, policy_ver
         return cycle(config, host_slug, app_id, policy_version, plan_hash, trigger, host_lock_held=True)
 
 
-def safe_extract(archive: Path, target: Path) -> None:
+def run_active(config: dict[str, Any], host_slug: str, app_id: str, trigger: str) -> dict[str, Any]:
+    assert_allowlisted_target(config, host_slug, app_id)
+    policy = load_policy(config, host_slug, app_id)
+    return cycle(config, host_slug, app_id, policy["policy_version"], policy["plan_hash"], trigger)
+
+
+def safe_extract(archive: Path, target: Path, maximum_bytes: int | None = None) -> None:
     with tarfile.open(archive, "r") as tar:
-        for member in tar.getmembers():
-            relative = Path(member.name)
-            if relative.is_absolute() or ".." in relative.parts or member.issym() or member.islnk() or member.isdev():
+        members = tar.getmembers()
+        limit = archive.stat().st_size if maximum_bytes is None else maximum_bytes
+        if len(members) > 256 or sum(member.size for member in members) > limit:
+            raise BackupError("archive exceeds restore policy")
+        names: set[str] = set()
+        for member in members:
+            relative = PurePosixPath(member.name)
+            if (relative.is_absolute() or str(relative) != member.name or ".." in relative.parts
+                    or member.name in names or member.issym() or member.islnk() or member.isdev()
+                    or not (member.isfile() or member.isdir())):
                 raise BackupError("unsafe archive member")
+            names.add(member.name)
         tar.extractall(target, filter="data")
 
 
+def validated_input_path(payload_root: Path, name: Any) -> Path:
+    if (not isinstance(name, str) or not name or len(name) > 255 or "\\" in name
+            or "\x00" in name):
+        raise BackupError("encrypted payload input name is invalid")
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or str(relative) != name or any(part in {"", ".", ".."} for part in relative.parts):
+        raise BackupError("encrypted payload input name is invalid")
+    current = payload_root
+    for part in relative.parts:
+        current /= part
+        try:
+            info = current.lstat()
+        except OSError as exc:
+            raise BackupError("encrypted payload input is unavailable") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise BackupError("encrypted payload input contains a symbolic link")
+    if not stat.S_ISREG(current.lstat().st_mode):
+        raise BackupError("encrypted payload input must be a regular file")
+    return current
+
+
 def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
-    manifest_path = root / "payload" / "backup-manifest.json"
+    payload_root = root / "payload"
+    if payload_root.is_symlink() or not payload_root.is_dir():
+        raise BackupError("encrypted payload root is invalid")
+    manifest_path = validated_input_path(payload_root, "backup-manifest.json")
     internal = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for key in ("schema_version", "artifact_id", "host_slug", "app_id", "adapter"):
+    keys = set(internal) if isinstance(internal, dict) else set()
+    if keys != INTERNAL_MANIFEST_BASE_KEYS and keys != INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS:
+        raise BackupError("encrypted payload manifest schema is invalid")
+    for key in ("schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at"):
         if internal.get(key) != expected.get(key):
             raise BackupError("encrypted payload identity mismatch")
-    for item in internal["inputs"]:
-        source = root / "payload" / item["name"]
-        if not source.is_file() or source.is_symlink() or sha256(source) != item["sha256"]:
+    if (not isinstance(internal.get("created_at"), str) or not internal["created_at"].endswith("Z")
+            or not isinstance(internal.get("database_service"), str)
+            or internal.get("adapter") != "postgres-compose-v1"):
+        raise BackupError("encrypted payload manifest content is invalid")
+    require_id(internal["database_service"], "database service")
+    validate_materialized_images(internal.get("images"))
+    if INTERNAL_MANIFEST_VERSION_KEYS.issubset(keys):
+        services = internal["image_services"]
+        database = internal["database"]
+        if (not isinstance(services, dict) or not 1 <= len(services) <= 16
+                or any(not isinstance(service, str) or not ID_RE.fullmatch(service) for service in services)
+                or internal["database_service"] not in services
+                or sorted(services.values()) != sorted(internal["images"])):
+            raise BackupError("encrypted payload image evidence is invalid")
+        expected_database_keys = {
+            "engine", "server_version", "dump_version", "dump_format", "service", "content_marker",
+        }
+        marker = database.get("content_marker") if isinstance(database, dict) else None
+        if (not isinstance(database, dict) or set(database) != expected_database_keys
+                or database.get("engine") != "postgresql"
+                or database.get("service") != internal["database_service"]
+                or database.get("dump_format") != "custom"
+                or not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", database.get("server_version", ""))
+                or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$",
+                                    database.get("dump_version", ""))
+                or not isinstance(marker, dict)
+                or set(marker) != {"algorithm", "sha256", "user_count", "two_factor_count"}
+                or marker.get("algorithm") != UMAMI_CONTENT_MARKER_ALGORITHM
+                or not isinstance(marker.get("sha256"), str) or not SHA_RE.fullmatch(marker["sha256"])
+                or not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool)
+                or marker["user_count"] < 1
+                or not isinstance(marker.get("two_factor_count"), int)
+                or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1):
+            raise BackupError("encrypted payload database version evidence is invalid")
+    inputs = internal.get("inputs")
+    if not isinstance(inputs, list) or not 1 <= len(inputs) <= 128:
+        raise BackupError("encrypted payload input list is invalid")
+    names: set[str] = set()
+    for item in inputs:
+        if (not isinstance(item, dict) or set(item) != INPUT_KEYS or not isinstance(item.get("name"), str)
+                or not isinstance(item.get("bytes"), int)
+                or isinstance(item.get("bytes"), bool) or item["bytes"] < 0
+                or not isinstance(item.get("sha256"), str) or not SHA_RE.fullmatch(item["sha256"])):
+            raise BackupError("encrypted payload input schema is invalid")
+        if item["name"] in names:
+            raise BackupError("encrypted payload input names must be unique")
+        names.add(item["name"])
+        source = validated_input_path(payload_root, item["name"])
+        if source.stat().st_size != item["bytes"] or sha256(source) != item["sha256"]:
             raise BackupError("encrypted payload input checksum mismatch")
+    actual_files: set[str] = set()
+    for candidate in payload_root.rglob("*"):
+        relative = candidate.relative_to(payload_root).as_posix()
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise BackupError("encrypted payload contains a symbolic link")
+        if stat.S_ISREG(info.st_mode):
+            actual_files.add(relative)
+        elif not stat.S_ISDIR(info.st_mode):
+            raise BackupError("encrypted payload contains an unsupported file type")
+    if actual_files != names | {"backup-manifest.json"}:
+        raise BackupError("encrypted payload contains unmanifested files")
     return internal
+
+
+def resolve_restore_point(config: dict[str, Any], host_slug: str, app_id: str,
+                          selector: str) -> dict[str, Any]:
+    available = [point for point in load_catalog(config, host_slug, app_id)["recovery_points"]
+                 if point["state"] == "available"]
+    if selector == "latest":
+        matches = sorted(available, key=lambda point: point["stored_at"], reverse=True)[:1]
+    else:
+        matches = [point for point in available if point["snapshot_id"].startswith(selector)]
+    if len(matches) != 1:
+        raise BackupError("restore snapshot selector is unavailable or ambiguous")
+    return matches[0]
+
+
+def validate_restore_adapter_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != RESTORE_ADAPTER_KEYS:
+        raise BackupError("restore adapter evidence schema is invalid")
+    if (value.get("schema_version") != SCHEMA_VERSION
+            or value.get("adapter") != "postgres-compose-v1"
+            or value.get("application") != "umami" or value.get("status") != "passed"):
+        raise BackupError("restore adapter evidence identity is invalid")
+    if (not isinstance(value.get("public_table_count"), int)
+            or isinstance(value["public_table_count"], bool) or value["public_table_count"] < 1):
+        raise BackupError("restore adapter schema evidence is invalid")
+    if (value.get("application_health") != "passed" or value.get("encrypted_secret_validation") != "passed"
+            or value.get("database_content_marker") != "passed"
+            or value.get("network") != "loopback-only-network-namespace"
+            or value.get("external_effects_blocked") is not True or value.get("host_ports") != 0):
+        raise BackupError("restore adapter isolation or health evidence is invalid")
+    if (not isinstance(value.get("postgres_image"), str) or "@sha256:" not in value["postgres_image"]
+            or not isinstance(value.get("application_image"), str)
+            or "@sha256:" not in value["application_image"]):
+        raise BackupError("restore adapter version evidence is invalid")
+    if value.get("containers_removed") is not True or value.get("workspace_removed") is not True:
+        raise BackupError("restore adapter cleanup did not succeed")
+    return value
+
+
+def validate_materialized_images(value: Any) -> list[str]:
+    if (not isinstance(value, list) or not 1 <= len(value) <= 16
+            or any(not isinstance(image, str) or len(image) > 512 or "@sha256:" not in image for image in value)):
+        raise BackupError("materialized image version evidence is invalid")
+    return value
+
+
+def materialization_result(internal: dict[str, Any], snapshot_id: str, operation_id: str,
+                           purpose: str) -> dict[str, Any]:
+    images = validate_materialized_images(internal.get("images"))
+    manifest = internal["manifest_path"]
+    return {
+        "status": "materialized", "host_slug": internal["host_slug"], "app_id": internal["app_id"],
+        "snapshot_id": snapshot_id, "operation_id": operation_id, "purpose": purpose,
+        "artifact_id": internal["artifact_id"], "manifest_sha256": sha256(manifest),
+        "payload_sha256": internal["payload_sha256"], "adapter": internal["adapter"], "images": images,
+    }
+
+
+def validate_existing_materialization(final: Path, host_slug: str, app_id: str, snapshot_id: str,
+                                      operation_id: str, purpose: str) -> dict[str, Any]:
+    info = final.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise BackupError("materialized target is unsafe")
+    binding_path = final / ".materialization.json"
+    if binding_path.is_symlink() or not binding_path.is_file():
+        raise BackupError("materialized target binding is unavailable")
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    expected = {"host_slug": host_slug, "app_id": app_id, "snapshot_id": snapshot_id,
+                "operation_id": operation_id, "purpose": purpose}
+    if any(binding.get(key) != value for key, value in expected.items()):
+        raise BackupError("materialized target binding conflicts with the approved operation")
+    manifest_path = final / "payload" / "backup-manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise BackupError("materialized manifest is unavailable")
+    internal = json.loads(manifest_path.read_text(encoding="utf-8"))
+    validate_payload(final, internal)
+    internal.update({"manifest_path": manifest_path, "payload_sha256": binding.get("payload_sha256")})
+    result = materialization_result(internal, snapshot_id, operation_id, purpose)
+    if binding != result:
+        raise BackupError("materialized target binding failed integrity validation")
+    return result
+
+
+def materialize_snapshot(config: dict[str, Any], host_slug: str, app_id: str, snapshot_id: str,
+                         operation_id: str, purpose: str,
+                         inherited_host_lock_fd: int | None = None) -> dict[str, Any]:
+    if not SHA_RE.fullmatch(snapshot_id):
+        raise BackupError("materialize requires a full snapshot id")
+    operation_id = require_id(operation_id, "operation id")
+    if purpose not in {"restore", "rollback"}:
+        raise BackupError("invalid materialization purpose")
+    assert_allowlisted_target(config, host_slug, app_id)
+    identity = Path(config["age_identity_file"])
+    if identity.is_symlink() or not identity.is_file() or identity.stat().st_uid != ROOT_UID \
+            or stat.S_IMODE(identity.stat().st_mode) != 0o600:
+        raise BackupError("age restore identity is unavailable")
+    env, _ = restic_env(config, host_slug, app_id)
+    materialized_root = Path(config["materialized_root"])
+    ensure_private_runtime_directory(materialized_root)
+    operation_root = materialized_root / operation_id
+    ensure_private_runtime_directory(operation_root)
+    final = operation_root / purpose
+    with (host_operation_lock(config, host_slug, inherited_host_lock_fd),
+          lock(operation_lock_path(config, host_slug, app_id)),
+          lock(Path(config["restore_lock_file"]))):
+        point = resolve_restore_point(config, host_slug, app_id, snapshot_id)
+        if final.exists() or final.is_symlink():
+            return validate_existing_materialization(final, host_slug, app_id, snapshot_id,
+                                                     operation_id, purpose)
+        required_bytes = max(RESTORE_MIN_FREE_BYTES, point["payload_bytes"] * RESTORE_SPACE_MULTIPLIER)
+        if shutil.disk_usage(materialized_root).free < required_bytes:
+            raise BackupError("materialization capacity is below the required minimum")
+        with tempfile.TemporaryDirectory(prefix=f".{purpose}-", dir=operation_root) as temporary:
+            root = Path(temporary)
+            restored = root / "restic"
+            run(["restic", "restore", snapshot_id, "--target", str(restored)], env=env)
+            run(["restic", "check", "--read-data"], env=env)
+            manifests = list(restored.rglob("manifest.json"))
+            payloads = list(restored.rglob("payload.age"))
+            if len(manifests) != 1 or len(payloads) != 1:
+                raise BackupError("snapshot does not contain exactly one artifact")
+            public = validate_public_manifest(json.loads(manifests[0].read_text(encoding="utf-8")),
+                                              int(config["max_artifact_bytes"]))
+            if (public["host_slug"] != host_slug or public["app_id"] != app_id
+                    or public["artifact_id"] != point["artifact_id"]
+                    or public["payload_sha256"] != point["payload_sha256"]
+                    or public["payload_bytes"] != point["payload_bytes"]):
+                raise BackupError("snapshot catalog identity mismatch")
+            if sha256(payloads[0]) != public["payload_sha256"]:
+                raise BackupError("snapshot payload checksum mismatch")
+            archive = root / "payload.tar"
+            run(["age", "--decrypt", "--identity", str(identity), "--output", str(archive),
+                 str(payloads[0])])
+            extracted = root / "extracted"
+            extracted.mkdir(mode=0o700)
+            safe_extract(archive, extracted, int(config["max_artifact_bytes"]))
+            internal = validate_payload(extracted, public)
+            manifest_path = extracted / "payload" / "backup-manifest.json"
+            internal.update({"manifest_path": manifest_path, "payload_sha256": public["payload_sha256"]})
+            result = materialization_result(internal, snapshot_id, operation_id, purpose)
+            atomic_json(extracted / ".materialization.json", result, 0o600)
+            os.replace(extracted, final)
+            directory_fd = os.open(operation_root, os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        if final.is_symlink() or not final.is_dir():
+            raise BackupError("materialized target publication failed")
+        return validate_existing_materialization(final, host_slug, app_id, snapshot_id,
+                                                 operation_id, purpose)
 
 
 def restore_test(config: dict[str, Any], host_slug: str, app_id: str, snapshot: str) -> dict[str, Any]:
     if snapshot != "latest" and not re.fullmatch(r"^[0-9a-f]{8,64}$", snapshot):
         raise BackupError("invalid snapshot id")
+    assert_allowlisted_target(config, host_slug, app_id)
     env, _ = restic_env(config, host_slug, app_id)
     restore_work = Path(config["restore_work_dir"])
-    restore_work.mkdir(parents=True, exist_ok=True)
+    ensure_private_runtime_directory(restore_work)
+    identity = Path(config["age_identity_file"])
+    if identity.is_symlink() or not identity.is_file() or identity.stat().st_uid != ROOT_UID \
+            or stat.S_IMODE(identity.stat().st_mode) != 0o600:
+        raise BackupError("age restore identity is unavailable")
+    started = time.monotonic()
     with (host_operation_lock(config, host_slug), lock(operation_lock_path(config, host_slug, app_id)),
           lock(Path(config["restore_lock_file"]))):
+        point = resolve_restore_point(config, host_slug, app_id, snapshot)
+        snapshot_id = point["snapshot_id"]
+        required_bytes = max(RESTORE_MIN_FREE_BYTES, point["payload_bytes"] * RESTORE_SPACE_MULTIPLIER)
+        available_bytes = shutil.disk_usage(restore_work).free
+        if available_bytes < required_bytes:
+            raise BackupError("restore workspace capacity is below the required minimum")
+        public: dict[str, Any]
+        internal: dict[str, Any]
+        adapter: dict[str, Any]
+        manifest_sha256: str
+        temporary_path: Path
         with tempfile.TemporaryDirectory(prefix="restore-", dir=restore_work) as temporary:
-            root = Path(temporary)
+            temporary_path = Path(temporary)
+            root = temporary_path
             restored = root / "restic"
-            run(["restic", "restore", snapshot, "--target", str(restored)], env=env)
+            run(["restic", "check", "--read-data"], env=env)
+            run(["restic", "restore", snapshot_id, "--target", str(restored)], env=env)
             manifests = list(restored.rglob("manifest.json"))
             payloads = list(restored.rglob("payload.age"))
             if len(manifests) != 1 or len(payloads) != 1:
                 raise BackupError("snapshot does not contain exactly one artifact")
             public = json.loads(manifests[0].read_text(encoding="utf-8"))
+            public = validate_public_manifest(public, int(config["max_artifact_bytes"]))
             if public["host_slug"] != host_slug or public["app_id"] != app_id:
                 raise BackupError("snapshot identity mismatch")
+            if (public["artifact_id"] != point["artifact_id"]
+                    or public["payload_sha256"] != point["payload_sha256"]
+                    or public["payload_bytes"] != point["payload_bytes"]):
+                raise BackupError("snapshot catalog identity mismatch")
             if sha256(payloads[0]) != public["payload_sha256"]:
                 raise BackupError("snapshot payload checksum mismatch")
             archive = root / "payload.tar"
-            run(["age", "--decrypt", "--identity", config["age_identity_file"],
+            run(["age", "--decrypt", "--identity", str(identity),
                  "--output", str(archive), str(payloads[0])])
             extracted = root / "extracted"
             extracted.mkdir(mode=0o700)
-            safe_extract(archive, extracted)
+            safe_extract(archive, extracted, int(config["max_artifact_bytes"]))
             internal = validate_payload(extracted, public)
+            manifest_sha256 = sha256(extracted / "payload" / "backup-manifest.json")
             if internal["adapter"] == "postgres-compose-v1":
-                run([config["restore_adapter"], str(extracted / "payload")], timeout=7200)
+                result = run([config["restore_adapter"], str(extracted / "payload")], timeout=7200)
+                try:
+                    adapter = validate_restore_adapter_result(json.loads(result.stdout))
+                except json.JSONDecodeError as exc:
+                    raise BackupError("restore adapter did not return valid evidence") from exc
             else:
                 raise BackupError("unsupported restore adapter")
-            evidence = {**public, "snapshot_id": snapshot, "restore_tested_at": now(),
-                        "restore_status": "passed", "side_effects": "blocked-loopback-only-network-namespace"}
-            evidence_path = Path(config["evidence_root"]) / host_slug / app_id / f'{public["artifact_id"]}.json'
-            atomic_json(evidence_path, evidence)
-            return evidence
+        if temporary_path.exists() or temporary_path.is_symlink():
+            raise BackupError("restore workspace cleanup did not succeed")
+        elapsed_seconds = time.monotonic() - started
+        if elapsed_seconds > RESTORE_MAX_DURATION_SECONDS:
+            raise BackupError("restore test exceeded the four hour recovery objective")
+        duration_seconds = max(1, math.ceil(elapsed_seconds))
+        evidence = {
+            **public,
+            "manifest_sha256": manifest_sha256,
+            "snapshot_id": snapshot_id,
+            "restore_tested_at": now(),
+            "restore_status": "passed",
+            "preflight": {
+                "key": "passed", "payload_checksum": "passed", "compatibility": "passed",
+                "capacity": "passed", "required_bytes": required_bytes, "available_bytes": available_bytes,
+            },
+            "validation": {
+                "schema": "passed", "data": "passed", "application_health": adapter["application_health"],
+                "database_content_marker": adapter["database_content_marker"],
+                "public_table_count": adapter["public_table_count"],
+                "input_files_verified": len(internal["inputs"]),
+                "encrypted_two_factor_authentication": adapter["encrypted_secret_validation"],
+            },
+            "versions": {"adapter": adapter["adapter"], "postgres_image": adapter["postgres_image"],
+                         "application_image": adapter["application_image"]},
+            "isolation": {"network": adapter["network"],
+                          "external_effects_blocked": adapter["external_effects_blocked"],
+                          "host_ports": adapter["host_ports"]},
+            "cleanup": {"status": "passed", "containers_removed": adapter["containers_removed"],
+                        "workspace_removed": True},
+            "duration_seconds": duration_seconds,
+            "engine_version": ENGINE_VERSION,
+        }
+        evidence_path = Path(config["evidence_root"]) / host_slug / app_id / f'{public["artifact_id"]}.json'
+        atomic_json(evidence_path, evidence)
+        return evidence
+
+
+def write_recovered_secret(path: Path, value: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(descriptor, value.encode())
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def validate_recovery_bundle(source: Path) -> tuple[dict[str, str], tuple[int, int]]:
+    expected_user = pwd.getpwnam("mtuinstra")
+    reject_symlink_components(source)
+    try:
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise BackupError("independent recovery bundle is unavailable") from exc
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != expected_user.pw_uid
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 128 * 1024):
+            raise BackupError("independent recovery bundle is unsafe")
+        encoded = b""
+        while len(encoded) <= 128 * 1024:
+            chunk = os.read(descriptor, min(16 * 1024, 128 * 1024 + 1 - len(encoded)))
+            if not chunk:
+                break
+            encoded += chunk
+        if len(encoded) > 128 * 1024:
+            raise BackupError("independent recovery bundle is too large")
+    finally:
+        os.close(descriptor)
+    value = json.loads(encoded.decode("utf-8"))
+    keys = {"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"}
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "source_host", "secrets"}
+            or value.get("schema_version") != SCHEMA_VERSION or value.get("source_host") != "sanctuary"
+            or not isinstance(value.get("secrets"), dict) or set(value["secrets"]) != keys
+            or any(not isinstance(secret, str) or not 16 <= len(secret) <= 16384
+                   for secret in value["secrets"].values())):
+        raise BackupError("independent recovery bundle schema is invalid")
+    secrets = value["secrets"]
+    try:
+        secrets["age_identity"].encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise BackupError("independent recovery bundle secret format is invalid") from exc
+    age_secret_lines = [line for line in secrets["age_identity"].splitlines()
+                        if line and not line.startswith("#")]
+    if (len(age_secret_lines) != 1
+            or not re.fullmatch(re.escape(AGE_SECRET_PREFIX) + r"[0-9A-Z]{20,100}", age_secret_lines[0])
+            or not secrets["ssh_prod01"].startswith(SSH_PRIVATE_BEGIN)
+            or not secrets["ssh_prod02"].startswith(SSH_PRIVATE_BEGIN)
+            or not secrets["ssh_prod01"].rstrip().endswith(SSH_PRIVATE_END)
+            or not secrets["ssh_prod02"].rstrip().endswith(SSH_PRIVATE_END)):
+        raise BackupError("independent recovery bundle secret format is invalid")
+    return secrets, (info.st_dev, info.st_ino)
+
+
+def verify_recovered_transport(host: dict[str, Any], identity: Path, maximum_bytes: int) -> None:
+    result = run(["ssh", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
+                  "-o", f'UserKnownHostsFile={host["known_hosts_file"]}', "-i", str(identity),
+                  f'{host["ssh_user"]}@{host["ssh_host"]}', "list"])
+    try:
+        manifests = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise BackupError("independent recovery transport did not return valid evidence") from exc
+    if not isinstance(manifests, list) or len(manifests) > 1000:
+        raise BackupError("independent recovery transport returned invalid evidence")
+    for value in manifests:
+        if not isinstance(value, dict):
+            raise BackupError("independent recovery transport returned invalid evidence")
+        manifest = validate_public_manifest(value, maximum_bytes)
+        if (manifest["host_slug"] != host["host_slug"]
+                or manifest["app_id"] not in host["applications"]):
+            raise BackupError("independent recovery transport identity is invalid")
+
+
+def escrow_recovery_test(config: dict[str, Any], source: Path = RECOVERY_BUNDLE) -> dict[str, Any]:
+    if os.geteuid() != ROOT_UID:
+        raise BackupError("independent recovery test requires the privileged restore service")
+    secrets, source_identity = validate_recovery_bundle(source)
+    restore_work = Path(config["restore_work_dir"])
+    ensure_private_runtime_directory(restore_work)
+    with tempfile.TemporaryDirectory(prefix="escrow-recovery-", dir=restore_work) as temporary:
+        root = Path(temporary)
+        password = root / "passwords/tuinstra-prod-01"
+        (root / "passwords").mkdir(mode=0o700)
+        password.mkdir(mode=0o700)
+        identities = root / "ssh"
+        identities.mkdir(mode=0o700)
+        age_identity = root / "age-identity.txt"
+        write_recovered_secret(age_identity, secrets["age_identity"])
+        write_recovered_secret(password / "umami.password", secrets["restic_prod01_umami"])
+        write_recovered_secret(identities / "prod01", secrets["ssh_prod01"])
+        write_recovered_secret(identities / "prod02", secrets["ssh_prod02"])
+        recovered_config = json.loads(json.dumps(config))
+        recovered_config["age_identity_file"] = str(age_identity)
+        recovered_config["password_root"] = str(root / "passwords")
+        hosts = {host["host_slug"]: host for host in recovered_config["hosts"]}
+        if set(hosts) != {"tuinstra-prod-01", "tuinstra-prod-02"}:
+            raise BackupError("independent recovery host allowlist is invalid")
+        maximum_bytes = int(config["max_artifact_bytes"])
+        verify_recovered_transport(hosts["tuinstra-prod-01"], identities / "prod01", maximum_bytes)
+        verify_recovered_transport(hosts["tuinstra-prod-02"], identities / "prod02", maximum_bytes)
+        evidence = restore_test(recovered_config, "tuinstra-prod-01", "umami", "latest")
+        # The root-private test is complete and restore_test has atomically persisted
+        # success evidence. Only now consume the exact user-readable handoff inode.
+        current = source.lstat()
+        if (current.st_dev, current.st_ino) != source_identity:
+            raise BackupError("independent recovery bundle changed during use")
+        source.unlink()
+        fsync_directory(source.parent)
+    return {"status": "passed", "credential_source": "independent-escrow-copy",
+            "host_slug": "tuinstra-prod-01", "app_id": "umami",
+            "snapshot_id": evidence["snapshot_id"],
+            "ssh_hosts_verified": ["tuinstra-prod-01", "tuinstra-prod-02"]}
 
 
 def inspect(config: dict[str, Any]) -> dict[str, Any]:
@@ -1111,14 +1882,20 @@ def parser() -> argparse.ArgumentParser:
     dispatch_parser.add_argument("--original-command")
     pull = commands.add_parser("pull")
     pull.add_argument("--host", required=True)
-    ingest = commands.add_parser("ingest")
-    ingest.add_argument("--host", required=True)
-    ingest.add_argument("--app", required=True)
-    ingest.add_argument("--artifact", required=True)
-    ingest.add_argument("--run-id", required=True)
-    ingest.add_argument("--trigger", choices=sorted(TRIGGERS), required=True)
-    ingest_cleanup = commands.add_parser("ingest-cleanup")
-    ingest_cleanup.add_argument("--artifact", required=True)
+    safety_ingest_parser = commands.add_parser("safety-ingest")
+    safety_ingest_parser.add_argument("--host", required=True)
+    safety_ingest_parser.add_argument("--app", required=True)
+    safety_ingest_parser.add_argument("--artifact", required=True)
+    safety_ingest_parser.add_argument("--operation", required=True)
+    safety_ingest_parser.add_argument("--run-id", required=True)
+    safety_ingest_parser.add_argument("--inherited-host-lock-fd", type=int)
+    safety_pull_parser = commands.add_parser("safety-pull")
+    safety_pull_parser.add_argument("--host", required=True)
+    safety_pull_parser.add_argument("--app", required=True)
+    safety_pull_parser.add_argument("--artifact", required=True)
+    safety_pull_parser.add_argument("--operation", required=True)
+    safety_pull_parser.add_argument("--run-id", required=True)
+    safety_pull_parser.add_argument("--inherited-host-lock-fd", type=int)
     retention = commands.add_parser("retain")
     retention.add_argument("--host", required=True)
     retention.add_argument("--app", required=True)
@@ -1132,22 +1909,16 @@ def parser() -> argparse.ArgumentParser:
     cycle_parser.add_argument("--policy-version", required=True)
     cycle_parser.add_argument("--plan-hash", required=True)
     cycle_parser.add_argument("--trigger", choices=sorted(TRIGGERS), required=True)
+    run_active_parser = commands.add_parser("run-active")
+    run_active_parser.add_argument("--host", required=True)
+    run_active_parser.add_argument("--app", required=True)
+    run_active_parser.add_argument("--trigger", choices=sorted(TRIGGERS), required=True)
     ensure_daily_parser = commands.add_parser("ensure-daily")
     ensure_daily_parser.add_argument("--host", required=True)
     ensure_daily_parser.add_argument("--app", required=True)
     ensure_daily_parser.add_argument("--policy-version", required=True)
     ensure_daily_parser.add_argument("--plan-hash", required=True)
     ensure_daily_parser.add_argument("--trigger", choices=sorted(TRIGGERS), required=True)
-    attempt_start_parser = commands.add_parser("attempt-start")
-    attempt_start_parser.add_argument("--host", required=True)
-    attempt_start_parser.add_argument("--app", required=True)
-    attempt_start_parser.add_argument("--trigger", choices=sorted(TRIGGERS), required=True)
-    attempt_finish_parser = commands.add_parser("attempt-finish")
-    attempt_finish_parser.add_argument("--host", required=True)
-    attempt_finish_parser.add_argument("--app", required=True)
-    attempt_finish_parser.add_argument("--run-id", required=True)
-    attempt_finish_parser.add_argument("--status", choices=["failed", "succeeded", "uncertain"], required=True)
-    attempt_finish_parser.add_argument("--error-code", choices=sorted(code for code in ERROR_CODES if code))
     policy = commands.add_parser("policy-reconcile")
     policy.add_argument("--host", required=True)
     policy.add_argument("--app", required=True)
@@ -1165,6 +1936,14 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("--host", required=True)
     restore.add_argument("--app", required=True)
     restore.add_argument("--snapshot", default="latest")
+    commands.add_parser("escrow-recovery-test")
+    materialize_parser = commands.add_parser("materialize")
+    materialize_parser.add_argument("--host", required=True)
+    materialize_parser.add_argument("--app", required=True)
+    materialize_parser.add_argument("--snapshot", required=True)
+    materialize_parser.add_argument("--operation", required=True)
+    materialize_parser.add_argument("--purpose", choices=["restore", "rollback"], required=True)
+    materialize_parser.add_argument("--inherited-host-lock-fd", type=int)
     catalog_parser = commands.add_parser("catalog")
     catalog_parser.add_argument("--host", required=True)
     catalog_parser.add_argument("--app", required=True)
@@ -1187,17 +1966,20 @@ def main(argv: list[str] | None = None) -> int:
             dispatch(config, args.original_command if args.original_command is not None else os.environ.get("SSH_ORIGINAL_COMMAND", ""), sys.stdout.buffer)
             return 0
         elif args.command == "pull":
+            if os.geteuid() != 0:
+                raise BackupError("pull requires the privileged backup cycle service")
             with host_operation_lock(config, args.host):
                 result = pull_host(config, args.host)
-        elif args.command == "ingest":
+        elif args.command == "safety-ingest":
             if os.geteuid() != 0:
-                raise BackupError("repository ingestion requires the privileged ingest service")
-            result = ingest_artifact(config, args.host, args.app, args.artifact, args.run_id, args.trigger)
-        elif args.command == "ingest-cleanup":
+                raise BackupError("safety ingestion requires the privileged repository service")
+            result = safety_ingest(config, args.host, args.app, args.artifact, args.operation, args.run_id,
+                                   args.inherited_host_lock_fd)
+        elif args.command == "safety-pull":
             if os.geteuid() != 0:
-                raise BackupError("ingest cleanup requires the privileged ingest service")
-            cleanup_ingest(config, args.artifact)
-            result = {"status": "cleaned", "artifact_id": args.artifact}
+                raise BackupError("safety pull requires the privileged repository service")
+            result = safety_pull(config, args.host, args.app, args.artifact, args.operation, args.run_id,
+                                 args.inherited_host_lock_fd)
         elif args.command == "retain":
             if os.geteuid() != 0:
                 raise BackupError("retention requires the separate privileged service")
@@ -1207,17 +1989,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise BackupError("retention requires the separate privileged service")
             result = retain_active(config, args.host, args.app)
         elif args.command == "cycle":
+            if os.geteuid() != 0:
+                raise BackupError("backup cycle requires the privileged cycle service")
             result = cycle(config, args.host, args.app, args.policy_version, args.plan_hash, args.trigger)
+        elif args.command == "run-active":
+            if os.geteuid() != 0:
+                raise BackupError("backup cycle requires the privileged cycle service")
+            result = run_active(config, args.host, args.app, args.trigger)
         elif args.command == "ensure-daily":
+            if os.geteuid() != 0:
+                raise BackupError("backup cycle requires the privileged cycle service")
             result = ensure_daily(config, args.host, args.app, args.policy_version, args.plan_hash, args.trigger)
-        elif args.command == "attempt-start":
-            if os.geteuid() != 0:
-                raise BackupError("attempt evidence requires the privileged catalog service")
-            result = attempt_start(config, args.host, args.app, args.trigger)
-        elif args.command == "attempt-finish":
-            if os.geteuid() != 0:
-                raise BackupError("attempt evidence requires the privileged catalog service")
-            result = attempt_finish(config, args.host, args.app, args.run_id, args.status, args.error_code)
         elif args.command == "policy-reconcile":
             if os.geteuid() != 0:
                 raise BackupError("policy reconciliation requires the privileged policy service")
@@ -1232,6 +2014,13 @@ def main(argv: list[str] | None = None) -> int:
             if os.geteuid() != 0:
                 raise BackupError("restore test requires the privileged restore service")
             result = restore_test(config, args.host, args.app, args.snapshot)
+        elif args.command == "escrow-recovery-test":
+            result = escrow_recovery_test(config)
+        elif args.command == "materialize":
+            if os.geteuid() != 0:
+                raise BackupError("materialization requires the privileged restore service")
+            result = materialize_snapshot(config, args.host, args.app, args.snapshot,
+                                          args.operation, args.purpose, args.inherited_host_lock_fd)
         elif args.command == "catalog":
             result = catalog(config, args.host, args.app)
         else:
