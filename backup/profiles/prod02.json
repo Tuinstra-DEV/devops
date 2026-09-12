@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "host_slug": "tuinstra-prod-02",
+  "schedule": "03:00 Europe/Amsterdam",
+  "spool_dir": "/var/lib/tuinstra-backup/spool",
+  "receipt_dir": "/var/lib/tuinstra-backup/receipts",
+  "work_dir": "/run/tuinstra-backup",
+  "lock_file": "/run/lock/tuinstra-backup-export.lock",
+  "spool_quota_bytes": 10737418240,
+  "age_recipient_file": "/etc/tuinstra-backup/age-recipient.txt",
+  "applications": []
+}

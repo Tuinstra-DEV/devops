@@ -1,0 +1,7 @@
+---
+sanctuary_backup_repository_root: /mnt/hdd1000-01/backups/production
+sanctuary_backup_profile_source: "{{ playbook_dir }}/../../backup/profiles/sanctuary.json"
+sanctuary_backup_apps:
+  - host_slug: tuinstra-prod-01
+    app_id: umami
+sanctuary_backup_default_policy_hash: 658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e

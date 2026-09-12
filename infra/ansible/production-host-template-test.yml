@@ -7,6 +7,7 @@
   vars_files:
     - roles/production_host_baseline/defaults/main.yml
   vars:
+    ansible_hostname: tuinstra-prod-01
     production_app_names: [site-tuinstra, site-marcel]
     production_docker_package_versions:
       docker-ce: test-version

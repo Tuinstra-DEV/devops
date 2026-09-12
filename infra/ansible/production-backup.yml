@@ -1,0 +1,7 @@
+---
+- name: Install production backup exporter
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  roles:
+    - production_backup

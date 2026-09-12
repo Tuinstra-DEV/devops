@@ -1,4 +1,41 @@
 ---
+- name: Create shared host-operation group
+  ansible.builtin.group:
+    name: tuinstra-ops
+    system: true
+
+- name: Create shared host-operation and maintenance directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /run/lock/tuinstra, group: tuinstra-ops, mode: '0750' }
+    - { path: /var/lib/tuinstra-production-restore, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-production-restore/maintenance, group: root, mode: '0700' }
+
+- name: Precreate authoritative local host-operation lock
+  ansible.builtin.file:
+    path: "/run/lock/tuinstra/operations.host.{{ ansible_hostname }}.lock"
+    state: touch
+    owner: root
+    group: tuinstra-ops
+    mode: '0660'
+    modification_time: preserve
+    access_time: preserve
+
+- name: Persist authoritative local host-operation lock across reboot
+  ansible.builtin.copy:
+    content: |
+      d /run/lock/tuinstra 0750 root tuinstra-ops -
+      f /run/lock/tuinstra/operations.host.{{ ansible_hostname }}.lock 0660 root tuinstra-ops -
+    dest: /etc/tmpfiles.d/tuinstra-operations.conf
+    owner: root
+    group: root
+    mode: '0644'
+
 - name: Create application roots
   ansible.builtin.file:
     path: "/var/www/{{ item }}"

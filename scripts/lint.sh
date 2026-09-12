@@ -73,6 +73,19 @@ python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'
 bash -n scripts/install-production-profile-executor scripts/production-profile-bridge scripts/production-profile-executor-contract-test.sh
 bash -n scripts/production-host-rehearsal-test.sh
+python3 -c 'compile(open("backup/tuinstra_backup.py", encoding="utf-8").read(), "backup/tuinstra_backup.py", "exec")'
+python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
+python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
+python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
+python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
+python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
+python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
+bash -n backup/restore-umami
+bash -n backup/tuinstra-backup-admin
+bash -n scripts/install-sanctuary-backups
+bash -n scripts/restic-retention-integration-test.sh
+bash -n scripts/restore-network-isolation-integration-test.sh
+bash -n scripts/production-backup-contract-test.sh
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

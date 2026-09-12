@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$EUID" -ne 0 || $# -ne 0 ]]; then
+  echo "usage: sudo ./scripts/install-sanctuary-backups" >&2
+  exit 2
+fi
+if [[ -L "$0" ]]; then
+  echo "installer must not be invoked through a symbolic link" >&2
+  exit 1
+fi
+
+bundle_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+if [[ "$bundle_root" != /home/mtuinstra/tuinstra-backup-install ]]; then
+  echo "installer bundle must be staged at /home/mtuinstra/tuinstra-backup-install" >&2
+  exit 1
+fi
+engine_source="$bundle_root/backup/tuinstra_backup.py"
+restore_source="$bundle_root/backup/restore-umami"
+production_restore_source="$bundle_root/backup/production_restore.py"
+production_restore_admin_source="$bundle_root/backup/tuinstra-production-restore"
+admin_source="$bundle_root/backup/tuinstra-backup-admin"
+profile_source="$bundle_root/backup/profiles/sanctuary.json"
+bootstrap_source="$bundle_root/scripts/bootstrap_backup_credentials.py"
+escrow_stage_source="$bundle_root/scripts/stage_backup_escrow.py"
+hostkey_root="$bundle_root/install-input/hostkeys"
+
+for source in "$engine_source" "$restore_source" "$production_restore_source" "$production_restore_admin_source" "$admin_source" "$profile_source" \
+              "$bootstrap_source" "$escrow_stage_source" "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
+  if [[ ! -f "$source" || -L "$source" ]]; then
+    echo "installer input is missing or unsafe: $source" >&2
+    exit 1
+  fi
+done
+
+for hostkey in "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
+  if ! ssh-keygen -l -f "$hostkey" >/dev/null 2>&1; then
+    echo "verified Ed25519 host key input is invalid: $hostkey" >&2
+    exit 1
+  fi
+  [[ "$(awk 'NR==1 { print $1 }' "$hostkey")" == ssh-ed25519 ]] || {
+    echo "only verified Ed25519 host keys are accepted" >&2
+    exit 1
+  }
+done
+
+if ! mountpoint -q /mnt/hdd1000-01; then
+  echo "approved backup destination is not an active mountpoint" >&2
+  exit 1
+fi
+available_kib="$(df -Pk /mnt/hdd1000-01 | awk 'NR==2 { print $4 }')"
+if [[ ! "$available_kib" =~ ^[0-9]+$ ]] || (( available_kib < 104857600 )); then
+  echo "approved backup destination has less than 100 GiB free" >&2
+  exit 1
+fi
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y age openssh-client python3 restic sudo
+
+if ! getent group tuinstra-ops >/dev/null; then
+  groupadd --system tuinstra-ops
+fi
+if ! getent group tuinstra-backup >/dev/null; then
+  groupadd --system tuinstra-backup
+fi
+if ! id tuinstra-backup >/dev/null 2>&1; then
+  useradd --system --gid tuinstra-backup --home-dir /var/lib/tuinstra-backup \
+    --create-home --shell /usr/sbin/nologin tuinstra-backup
+fi
+usermod -a -G tuinstra-ops tuinstra-backup
+
+install -d -o root -g root -m 0755 /var/lib/tuinstra-backup
+python3 "$bootstrap_source"
+python3 "$escrow_stage_source"
+
+install -d -o root -g tuinstra-backup -m 0750 /etc/tuinstra-backup /etc/tuinstra-backup/ssh
+install -d -o root -g root -m 0700 /etc/tuinstra-backup/restic-passwords \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01
+install -d -o root -g root -m 0755 /usr/local/libexec/tuinstra-backup
+install -d -o root -g root -m 0711 /var/lib/tuinstra-backup/locks
+install -d -o root -g root -m 0700 \
+  /var/lib/tuinstra-backup/work /var/lib/tuinstra-backup/incoming \
+  /var/lib/tuinstra-backup/locks/pull
+install -d -o root -g root -m 0700 /var/lib/tuinstra-backup/ingest \
+  /var/lib/tuinstra-backup/locks/operations /var/lib/tuinstra-backup/restore-evidence \
+  /var/lib/tuinstra-backup/retention-audit /var/lib/tuinstra-backup/production-restore \
+  /var/lib/tuinstra-backup/production-restore/journal /var/lib/tuinstra-backup/production-restore/work \
+  /var/lib/tuinstra-backup/materialized
+install -d -o root -g root -m 0755 /var/lib/tuinstra-backup/policies
+install -d -o root -g root -m 0755 /var/lib/tuinstra-backup/catalog
+install -d -o root -g tuinstra-ops -m 0750 /run/lock/tuinstra
+install -d -o root -g root -m 0700 /run/tuinstra-backup
+for host_lock in /run/lock/tuinstra/operations.host.tuinstra-prod-01.lock \
+                 /run/lock/tuinstra/operations.host.tuinstra-prod-02.lock; do
+  if [[ -L "$host_lock" || ( -e "$host_lock" && ! -f "$host_lock" ) ]]; then
+    echo "authoritative host-operation lock is unsafe: $host_lock" >&2
+    exit 1
+  fi
+  touch "$host_lock"
+  chown root:tuinstra-ops "$host_lock"
+  chmod 0660 "$host_lock"
+done
+install -d -o root -g root -m 0711 /mnt/hdd1000-01/backups/production
+install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-prod-01/umami
+
+install -o root -g root -m 0755 "$engine_source" /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
+install -o root -g root -m 0755 "$restore_source" /usr/local/libexec/tuinstra-backup/restore-umami
+install -o root -g root -m 0755 "$production_restore_source" /usr/local/libexec/tuinstra-backup/production_restore.py
+install -o root -g root -m 0755 "$production_restore_admin_source" /usr/local/sbin/tuinstra-production-restore
+install -o root -g root -m 0755 "$admin_source" /usr/local/sbin/tuinstra-backup-admin
+install -o root -g root -m 0600 "$profile_source" /etc/tuinstra-backup/worker.json
+chown root:root /etc/tuinstra-backup/age-identity.txt \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+chown root:root /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02
+chown root:root /etc/tuinstra-backup/ssh/prod01-restore
+chmod 0600 /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
+  /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/ssh/prod01-restore \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+
+known_hosts_temp="$(mktemp /etc/tuinstra-backup/ssh/.known_hosts.XXXXXX)"
+trap 'rm -f "$known_hosts_temp"' EXIT
+awk 'NR==1 { print "vps01.tuinstra.dev " $1 " " $2 }' "$hostkey_root/vps01.pub" >"$known_hosts_temp"
+awk 'NR==1 { print "vps02.tuinstra.dev " $1 " " $2 }' "$hostkey_root/vps02.pub" >>"$known_hosts_temp"
+chown root:root "$known_hosts_temp"
+chmod 0644 "$known_hosts_temp"
+mv -f "$known_hosts_temp" /etc/tuinstra-backup/ssh/known_hosts
+trap - EXIT
+
+# Older installations delegated wildcard-shaped privileged subcommands to the pull
+# account. The complete typed cycle now runs as root and those entry points no longer
+# exist, so remove that escalation surface during an upgrade.
+rm -f /etc/sudoers.d/93-tuinstra-backup-ingest
+
+sudoers_admin="$(mktemp /etc/sudoers.d/.94-tuinstra-backup-admin.XXXXXX)"
+cat >"$sudoers_admin" <<'EOF'
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin status
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test *
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
+EOF
+chmod 0440 "$sudoers_admin"
+visudo -cf "$sudoers_admin"
+mv -f "$sudoers_admin" /etc/sudoers.d/94-tuinstra-backup-admin
+
+sudoers_restore="$(mktemp /etc/sudoers.d/.95-tuinstra-production-restore.XXXXXX)"
+cat >"$sudoers_restore" <<'EOF'
+Defaults!/usr/local/sbin/tuinstra-production-restore timestamp_timeout=0
+mtuinstra ALL=(root) /usr/local/sbin/tuinstra-production-restore *
+EOF
+chmod 0440 "$sudoers_restore"
+visudo -cf "$sudoers_restore"
+mv -f "$sudoers_restore" /etc/sudoers.d/95-tuinstra-production-restore
+
+cat >/etc/systemd/system/tuinstra-backup-retention.service <<'EOF'
+[Unit]
+Description=Apply production backup retention and integrity check
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app umami
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/mnt/hdd1000-01/backups/production /var/lib/tuinstra-backup/locks /var/lib/tuinstra-backup/retention-audit /var/lib/tuinstra-backup/catalog /run/lock/tuinstra
+EOF
+cat >/etc/systemd/system/tuinstra-backup-retention.timer <<'EOF'
+[Unit]
+Description=Weekly production backup retention
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00 Europe/Amsterdam
+Persistent=true
+Unit=tuinstra-backup-retention.service
+
+[Install]
+WantedBy=timers.target
+EOF
+chmod 0644 /etc/systemd/system/tuinstra-backup-retention.service \
+  /etc/systemd/system/tuinstra-backup-retention.timer
+
+cat >/etc/tmpfiles.d/tuinstra-operations.conf <<'EOF'
+d /run/tuinstra-backup 0700 root root -
+d /run/lock/tuinstra 0750 root tuinstra-ops -
+f /run/lock/tuinstra/operations.host.tuinstra-prod-01.lock 0660 root tuinstra-ops -
+f /run/lock/tuinstra/operations.host.tuinstra-prod-02.lock 0660 root tuinstra-ops -
+EOF
+chmod 0644 /etc/tmpfiles.d/tuinstra-operations.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/tuinstra-operations.conf
+
+/usr/local/libexec/tuinstra-backup/tuinstra_backup.py \
+  --config /etc/tuinstra-backup/worker.json policy-reconcile \
+  --host tuinstra-prod-01 --app umami --policy-version production-v1 \
+  --plan-hash 658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e \
+  --hour 2 --minute 0 --daily 7 --weekly 4 --monthly 12
+systemctl daemon-reload
+systemctl enable --now tuinstra-backup-retention.timer
+systemctl is-enabled --quiet tuinstra-backup-retention.timer
+systemctl is-active --quiet tuinstra-backup-retention.timer
+systemctl is-enabled --quiet tuinstra-backup-cycle-tuinstra-prod-01--umami.timer
+systemctl is-active --quiet tuinstra-backup-cycle-tuinstra-prod-01--umami.timer
+
+echo "Sanctuary backup installation complete; public bootstrap files: /var/lib/tuinstra-backup/public"
