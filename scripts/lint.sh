@@ -69,6 +69,16 @@ ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
+python3 -c 'compile(open("backup/tuinstra_backup.py", encoding="utf-8").read(), "backup/tuinstra_backup.py", "exec")'
+python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
+python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
+python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
+bash -n backup/restore-umami
+bash -n backup/tuinstra-backup-admin
+bash -n scripts/install-sanctuary-backups
+bash -n scripts/restic-retention-integration-test.sh
+bash -n scripts/restore-network-isolation-integration-test.sh
+bash -n scripts/production-backup-contract-test.sh
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

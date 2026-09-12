@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "host_slug": "tuinstra-prod-01",
+  "schedule": "02:00 Europe/Amsterdam",
+  "spool_dir": "/var/lib/tuinstra-backup/spool",
+  "receipt_dir": "/var/lib/tuinstra-backup/receipts",
+  "work_dir": "/run/tuinstra-backup",
+  "lock_file": "/run/lock/tuinstra-backup-export.lock",
+  "spool_quota_bytes": 10737418240,
+  "age_recipient_file": "/etc/tuinstra-backup/age-recipient.txt",
+  "applications": [
+    {
+      "app_id": "umami",
+      "enabled": true,
+      "adapter": "postgres-compose-v1",
+      "compose_project": "umami",
+      "compose_file": "/var/www/umami/compose.yml",
+      "postgres_service": "db",
+      "included_files": [
+        {"name": "compose", "path": "/var/www/umami/compose.yml"},
+        {"name": "postgres-env", "path": "/etc/tuinstra/umami/postgres.env"},
+        {"name": "umami-env", "path": "/etc/tuinstra/umami/umami.env"},
+        {"name": "database-password", "path": "/etc/tuinstra/umami/database-password"},
+        {"name": "app-secret", "path": "/etc/tuinstra/umami/app-secret"},
+        {"name": "two-factor-encryption-key", "path": "/etc/tuinstra/umami/two-factor-encryption-key"},
+        {"name": "admin-password", "path": "/etc/tuinstra/umami/admin-password"}
+      ]
+    }
+  ]
+}

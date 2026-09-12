@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly payload="${1:-}"
+readonly postgres_image='docker.io/library/postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b'
+readonly umami_image='ghcr.io/umami-software/umami:3.3.1@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a'
+
+if [[ ! "$payload" =~ ^/run/tuinstra-backup/ ]] || [[ -L "$payload" ]] || [[ ! -d "$payload" ]]; then
+  echo 'restore payload is outside the controlled workspace' >&2
+  exit 64
+fi
+
+for relative in database.dump files/postgres-env files/umami-env backup-manifest.json; do
+  if [[ ! -f "$payload/$relative" || -L "$payload/$relative" ]]; then
+    echo 'restore payload is incomplete' >&2
+    exit 65
+  fi
+done
+
+/usr/bin/python3 - "$payload/backup-manifest.json" "$postgres_image" "$umami_image" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+if set(manifest.get("images", [])) != {sys.argv[2], sys.argv[3]}:
+    raise SystemExit("restore artifact image set is not approved")
+PY
+
+/usr/bin/docker run --rm --network none --entrypoint pg_restore "$postgres_image" --list <"$payload/database.dump" >/dev/null
+
+readonly operation="restore-$PPID-$$"
+readonly db_container="${operation}-db"
+readonly app_container="${operation}-app"
+readonly work="/run/tuinstra-backup/$operation"
+/usr/bin/install -d -m 0700 "$work/postgres"
+
+cleanup() {
+  /usr/bin/docker rm --force "$app_container" "$db_container" >/dev/null 2>&1 || true
+  if [[ "$work" =~ ^/run/tuinstra-backup/restore-[0-9]+-[0-9]+$ ]]; then
+    /usr/bin/rm -rf -- "$work"
+  fi
+}
+trap cleanup EXIT
+
+/usr/bin/python3 - "$payload/files/postgres-env" "$work/loopback.env" <<'PY'
+from pathlib import Path
+import sys
+from urllib.parse import quote
+
+values = {}
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    key, separator, value = line.partition("=")
+    if separator != "=" or key in values or key not in {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}:
+        raise SystemExit("postgres restore environment is invalid")
+    values[key] = value
+if set(values) != {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}:
+    raise SystemExit("postgres restore environment is incomplete")
+url = "postgresql://{}:{}@127.0.0.1:5432/{}".format(
+    quote(values["POSTGRES_USER"], safe=""), quote(values["POSTGRES_PASSWORD"], safe=""),
+    quote(values["POSTGRES_DB"], safe=""),
+)
+target = Path(sys.argv[2])
+target.write_text(f"DATABASE_URL={url}\n", encoding="utf-8")
+target.chmod(0o600)
+PY
+
+/usr/bin/docker run --detach --name "$db_container" --network none \
+  --env-file "$payload/files/postgres-env" \
+  --mount "type=bind,source=$work/postgres,target=/var/lib/postgresql/data" \
+  --security-opt no-new-privileges:true "$postgres_image" >/dev/null
+
+readonly db_container_id="$(/usr/bin/docker inspect --format '{{.Id}}' "$db_container")"
+[[ "$(/usr/bin/docker inspect --format '{{.HostConfig.NetworkMode}}' "$db_container")" == none ]] || {
+  echo 'restore postgres network isolation failed' >&2
+  exit 66
+}
+[[ "$(/usr/bin/docker exec "$db_container" sh -eu -c 'ls -A /sys/class/net')" == lo ]] || {
+  echo 'restore postgres has an external network interface' >&2
+  exit 66
+}
+
+ready=false
+for _ in {1..60}; do
+  if /usr/bin/docker exec "$db_container" sh -eu -c 'pg_isready --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$ready" == true ]] || { echo 'isolated postgres did not become ready' >&2; exit 66; }
+
+/usr/bin/docker exec -i "$db_container" sh -eu -c \
+  'exec pg_restore --exit-on-error --no-owner --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
+  <"$payload/database.dump"
+
+table_count="$(/usr/bin/docker exec "$db_container" sh -eu -c \
+  'psql --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="select count(*) from information_schema.tables where table_schema = '\''public'\''"')"
+[[ "$table_count" =~ ^[1-9][0-9]*$ ]] || { echo 'restored database has no public schema tables' >&2; exit 67; }
+
+/usr/bin/docker run --detach --name "$app_container" --network "container:$db_container_id" \
+  --env-file "$payload/files/umami-env" --env-file "$work/loopback.env" \
+  --security-opt no-new-privileges:true \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m "$umami_image" >/dev/null
+
+[[ "$(/usr/bin/docker inspect --format '{{.HostConfig.NetworkMode}}' "$app_container")" == "container:$db_container_id" ]] || {
+  echo 'restore application network namespace sharing failed' >&2
+  exit 68
+}
+[[ "$(/usr/bin/docker exec "$app_container" sh -eu -c 'ls -A /sys/class/net')" == lo ]] || {
+  echo 'restore application has an external network interface' >&2
+  exit 68
+}
+
+healthy=false
+for _ in {1..90}; do
+  if /usr/bin/docker exec "$app_container" node -e \
+    'fetch("http://127.0.0.1:3000/api/heartbeat").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))' \
+    >/dev/null 2>&1; then
+    healthy=true
+    break
+  fi
+  sleep 1
+done
+[[ "$healthy" == true ]] || { echo 'isolated Umami did not become healthy' >&2; exit 68; }
+
+echo '{"adapter":"postgres-compose-v1","application":"umami","status":"passed","network":"loopback-only-shared-namespace"}'
