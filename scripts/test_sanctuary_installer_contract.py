@@ -26,12 +26,22 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         )
         self.assertIn('chown root:root "$known_hosts_temp"', INSTALLER)
         self.assertIn("path: /etc/tuinstra-backup/ssh/prod01, owner: root, group: root, mode: '0600'", ROLE)
-        self.assertIn("validate_secret(destination, ssh_credential_uids())", BOOTSTRAP)
+        self.assertIn("normalize_ssh_identity(destination)", BOOTSTRAP)
         self.assertIn("chown root:root /etc/tuinstra-backup/age-identity.txt", INSTALLER)
         self.assertIn("rm -f /etc/sudoers.d/93-tuinstra-backup-ingest", INSTALLER)
         self.assertNotIn("tuinstra-backup ALL=(root)", INSTALLER)
         self.assertIn('ensure_ssh_identity("prod01-restore")', BOOTSTRAP)
         self.assertIn('PUBLIC_ROOT / f"{host}.pub"', BOOTSTRAP)
+
+    def test_legacy_key_ownership_is_normalized_before_escrow_staging(self):
+        bootstrap = INSTALLER.index('python3 "$bootstrap_source"')
+        escrow = INSTALLER.index('python3 "$escrow_stage_source"')
+        later_installer_chown = INSTALLER.index(
+            "chown root:root /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02"
+        )
+        self.assertLess(bootstrap, escrow)
+        self.assertLess(escrow, later_installer_chown)
+        self.assertIn("os.fchown(descriptor, ROOT_UID, ROOT_GID)", BOOTSTRAP)
 
     def test_root_owns_lock_parent_and_all_cycle_state(self):
         commands = [line.strip() for line in INSTALLER.replace("\\\n", " ").splitlines()]
