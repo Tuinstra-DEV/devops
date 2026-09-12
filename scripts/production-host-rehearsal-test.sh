@@ -85,7 +85,9 @@ raise "host mounts are forbidden" unless lima.fetch("mounts") == []
 raise "Lima containerd is forbidden" unless lima.dig("containerd", "system") == false && lima.dig("containerd", "user") == false
 raise "personal keys or agents must not enter the VM" unless
   lima.dig("ssh", "loadDotSSHPubKeys") == false && lima.dig("ssh", "forwardAgent") == false
-raise "all guest service forwarding must be blocked" unless lima.fetch("portForwards") == [{"guestIP" => "0.0.0.0", "proto" => "any", "ignore" => true}]
+raise "all guest service forwarding must be blocked" unless lima.fetch("portForwards") == [{
+  "guestIP" => "0.0.0.0", "guestIPMustBeZero" => false, "proto" => "any", "ignore" => true
+}]
 raise "backup rehearsal disk is not fixed" unless lima.fetch("additionalDisks") == [{"name" => "tuinstra-rehearsal-backup-01", "format" => true, "fsType" => "ext4"}]
 
 image = lima.fetch("images").fetch(0)

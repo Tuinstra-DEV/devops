@@ -35,6 +35,7 @@ containerd:
 networks: []
 portForwards:
   - guestIP: 0.0.0.0
+    guestIPMustBeZero: false
     proto: any
     ignore: true
 

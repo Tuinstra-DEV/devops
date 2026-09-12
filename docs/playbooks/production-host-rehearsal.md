@@ -43,8 +43,10 @@ Gebruik geen persoonlijke, deploy- of productieherstelcredentials.
 De VM gebruikt vier CPU's, 8 GiB geheugen, een sparse rootdisk van 64 GiB en een
 losse sparse back-updisk van 20 GiB. Hij mount geen hostdirectory, laadt geen
 persoonlijke SSH-sleutels of agent en publiceert naast Lima's localhost-SSH geen
-gastpoorten. Outbound DNS en HTTPS zijn tijdens de inrichting nodig voor Ubuntu,
-Docker en de vastgezette containerimages.
+gastpoorten. De brede `ignore`-regel zet `guestIPMustBeZero: false` expliciet,
+zodat Lima ook loopback-listeners in de gast niet automatisch doorstuurt.
+Outbound DNS en HTTPS zijn tijdens de inrichting nodig voor Ubuntu, Docker en de
+vastgezette containerimages.
 
 ```sh
 limactl validate infra/lima/tuinstra-rehearsal-01.yaml
