@@ -48,7 +48,7 @@
       - "'db' in production_umami_running_services.stdout_lines"
       - "'umami' in production_umami_running_services.stdout_lines"
 
-- name: Verify no Umami application or database port is published
+- name: Resolve the running Umami container IDs
   ansible.builtin.command:
     argv:
       - /usr/bin/docker
@@ -59,15 +59,42 @@
       - "{{ production_umami_root }}"
       - --file
       - "{{ production_umami_root }}/compose.yml"
-      - port
-      - "{{ item.service }}"
-      - "{{ item.port }}"
+      - ps
+      - --quiet
+      - "{{ item }}"
   loop:
-    - { service: umami, port: '3000' }
-    - { service: db, port: '5432' }
-  register: production_umami_published_ports
+    - umami
+    - db
+  register: production_umami_container_ids
   changed_when: false
-  failed_when: production_umami_published_ports.stdout | trim | length > 0
+  failed_when: production_umami_container_ids.stdout | trim is not match('^[a-f0-9]{64}$')
+
+- name: Read only the host port bindings from each Umami container
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - container
+      - inspect
+      - --format
+      - "{{ '{{' }}json .HostConfig.PortBindings{{ '}}' }}"
+      - "{{ item.stdout | trim }}"
+  loop: "{{ production_umami_container_ids.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: production_umami_host_port_bindings
+  changed_when: false
+
+- name: Verify no Umami container publishes a host port
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json) is none or
+        ((item.stdout | from_json) | length == 0)
+    fail_msg: "{{ item.item.item }} unexpectedly publishes a host port."
+    quiet: true
+  loop: "{{ production_umami_host_port_bindings.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
 
 - name: Verify the Umami heartbeat from the application container
   ansible.builtin.command:

@@ -14,6 +14,11 @@ grep -q '/api/admin/2fa/global' "$role/templates/admin-bootstrap.mjs.j2"
 grep -q "await login('umami')" "$role/templates/admin-bootstrap.mjs.j2"
 grep -q 'internal: true' "$role/templates/compose.yml.j2"
 grep -q 'external: true' "$role/templates/compose.yml.j2"
+if grep -q '^      - port$' "$role/tasks/verify.yml"; then
+  echo "docker compose port is ambiguous for unpublished ports on Compose 5.5.1" >&2
+  exit 1
+fi
+grep -q 'HostConfig.PortBindings' "$role/tasks/verify.yml"
 
 if grep -R -E '(PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY)' \
   "$repo_root/infra/ansible/production-umami"* \
