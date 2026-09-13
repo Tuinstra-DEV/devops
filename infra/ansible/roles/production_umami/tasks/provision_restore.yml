@@ -1,0 +1,51 @@
+---
+- name: Validate the inert Umami restore contract
+  ansible.builtin.assert:
+    that:
+      - ansible_hostname == production_umami_expected_hostname
+      - production_umami_domain is match('^[a-z0-9][a-z0-9.-]+[a-z0-9]$')
+      - production_umami_image is match('^ghcr\\.io/umami-software/umami:3\\.3\\.1@sha256:[a-f0-9]{64}$')
+      - production_umami_postgres_image is match('^docker\\.io/library/postgres:15-alpine@sha256:[a-f0-9]{64}$')
+      - production_umami_edge_network == (production_caddy_edge_network | default('tuinstra-edge'))
+      - "'umami' in production_app_names"
+    fail_msg: Refusing to provision Umami restore files outside the pinned host profile.
+
+- name: Create the empty PostgreSQL restore target
+  ansible.builtin.file:
+    path: "{{ production_umami_data_root }}/postgres"
+    state: directory
+    owner: '70'
+    group: '70'
+    mode: '0700'
+
+- name: Install the Umami administrator bootstrap program for recovery
+  ansible.builtin.template:
+    src: admin-bootstrap.mjs.j2
+    dest: "{{ production_umami_root }}/admin-bootstrap.mjs"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the constrained Umami 1Password handoff RPC for recovery
+  ansible.builtin.template:
+    src: onepassword-handoff.mjs.j2
+    dest: "{{ production_umami_root }}/onepassword-handoff.mjs"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the inert Umami Compose definition
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ production_umami_root }}/compose.yml"
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Install the unloaded Umami Caddy route
+  ansible.builtin.template:
+    src: umami.caddy.j2
+    dest: /var/www/_platform/caddy/sites/umami.caddy
+    owner: root
+    group: root
+    mode: '0644'

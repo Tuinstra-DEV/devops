@@ -24,6 +24,7 @@
       - --with-colons
       - /etc/apt/keyrings/docker.asc
   register: production_docker_key_details
+  check_mode: false
   changed_when: false
 
 - name: Require the expected Docker signing key

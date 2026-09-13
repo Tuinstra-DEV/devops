@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""Execute one root-allowlisted local production profile request."""
+
+from __future__ import annotations
+
+import base64
+import fcntl
+import grp
+import hashlib
+import json
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+CONTRACT = 1
+ROOT = Path("/var/lib/tuinstra-profile-executor")
+CONFIG_ROOT = Path("/etc/tuinstra-profile-executor")
+LOCK_ROOT = Path("/run/lock/tuinstra")
+GIT = Path("/usr/bin/git")
+ANSIBLE = Path("/usr/bin/ansible-playbook")
+SOURCE_REPOSITORY = "git@github.com:Tuinstra-DEV/devops.git"
+HOST_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{0,79}")
+JOB_PATTERN = re.compile(r"job_[A-Za-z0-9-]{1,120}")
+HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
+SHA_PATTERN = re.compile(r"[a-f0-9]{40}")
+VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+MAX_OUTPUT = 4_194_304
+
+
+class Rejected(Exception):
+    pass
+
+
+def emit(payload: dict[str, Any]) -> int:
+    sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+    return 0 if payload.get("status") == "succeeded" else 1
+
+
+def reject(summary: str = "Profile request was rejected by the target policy.") -> int:
+    return emit({"contract_version": CONTRACT, "status": "failed", "summary": summary, "retry_safe": True})
+
+
+def exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise Rejected(f"{label} does not match the fixed contract.")
+    return value
+
+
+def bounded_string(value: Any, pattern: re.Pattern[str], label: str) -> str:
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise Rejected(f"{label} is invalid.")
+    return value
+
+
+def safe_file(path: Path, mode: int, owner: int = 0) -> None:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) != mode:
+        raise Rejected("A trusted executor file has unsafe ownership or permissions.")
+
+
+def safe_directory(path: Path, mode: int, owner: int = 0) -> None:
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) != mode:
+        raise Rejected("A trusted executor directory has unsafe ownership or permissions.")
+
+
+def decode_request() -> dict[str, Any]:
+    raw = sys.stdin.buffer.read(16_385)
+    if len(raw) > 16_384:
+        raise Rejected("Profile request is too large.")
+    original = raw.decode("ascii", "strict")
+    match = re.fullmatch(r"tuinstra-profile-v1 ([A-Za-z0-9_-]{32,16000})", original)
+    if match is None:
+        raise Rejected("Profile request command is invalid.")
+    encoded = match.group(1)
+    decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    request = json.loads(decoded)
+    common = {
+        "contract_version", "host_slug", "operation", "job_id", "plan_hash",
+        "profile_version", "profile_content_hash", "source_sha", "procedure",
+    }
+    operation = request.get("operation") if isinstance(request, dict) else None
+    keys = common | ({"approved_check_result_hash"} if operation == "apply" else set())
+    request = exact_object(request, keys, "Profile request")
+    if request["contract_version"] != CONTRACT or operation not in {"check", "apply"}:
+        raise Rejected("Profile request contract or operation is unsupported.")
+    bounded_string(request["host_slug"], HOST_PATTERN, "Host")
+    bounded_string(request["job_id"], JOB_PATTERN, "Job")
+    bounded_string(request["plan_hash"], HASH_PATTERN, "Plan hash")
+    bounded_string(request["profile_version"], VERSION_PATTERN, "Profile version")
+    bounded_string(request["profile_content_hash"], HASH_PATTERN, "Profile hash")
+    bounded_string(request["source_sha"], SHA_PATTERN, "Source SHA")
+    if request["procedure"] not in {"baseline", "baseline_umami_restore"}:
+        raise Rejected("Profile procedure is unsupported.")
+    if operation == "apply":
+        bounded_string(request["approved_check_result_hash"], HASH_PATTERN, "Approved check hash")
+    return request
+
+
+def load_policy(request: dict[str, Any]) -> dict[str, Any]:
+    host = request["host_slug"]
+    identity_path = CONFIG_ROOT / "host-identity"
+    policy_path = CONFIG_ROOT / "profiles" / f"{host}.json"
+    safe_file(identity_path, 0o644)
+    safe_directory(CONFIG_ROOT / "profiles", 0o700)
+    safe_file(policy_path, 0o600)
+    if identity_path.read_text(encoding="ascii").strip() != host:
+        raise Rejected("Target host identity does not match the request.")
+    policy = exact_object(
+        json.loads(policy_path.read_text(encoding="utf-8")),
+        {"host_slug", "profile_version", "profile_content_hash", "source_repository", "source_sha", "procedure", "inventory", "limit", "vars", "publication_id"},
+        "Profile allowlist",
+    )
+    expected = {
+        "host_slug": request["host_slug"],
+        "profile_version": request["profile_version"],
+        "profile_content_hash": request["profile_content_hash"],
+        "source_sha": request["source_sha"],
+        "procedure": request["procedure"],
+    }
+    if any(policy.get(key) != value for key, value in expected.items()) or policy["source_repository"] != SOURCE_REPOSITORY:
+        raise Rejected("Requested profile is not in the root-owned target allowlist.")
+    bounded_string(policy["publication_id"], re.compile(r"change-[A-Za-z0-9-]{8,120}"), "Publication approval")
+    fixed_targets = {
+        "tuinstra-prod-01": ("infra/ansible/production/local-prod01.yml", "prod01", "hosts/tuinstra-prod-01/vars.yml", "baseline_umami_restore"),
+        "tuinstra-prod-02": ("infra/ansible/production/local-prod02.yml", "prod02", "hosts/tuinstra-prod-02/vars.yml", "baseline"),
+        "tuinstra-rehearsal-01": ("infra/ansible/rehearsal/local-inventory.yml", "rehearsal01", "hosts/tuinstra-rehearsal-01/vars.yml", "baseline_umami_restore"),
+    }
+    selected = (policy["inventory"], policy["limit"], policy["vars"], policy["procedure"])
+    if fixed_targets.get(request["host_slug"]) != selected:
+        raise Rejected("Profile allowlist selects an unsupported local target.")
+    return policy
+
+
+def verify_bundle(policy: dict[str, Any]) -> tuple[Path, Path, Path]:
+    bundle = ROOT / "bundles" / policy["source_sha"]
+    runtime = ROOT / "runtime"
+    safe_directory(ROOT / "bundles", 0o755)
+    safe_directory(bundle, 0o755)
+    safe_directory(runtime, 0o700)
+    wrapper = bundle / "scripts/production-host-baseline"
+    inventory = bundle / policy["inventory"]
+    vars_file = CONFIG_ROOT / policy["vars"]
+    safe_file(wrapper, 0o755)
+    safe_file(inventory, 0o644)
+    safe_file(vars_file, 0o600)
+    for executable in (GIT, ANSIBLE):
+        info = executable.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not os.access(executable, os.X_OK):
+            raise Rejected("A fixed executor binary is unsafe.")
+    commands = (
+        ([str(GIT), "-c", f"safe.directory={bundle}", "-C", str(bundle), "rev-parse", "HEAD"], policy["source_sha"]),
+        ([str(GIT), "-c", f"safe.directory={bundle}", "-C", str(bundle), "config", "--get", "remote.origin.url"], SOURCE_REPOSITORY),
+        ([str(GIT), "-c", f"safe.directory={bundle}", "-C", str(bundle), "status", "--porcelain", "--untracked-files=normal"], ""),
+    )
+    for argv, expected in commands:
+        result = subprocess.run(argv, cwd=bundle, capture_output=True, text=True, timeout=30, check=False, env={"PATH": "/usr/bin:/bin", "HOME": str(runtime)})
+        if result.returncode != 0 or result.stdout.strip() != expected:
+            raise Rejected("Immutable profile bundle identity verification failed.")
+    return wrapper, inventory, vars_file
+
+
+def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def parse_recap(stdout: str, limit: str) -> tuple[int, int, int, list[str]]:
+    tasks: set[str] = set()
+    current: str | None = None
+    for line in stdout.splitlines():
+        task = re.fullmatch(r"TASK \[(.+?)](?:\s+\*+)?", line.strip())
+        if task:
+            current = task.group(1).strip()[:160]
+        elif current and re.fullmatch(rf"changed: \[{re.escape(limit)}]", line.strip()):
+            tasks.add(current)
+    match = re.search(rf"^{re.escape(limit)}\s*:\s*ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)", stdout, re.MULTILINE)
+    if match is None:
+        return 0, 1, 1, sorted(tasks)[:50]
+    return int(match.group(2)), int(match.group(4)), int(match.group(3)), sorted(tasks)[:50]
+
+
+def evidence_hash(request: dict[str, Any], changed: int, failed: int, unreachable: int, tasks: list[str]) -> str:
+    payload = {
+        "changed_count": changed,
+        "changed_tasks": tasks,
+        "failed_count": failed,
+        "host_slug": request["host_slug"],
+        "profile_content_hash": request["profile_content_hash"],
+        "profile_version": request["profile_version"],
+        "procedure": request["procedure"],
+        "source_sha": request["source_sha"],
+        "unreachable_count": unreachable,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def run_command(
+    request: dict[str, Any],
+    policy: dict[str, Any],
+    paths: tuple[Path, Path, Path],
+    phase: str,
+    command: str,
+    check_mode: bool,
+) -> dict[str, Any]:
+    wrapper, inventory, vars_file = paths
+    argv = [str(wrapper), "--inventory", str(inventory), "--limit", policy["limit"], "--extra-vars", str(vars_file)]
+    if check_mode:
+        argv.append("--check")
+    argv.append(command)
+    operation_runtime = ROOT / "runtime" / request["job_id"]
+    operation_runtime.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(operation_runtime, 0o700)
+    local_temp = operation_runtime / "tmp" / "local"
+    remote_temp = operation_runtime / "tmp" / "remote"
+    local_temp.mkdir(mode=0o700, parents=True, exist_ok=True)
+    remote_temp.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(operation_runtime / "tmp", 0o700)
+    os.chmod(local_temp, 0o700)
+    os.chmod(remote_temp, 0o700)
+    env = {
+        "ANSIBLE_HOME": str(operation_runtime),
+        "ANSIBLE_LOCAL_TEMP": str(local_temp),
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_PLAYBOOK": str(ANSIBLE),
+        "ANSIBLE_REMOTE_TEMP": str(remote_temp),
+        "ANSIBLE_RETRY_FILES_ENABLED": "False",
+        "HOME": str(operation_runtime),
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TMPDIR": str(operation_runtime),
+    }
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        exit_code = run_bounded(argv, wrapper.parents[1], env, stdout_file, stderr_file, 900)
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read(MAX_OUTPUT + 1)
+        stderr = stderr_file.read(MAX_OUTPUT + 1)
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout_hash = hashlib.file_digest(stdout_file, "sha256").hexdigest()
+        stderr_hash = hashlib.file_digest(stderr_file, "sha256").hexdigest()
+    output_truncated = len(stdout) > MAX_OUTPUT or len(stderr) > MAX_OUTPUT
+    stdout = stdout[:MAX_OUTPUT]
+    stderr = stderr[:MAX_OUTPUT]
+    stdout_text = stdout.decode("utf-8", "replace")
+    changed, failed, unreachable, tasks = parse_recap(stdout_text, policy["limit"])
+    successful = exit_code == 0 and failed == 0 and unreachable == 0 and not output_truncated
+    return {
+        "phase": phase,
+        "successful": successful,
+        "exit_code": exit_code,
+        "changed_count": changed,
+        "failed_count": failed,
+        "unreachable_count": unreachable,
+        "changed_tasks": tasks,
+        "stdout_hash": stdout_hash,
+        "stderr_hash": stderr_hash,
+        "output_truncated": output_truncated,
+        "evidence_hash": evidence_hash(request, changed, failed, unreachable, tasks),
+    }
+
+
+def run_bounded(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    stdout: Any,
+    stderr: Any,
+    timeout: float,
+) -> int:
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        signal_group(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        # The leader can exit on SIGTERM while a descendant ignores it. Always
+        # kill the remaining group before returning control to the host lock.
+        signal_group(process.pid, signal.SIGKILL)
+        if process.poll() is None:
+            process.wait(timeout=5)
+        raise
+    finally:
+        if process.poll() is None:
+            signal_group(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+def signal_group(group: int, selected_signal: signal.Signals) -> None:
+    try:
+        os.killpg(group, selected_signal)
+    except ProcessLookupError:
+        pass
+
+
+def run_phase(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, Path, Path], phase: str) -> dict[str, Any]:
+    check_mode = phase in {"check", "preflight", "idempotence"}
+    commands = ["verify" if phase == "verify" else "configure"]
+    if request["procedure"] == "baseline_umami_restore":
+        commands.append("verify-umami-restore" if phase == "verify" else "configure-umami-restore")
+    results: list[dict[str, Any]] = []
+    for command in commands:
+        result = run_command(request, policy, paths, phase, command, check_mode)
+        results.append(result)
+        if not result["successful"]:
+            break
+    changed_tasks = sorted({task for result in results for task in result["changed_tasks"]})[:50]
+    changed = sum(result["changed_count"] for result in results)
+    failed = sum(result["failed_count"] for result in results)
+    unreachable = sum(result["unreachable_count"] for result in results)
+    aggregate = {
+        "phase": phase,
+        "successful": len(results) == len(commands) and all(result["successful"] for result in results),
+        "exit_code": max((result["exit_code"] for result in results), default=1),
+        "changed_count": changed,
+        "failed_count": failed,
+        "unreachable_count": unreachable,
+        "changed_tasks": changed_tasks,
+        "stdout_hash": hashlib.sha256("".join(result["stdout_hash"] for result in results).encode()).hexdigest(),
+        "stderr_hash": hashlib.sha256("".join(result["stderr_hash"] for result in results).encode()).hexdigest(),
+        "output_truncated": any(result["output_truncated"] for result in results),
+        "steps_completed": len(results),
+        "steps_expected": len(commands),
+    }
+    aggregate["evidence_hash"] = evidence_hash(request, changed, failed, unreachable, changed_tasks)
+    return aggregate
+
+
+def acquire_host_lock(host: str) -> int:
+    operation_gid = grp.getgrnam("tuinstra-ops").gr_gid
+    root_info = LOCK_ROOT.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != 0 or root_info.st_gid != operation_gid or stat.S_IMODE(root_info.st_mode) != 0o750:
+        raise Rejected("Target host lock root is unsafe.")
+    path = LOCK_ROOT / f"operations.host.{host}.lock"
+    descriptor = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != operation_gid or stat.S_IMODE(info.st_mode) != 0o660:
+        os.close(descriptor)
+        raise Rejected("Target host lock is unsafe.")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise Rejected("Target host is busy with another operation.") from error
+    return descriptor
+
+
+def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, Path, Path]) -> dict[str, Any]:
+    operation = request["operation"]
+    journal_root = ROOT / "journal"
+    safe_directory(journal_root, 0o700)
+    request_hash = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    journal = journal_root / f"{request['job_id']}-{request['plan_hash']}.json"
+    def replay() -> dict[str, Any] | None:
+        if not journal.exists():
+            return None
+        safe_file(journal, 0o600)
+        stored = json.loads(journal.read_text(encoding="utf-8"))
+        if stored.get("request_hash") != request_hash:
+            raise Rejected("Operation journal identity does not match this request.")
+        response = stored.get("response")
+        if isinstance(response, dict):
+            return response
+        return {"contract_version": CONTRACT, "status": "uncertain", "summary": "Prior execution did not record a terminal result; reconcile before retrying.", "retry_safe": False}
+
+    existing = replay()
+    if existing is not None:
+        return existing
+
+    descriptor = acquire_host_lock(request["host_slug"])
+    try:
+        existing = replay()
+    except Exception:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+    if existing is not None:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        return existing
+
+    atomic_json(journal, {"request_hash": request_hash, "response": None})
+    try:
+        try:
+            if operation == "check":
+                result = run_phase(request, policy, paths, "check")
+                status = "succeeded" if result["successful"] else "failed"
+                response = {"contract_version": CONTRACT, "status": status, "summary": "Target profile check completed." if result["successful"] else "Target profile check failed.", "retry_safe": not result["successful"], **result}
+            else:
+                preflight = run_phase(request, policy, paths, "preflight")
+                if not preflight["successful"] or preflight["evidence_hash"] != request["approved_check_result_hash"]:
+                    response = {"contract_version": CONTRACT, "status": "failed", "summary": "Fresh target preflight differs from the approved check.", "retry_safe": True, **preflight}
+                else:
+                    configured = run_phase(request, policy, paths, "configure")
+                    if not configured["successful"]:
+                        response = {"contract_version": CONTRACT, "status": "uncertain", "summary": "Target profile configure failed; reconciliation is required.", "retry_safe": False, **configured}
+                    else:
+                        verified = run_phase(request, policy, paths, "verify")
+                        if not verified["successful"]:
+                            response = {"contract_version": CONTRACT, "status": "uncertain", "summary": "Target profile verification failed; reconciliation is required.", "retry_safe": False, **verified}
+                        else:
+                            repeated = run_phase(request, policy, paths, "idempotence")
+                            if not repeated["successful"] or repeated["changed_count"] != 0:
+                                response = {"contract_version": CONTRACT, "status": "uncertain", "summary": "Target profile retained drift after apply; reconciliation is required.", "retry_safe": False, **repeated}
+                            else:
+                                response = {"contract_version": CONTRACT, "status": "succeeded", "summary": "Target profile applied, verified, and repeated with zero drift.", "retry_safe": False, "approved_check_result_hash": request["approved_check_result_hash"], "post_apply_verified": True, **repeated}
+        except (OSError, subprocess.SubprocessError):
+            response = {
+                "contract_version": CONTRACT,
+                "status": "uncertain" if operation == "apply" else "failed",
+                "summary": "Target execution was interrupted; reconciliation is required." if operation == "apply" else "Target check was interrupted before mutation.",
+                "retry_safe": operation == "check",
+            }
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+    atomic_json(journal, {"request_hash": request_hash, "response": response})
+    return response
+
+
+def main() -> int:
+    request: dict[str, Any] | None = None
+    try:
+        if os.geteuid() != 0 or sys.argv != [sys.argv[0]] or os.environ.get("SUDO_USER") != "console-profile-executor":
+            raise Rejected("Executor invocation identity is invalid.")
+        request = decode_request()
+        policy = load_policy(request)
+        paths = verify_bundle(policy)
+        response = execute(request, policy, paths)
+        response.update({
+            "host_slug": request["host_slug"],
+            "job_id": request["job_id"],
+            "operation": request["operation"],
+            "plan_hash": request["plan_hash"],
+            "profile_content_hash": request["profile_content_hash"],
+            "profile_version": request["profile_version"],
+            "procedure": request["procedure"],
+            "source_sha": request["source_sha"],
+        })
+        return emit(response)
+    except (Rejected, ValueError, UnicodeError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+        if request is not None:
+            return emit({
+                "contract_version": CONTRACT,
+                "status": "failed",
+                "summary": "Profile request was rejected by the target policy.",
+                "retry_safe": request["operation"] == "check",
+                "host_slug": request["host_slug"],
+                "job_id": request["job_id"],
+                "operation": request["operation"],
+                "plan_hash": request["plan_hash"],
+                "profile_content_hash": request["profile_content_hash"],
+                "profile_version": request["profile_version"],
+                "procedure": request["procedure"],
+                "source_sha": request["source_sha"],
+            })
+        return reject()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
