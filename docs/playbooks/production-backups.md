@@ -6,9 +6,11 @@ forced-command SSH-key een logische export op de productiehost, haalt het
 versleutelde artifact op, controleert checksum en omvang, schrijft het naar een
 eigen versleutelde Restic-repository en bevestigt ontvangst pas na `restic check`.
 
-De eerste actieve adapter is `tuinstra-prod-01/umami`. Prod-02 bevat nog geen
-geverifieerde productieapp en rapporteert daarom `not-applicable`. Sanctuary is
-alleen bestemming; zijn eigen workloads zijn geen bron in deze keten.
+De eerste actieve adapter is `tuinstra-prod-01/umami`. De Tracker-adapter voor
+`tuinstra-prod-02/tracker` staat als afzonderlijk profiel klaar en blijft
+uitgeschakeld totdat de productie-imagepins, credentials en een echte
+herstelproef door de release-owner zijn bevestigd. Sanctuary is alleen
+bestemming; zijn eigen workloads zijn geen bron in deze keten.
 
 ## Vaste indeling en geheimen
 
@@ -26,6 +28,15 @@ De volgende bestanden worden buiten Git aangeleverd:
 Bewaar de age-identity, het Restic-wachtwoord en alle drie SSH-identiteiten daarnaast in 1Password. De
 acceptatietest gebruikt een vanuit 1Password opnieuw aangeleverde kopie. Laat
 waarden nooit via command-line-argumenten, terminaloutput, Git of Tracker lopen.
+
+De standaard Sanctuary-installatie maakt alleen de bestaande Umami-repository
+en policy actief. Voor Tracker moet de operator eerst de allowlist in de
+Sanctuary-variabelen uitbreiden met `tuinstra-prod-02/tracker`, het onafhankelijke
+Restic-wachtwoord onder
+`/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` laten
+provisioneren en daarna pas een gecontroleerde policy-reconcile uitvoeren. De
+Tracker-export blijft uitgeschakeld totdat alle PHP/nginx-digests en deze
+credential zijn geverifieerd.
 
 Voor de onafhankelijke credentialtest zet de 1Password-helper exact één tijdelijk JSON-bestand op
 `/home/mtuinstra/.local/share/tuinstra-backup-recovery.json` (`mtuinstra:0600`). Voer daarna uit:
@@ -68,6 +79,16 @@ velden wordt uitsluitend uitgebreid met `prod01-restore`; het volledige JSON-ite
 de helper vergelijkt daarna alle vijf waarden. Verwijder het
 handoffbestand op Sanctuary pas na die geslaagde readback. Een root-owned marker
 voorkomt dat een herhaalde installatie ongemerkt een nieuwe leesbare kopie maakt.
+
+De source-only `git archive` bevat bewust niet de twee externe hostkeybestanden.
+Het getrackte `install-input/manifest.json` bevat hun SHA-256, eigenaar, mode,
+hostnaam en verwachte Ed25519-fingerprint. Stage de bestanden alleen na een
+vergelijking met de actuele `/etc/ssh/ssh_host_ed25519_key.pub` op beide
+productiehosts via de bestaande strict-SSH-verbinding én met de lokale
+`known_hosts`-entry. De bundle-installer voert daarna
+`scripts/verify-install-inputs.py` uit vóór `apt-get`, accountcreatie of andere
+mutaties. Een ontbrekende, symlinked, verkeerd geownerde, verkeerd gemodeerde of
+afwijkende key stopt de installatie fail-closed.
 
 Verifieer de productiehostkeys via de bestaande StrictHostKeyChecking-verbinding:
 lees op iedere host `/etc/ssh/ssh_host_ed25519_key.pub` met sudo, vergelijk de
@@ -183,6 +204,29 @@ een anonieme pipe, ontsleutelt het seed uitsluitend in de geïsoleerde Umami-con
 maakt daar een verse TOTP en doorloopt login, 2FA en identiteitscontrole via
 loopback. Seed, wachtwoord, TOTP, tokens en HTTP-responses worden niet geschreven
 of gelogd.
+
+Voor Tracker gebruikt de geïnstalleerde `restore-tracker`-adapter PostgreSQL
+17 met de vastgelegde digest, herstelt hij de Doctrine-migratieledger en
+reconcilieert hij elk object uit het tijdens de quiescence-window vastgelegde
+S3-objectmanifest op sleutel, omvang en SHA-256. Het getarbalde volledige MinIO-
+dataroot is transportmateriaal; MinIO's interne `xl.meta`- en part-bestanden
+worden niet als objectinhoud geïnterpreteerd. De test start geen Tracker-webapp, workers of
+externe endpoints; de applicatie-healthstatus blijft daarom expliciet
+`not-run-external-effects-blocked`. De productie-export stopt de geconfigureerde
+Tracker-services alleen gedurende de quiescence-window (maximaal 120 seconden)
+en start daarna uitsluitend services die vóór de export actief waren. Een
+herstelbewijs is geen vervanging voor een gecontroleerde restore naar de echte
+productiedoelen.
+
+De native Tracker-gate maakt daarvoor een volledig synthetische PG17-dump en
+een MinIO-object met de vastgelegde images en voert daarna dezelfde adapter uit:
+
+```bash
+sudo ./scripts/test_tracker_restore_native.sh
+```
+
+Deze gate gebruikt alleen een tijdelijke map onder `/run/tuinstra-backup` en
+verwijdert haar containers en fixturedata bij afsluiten.
 
 Een volledige acceptatie-oefening gebruikt een lege geïsoleerde doelomgeving en
 de recoverycredentials uit 1Password. Noteer begin/eindtijd; het doel is herstel

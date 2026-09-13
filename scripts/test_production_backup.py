@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -66,6 +67,213 @@ class BackupTests(unittest.TestCase):
                 "included_files": [{"name": "compose", "path": str(compose)},
                                    {"name": "secret", "path": str(secret)}]}],
         }
+
+    def tracker_app(self):
+        compose = self.root / "tracker-compose.json"
+        compose.write_text(json.dumps({"services": {
+            "minio": {"environment": ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"]},
+        }}))
+        env_file = self.root / "tracker.env"
+        env_file.write_text("S3_BUCKET=tracker-attachments\nMINIO_ROOT_USER=fixture-user\nMINIO_ROOT_PASSWORD=fixture-password\n")
+        env_file.chmod(0o600)
+        attachments = self.root / "attachments"
+        (attachments / "nested").mkdir(parents=True)
+        (attachments / "nested" / "report.txt").write_text("safe attachment\n")
+        approved = {
+            service: f"registry.example/{service}:release@sha256:{(hex(index)[2:] * 64)[:64]}"
+            for index, service in enumerate(("postgres", "php", "php-mcp", "worker",
+                                               "catalog-worker", "release-evidence-worker", "nginx", "minio",
+                                               "minio-init", "clamav"), 1)
+        }
+        return {
+            "app_id": "tracker", "enabled": True, "adapter": "tracker-compose-v1",
+            "compose_project": "tracker", "compose_file": str(compose),
+            "compose_images_file": str(compose), "compose_env_file": str(env_file),
+            "object_store_bucket": "tracker-attachments",
+            "postgres_service": "postgres", "application_service": "php",
+            "runtime_image_services": ["postgres", "php", "php-mcp", "worker",
+                                        "catalog-worker", "release-evidence-worker", "nginx", "minio"],
+            "quiesce_services": ["php", "php-mcp", "worker", "catalog-worker",
+                                  "release-evidence-worker", "nginx", "minio"],
+            "approved_images": approved,
+            "included_files": [],
+            "included_directories": [{"name": "attachments", "path": str(attachments), "max_bytes": 1024}],
+        }
+
+    def test_tracker_attachment_snapshot_is_manifestable_and_rejects_links(self):
+        app = self.tracker_app()
+        source = Path(app["included_directories"][0]["path"])
+        target = self.root / "attachments.tar"
+        backup.snapshot_directory(source, target, 1024)
+        with tarfile.open(target) as archive:
+            names = {member.name for member in archive.getmembers()}
+        self.assertIn("attachments/nested/report.txt", names)
+        (source / "unsafe").symlink_to(source / "nested" / "report.txt")
+        with self.assertRaisesRegex(backup.BackupError, "symbolic link"):
+            backup.snapshot_directory(source, self.root / "rejected.tar", 1024)
+        self.assertFalse((self.root / "rejected.tar").exists())
+
+    def test_tracker_quiescence_restores_only_services_that_were_running(self):
+        app = self.tracker_app()
+        active = {"php", "worker"}
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if "ps" in argv and "--status" in argv:
+                if "--services" in argv:
+                    return mock.Mock(stdout=b"php\nworker\n")
+                return mock.Mock(stdout=(("c" * 64 + "\n") if argv[-1] in active else "").encode())
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            with backup.tracker_quiescence(app):
+                pass
+        self.assertEqual(calls[-2][-2:], ["php", "worker"])
+        self.assertEqual(calls[-1][-2:], ["php", "worker"])
+
+    def test_tracker_quiescence_restarts_original_set_after_partial_stop_failure(self):
+        app = self.tracker_app()
+        calls = []
+
+        def failing_stop(argv, **kwargs):
+            calls.append(argv)
+            if "--services" in argv:
+                return mock.Mock(stdout=b"php\nworker\n")
+            if "--quiet" in argv:
+                return mock.Mock(stdout=("c" * 64 + "\n").encode())
+            if " stop " in f" {' '.join(argv)} ":
+                raise backup.BackupError("stop failed")
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=failing_stop):
+            with self.assertRaisesRegex(backup.BackupError, "stop failed"):
+                with backup.tracker_quiescence(app):
+                    pass
+        self.assertTrue(any("start" in call for call in calls))
+
+    def test_tracker_restore_evidence_requires_isolated_non_application_health(self):
+        evidence = {
+            "schema_version": 1, "adapter": "tracker-compose-v1", "application": "tracker",
+            "status": "passed", "public_table_count": 3,
+            "application_health": "not-run-external-effects-blocked",
+            "encrypted_secret_validation": "not-applicable", "database_content_marker": "passed",
+            "object_store_reconciliation": "passed",
+            "network": "loopback-only-network-namespace", "external_effects_blocked": True,
+            "host_ports": 0, "postgres_image": "postgres@sha256:" + "a" * 64,
+            "application_image": "tracker@sha256:" + "b" * 64,
+            "containers_removed": True, "workspace_removed": True,
+        }
+        self.assertEqual(backup.validate_tracker_restore_adapter_result(evidence), evidence)
+        evidence["application_health"] = "passed"
+        with self.assertRaisesRegex(backup.BackupError, "health"):
+            backup.validate_tracker_restore_adapter_result(evidence)
+
+    def test_tracker_export_uses_host_bucket_when_minio_exposes_only_credentials(self):
+        app = self.tracker_app()
+        compose_contract = json.loads(Path(app["compose_file"]).read_text(encoding="utf-8"))
+        self.assertNotIn("S3_BUCKET", compose_contract["services"]["minio"]["environment"])
+        config = {
+            "schema_version": 1, "host_slug": "tuinstra-prod-02",
+            "spool_dir": str(self.root / "spool"), "work_dir": str(self.root / "work"),
+            "receipt_dir": str(self.root / "receipts"), "lock_file": str(self.root / "export.lock"),
+            "spool_quota_bytes": 1024 * 1024, "age_recipient_file": str(self.root / "recipient"),
+            "applications": [app],
+        }
+        for key in ("spool_dir", "work_dir"):
+            Path(config[key]).mkdir()
+        Path(config["age_recipient_file"]).write_text("age1tracker\n")
+        config_path = Path(config["age_recipient_file"])
+        config_path.chmod(0o600)
+        migrations = ["DoctrineMigrations\\Version20260813120000", "DoctrineMigrations\\Version20260912160000"]
+        row_counts = {"organization_count": 1, "project_count": 2, "story_count": 3, "attachment_count": 1}
+        calls = []
+        service_ids = {service: (hex(index)[2:] * 64)[:64]
+                       for index, service in enumerate(app["approved_images"], 1)}
+        image_digests = {service: image.rpartition("@sha256:")[2]
+                         for service, image in app["approved_images"].items()}
+        id_digests = {service_ids[service]: image_digests[service] for service in service_ids}
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "age":
+                destination = Path(argv[argv.index("--output") + 1])
+                shutil.copyfile(argv[-1], destination)
+                return mock.Mock(stdout=b"")
+            if argv[:2] == ["docker", "compose"] and "config" in argv:
+                return mock.Mock(stdout=("\n".join(app["approved_images"].values()) + "\n").encode())
+            if argv[:2] == ["docker", "compose"] and "ps" in argv:
+                if "--status" in argv:
+                    if "--services" in argv:
+                        return mock.Mock(stdout=b"php\nworker\nminio\n")
+                    return mock.Mock(stdout=("d" * 64 + "\n").encode())
+                service = argv[-1]
+                return mock.Mock(stdout=(service_ids[service] + "\n").encode())
+            if argv[:2] == ["docker", "inspect"]:
+                return mock.Mock(stdout=("sha256:" + id_digests[next(key for key in id_digests if key == argv[-1])] + "\n").encode())
+            if argv[:3] == ["docker", "image", "inspect"]:
+                digest = argv[-1].partition("sha256:")[2]
+                return mock.Mock(stdout=json.dumps(["registry@sha256:" + digest]).encode())
+            if argv[:2] == ["docker", "run"] and "ls" in argv:
+                return mock.Mock(stdout=(json.dumps({"status": "success", "type": "file",
+                    "key": "nested/report.txt", "size": len(b"safe attachment\n")}) + "\n").encode())
+            if argv[:2] == ["docker", "run"] and "cat" in argv:
+                kwargs["stdout"].write(b"safe attachment\n")
+                return mock.Mock(stdout=None)
+            if "exec" in argv and "MINIO_ROOT_USER" in argv[-1]:
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
+            if "exec" in argv and "pg_dump --version" in argv[-1]:
+                return mock.Mock(stdout=b"pg_dump (PostgreSQL) 17.5\n")
+            if "exec" in argv and "show server_version" in argv[-1]:
+                return mock.Mock(stdout=b"17.5\n")
+            if "exec" in argv and "doctrine_migration_versions" in argv[-1]:
+                return mock.Mock(stdout=("\n".join(migrations) + "\n").encode())
+            if "exec" in argv and "jsonb_build_object" in argv[-1]:
+                return mock.Mock(stdout=(json.dumps(row_counts) + "\n").encode())
+            if "exec" in argv:
+                kwargs["stdout"].write(b"PGDMP-tracker")
+                return mock.Mock(stdout=None)
+            if argv[:2] == ["docker", "compose"] and ("stop" in argv or "start" in argv):
+                return mock.Mock(stdout=b"")
+            raise AssertionError(argv)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            result = backup.create_export(config, "tracker")
+        self.assertEqual(result["adapter"], "tracker-compose-v1")
+        with tarfile.open(next((self.root / "spool").glob("*.age"))) as archive:
+            internal = json.load(archive.extractfile("payload/backup-manifest.json"))
+            self.assertIn("payload/files/attachments.tar", archive.getnames())
+            object_manifest = json.load(archive.extractfile("payload/files/object-manifest.json"))
+        self.assertEqual(internal["database"]["content_marker"]["row_counts"], row_counts)
+        self.assertEqual(internal["database"]["content_marker"]["migration_count"], len(migrations))
+        self.assertEqual(internal["object_store_bucket"], "tracker-attachments")
+        self.assertEqual(object_manifest["objects"][0]["bytes"], len(b"safe attachment\n"))
+        self.assertEqual(object_manifest["objects"][0]["sha256"], hashlib.sha256(b"safe attachment\n").hexdigest())
+        self.assertTrue(any("--env-file" in call and call.count("--file") == 2 for call in calls))
+        self.assertFalse(any("fixture-password" in argument for call in calls for argument in call))
+        self.assertFalse(any("S3_BUCKET" in argument for call in calls for argument in call
+                             if "exec" in call))
+
+    def test_tracker_object_manifest_fails_when_database_has_attachments_but_store_is_empty(self):
+        app = self.tracker_app()
+        payload = self.root / "payload"
+        payload.mkdir()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["docker", "compose"] and "ps" in argv:
+                return mock.Mock(stdout=("d" * 64 + "\n").encode())
+            if "exec" in argv:
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
+            if argv[:2] == ["docker", "run"]:
+                return mock.Mock(stdout=b"")
+            raise AssertionError(argv)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run), \
+             self.assertRaisesRegex(backup.BackupError, "no object-store entries"):
+            backup.tracker_object_manifest(app, payload, expected_attachment_count=1)
+        self.assertFalse(list(payload.rglob("object-manifest.json")))
 
     def fake_export_run(self, config, encrypted_hook=None):
         app = config["applications"][0]

@@ -27,6 +27,7 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
+from urllib.parse import quote
 
 
 SCHEMA_VERSION = 1
@@ -58,11 +59,13 @@ RESTORE_ADAPTER_KEYS = {
     "external_effects_blocked", "host_ports",
     "postgres_image", "application_image", "containers_removed", "workspace_removed",
 }
+TRACKER_RESTORE_ADAPTER_KEYS = RESTORE_ADAPTER_KEYS | {"object_store_reconciliation"}
 INTERNAL_MANIFEST_BASE_KEYS = {
     "schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at",
     "database_service", "images", "inputs",
 }
 INTERNAL_MANIFEST_VERSION_KEYS = {"image_services", "database"}
+INTERNAL_MANIFEST_TRACKER_KEYS = INTERNAL_MANIFEST_VERSION_KEYS | {"object_store_bucket"}
 INPUT_KEYS = {"name", "sha256", "bytes"}
 SAFETY_TAG = "tuinstra:production-restore-safety"
 RECOVERY_BUNDLE = Path("/home/mtuinstra/.local/share/tuinstra-backup-recovery.json")
@@ -70,6 +73,15 @@ AGE_SECRET_PREFIX = "AGE-" + "SECRET-KEY-1"
 SSH_PRIVATE_BEGIN = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 SSH_PRIVATE_END = "-----END OPENSSH " + "PRIVATE KEY-----"
 UMAMI_CONTENT_MARKER_ALGORITHM = "umami-admin-two-factor-v1"
+TRACKER_ADAPTER = "tracker-compose-v1"
+TRACKER_MIGRATION_MARKER_ALGORITHM = "tracker-doctrine-migrations-v1"
+TRACKER_OBJECT_MANIFEST_ALGORITHM = "tracker-s3-object-v1"
+TRACKER_MARKER_TABLES = ("organization", "project", "story", "attachment")
+TRACKER_CONTENT_MARKER_SQL = (
+    "SELECT jsonb_build_object(" + ",".join(
+        f"'{table}_count',(SELECT count(*) FROM {table})" for table in TRACKER_MARKER_TABLES
+    ) + ")::text"
+)
 UMAMI_CONTENT_MARKER_SQL = (
     "SELECT jsonb_build_object("
     "'user_count',(SELECT count(*) FROM \"user\"),"
@@ -143,7 +155,8 @@ def validate_public_manifest(value: dict[str, Any], maximum_bytes: int) -> dict[
     require_artifact(value["artifact_id"])
     require_id(value["host_slug"], "host slug")
     require_id(value["app_id"], "application id")
-    if value["adapter"] != "postgres-compose-v1" or not SHA_RE.fullmatch(value["payload_sha256"]):
+    if value["adapter"] not in {"postgres-compose-v1", TRACKER_ADAPTER} \
+            or not SHA_RE.fullmatch(value["payload_sha256"]):
         raise BackupError("artifact manifest content is invalid")
     if not isinstance(value["payload_bytes"], int) or not 0 < value["payload_bytes"] <= maximum_bytes:
         raise BackupError("artifact size is outside policy")
@@ -485,6 +498,8 @@ def spool_usage(spool: Path) -> int:
 
 
 def copy_regular(source: Path, target: Path) -> dict[str, Any]:
+    reject_symlink_components(source)
+    reject_symlink_components(target.parent)
     if source.is_symlink() or not source.is_file():
         raise BackupError("configured backup input must be a regular file")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -493,17 +508,316 @@ def copy_regular(source: Path, target: Path) -> dict[str, Any]:
     return {"name": target.as_posix(), "sha256": sha256(target), "bytes": target.stat().st_size}
 
 
+def snapshot_directory(source: Path, target: Path, maximum_bytes: int) -> None:
+    reject_symlink_components(source)
+    reject_symlink_components(target.parent)
+    if source.is_symlink() or not source.is_dir() or maximum_bytes < 1:
+        raise BackupError("configured directory input is unavailable")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    total_bytes = 0
+    try:
+        with tarfile.open(target, "w") as archive:
+            for current in sorted(source.rglob("*")):
+                info = current.lstat()
+                relative = current.relative_to(source).as_posix()
+                if info.st_mode & stat.S_ISVTX:
+                    raise BackupError("attachment snapshot contains unsafe permissions")
+                if stat.S_ISLNK(info.st_mode):
+                    raise BackupError("attachment snapshot contains a symbolic link")
+                if stat.S_ISDIR(info.st_mode):
+                    archive.add(current, arcname=PurePosixPath("attachments") / relative, recursive=False)
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise BackupError("attachment snapshot contains an unsupported file type")
+                total_bytes += info.st_size
+                if total_bytes > maximum_bytes:
+                    raise BackupError("attachment snapshot exceeds its size quota")
+                archive.add(current, arcname=PurePosixPath("attachments") / relative, recursive=False)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    os.chmod(target, 0o600)
+
+
+def _tracker_object_key(value: Any) -> str:
+    if (not isinstance(value, str) or not value or len(value) > 1024 or "\\" in value
+            or any(character in value for character in "\x00\r\n\t")):
+        raise BackupError("Tracker object key is invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or str(relative) != value or any(part in {"", ".", ".."} for part in relative.parts):
+        raise BackupError("Tracker object key is invalid")
+    return value
+
+
+def _tracker_object_manifest(path: Path, expected_bucket: str | None = None) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackupError("Tracker object manifest is invalid") from exc
+    if not isinstance(value, dict) or set(value) != {
+            "algorithm", "bucket", "objects", "object_count", "total_bytes"}:
+        raise BackupError("Tracker object manifest is invalid")
+    bucket = value.get("bucket")
+    if (not isinstance(bucket, str) or not ID_RE.fullmatch(bucket)
+            or (expected_bucket is not None and bucket != expected_bucket)):
+        raise BackupError("Tracker object manifest bucket is invalid")
+    objects = value.get("objects")
+    if (value.get("algorithm") != TRACKER_OBJECT_MANIFEST_ALGORITHM
+            or not isinstance(objects, list) or len(objects) > 4096
+            or value.get("object_count") != len(objects)
+            or not isinstance(value.get("total_bytes"), int)
+            or isinstance(value["total_bytes"], bool) or value["total_bytes"] < 0):
+        raise BackupError("Tracker object manifest is invalid")
+    seen: set[str] = set()
+    total = 0
+    for item in objects:
+        if (not isinstance(item, dict) or set(item) != {"key", "bytes", "sha256"}
+                or not isinstance(item.get("bytes"), int) or isinstance(item["bytes"], bool)
+                or item["bytes"] < 0 or not isinstance(item.get("sha256"), str)
+                or not SHA_RE.fullmatch(item["sha256"])):
+            raise BackupError("Tracker object manifest entry is invalid")
+        key = _tracker_object_key(item["key"])
+        if key in seen:
+            raise BackupError("Tracker object manifest contains duplicate keys")
+        seen.add(key)
+        total += item["bytes"]
+        if total > 10 * 1024 * 1024 * 1024:
+            raise BackupError("Tracker object manifest exceeds its size quota")
+    if total != value["total_bytes"]:
+        raise BackupError("Tracker object manifest byte count is invalid")
+    return value
+
+
+def _tracker_object_store_bucket(app: dict[str, Any]) -> str:
+    configured_bucket = app.get("object_store_bucket")
+    env_name = app.get("compose_env_file")
+    if (not isinstance(configured_bucket, str) or not ID_RE.fullmatch(configured_bucket)
+            or not isinstance(env_name, str) or not env_name):
+        raise BackupError("Tracker object-store bucket is invalid")
+    env_path = Path(env_name)
+    reject_symlink_components(env_path)
+    try:
+        env_info = env_path.lstat()
+    except OSError as exc:
+        raise BackupError("Tracker Compose environment is unavailable") from exc
+    if (not stat.S_ISREG(env_info.st_mode) or env_path.is_symlink()
+            or env_info.st_uid != ROOT_UID or stat.S_IMODE(env_info.st_mode) != 0o600):
+        raise BackupError("Tracker Compose environment is unavailable")
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise BackupError("Tracker Compose environment is unavailable") from exc
+    matches = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator == "=" and key == "S3_BUCKET":
+            matches.append(value.strip())
+    if len(matches) != 1 or matches[0] != configured_bucket:
+        raise BackupError("Tracker Compose environment bucket is invalid")
+    return configured_bucket
+
+
+def tracker_object_manifest(app: dict[str, Any], payload: Path,
+                            expected_attachment_count: int = 0) -> dict[str, Any]:
+    configured_bucket = _tracker_object_store_bucket(app)
+    approved = app.get("approved_images")
+    client_image = approved.get("minio-init") if isinstance(approved, dict) else None
+    if (not isinstance(client_image, str) or not SHA_RE.fullmatch(client_image.rpartition("@sha256:")[2])):
+        raise BackupError("Tracker object-store client image is invalid")
+    compose = compose_command(app)
+    minio_id = run([*compose, "ps", "--quiet", "minio"]).stdout.decode().strip()
+    if not re.fullmatch(r"^[0-9a-f]{64}$", minio_id):
+        raise BackupError("Tracker object-store service is not running")
+    credentials = run([*compose, "exec", "-T", "minio", "sh", "-eu", "-c",
+                       'printf "%s\\n%s\\n" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"']
+                      ).stdout.decode().splitlines()
+    if len(credentials) != 2 or any(not value or "\x00" in value for value in credentials):
+        raise BackupError("Tracker object-store environment is invalid")
+    user, password = credentials
+    bucket = configured_bucket
+    env_fd, env_name = tempfile.mkstemp(prefix=".tracker-mc-", dir=payload.parent)
+    os.chmod(env_name, 0o600)
+    try:
+        with os.fdopen(env_fd, "w", encoding="utf-8") as handle:
+            handle.write("MC_HOST_local=http://" + quote(user, safe="") + ":" + quote(password, safe="")
+                         + "@127.0.0.1:9000\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        listing = run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
+                       "--env-file", env_name, client_image, "ls", "--recursive", "--json",
+                       f"local/{bucket}"]).stdout
+        if len(listing) > 8 * 1024 * 1024:
+            raise BackupError("Tracker object listing exceeds its size quota")
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for line in listing.splitlines():
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise BackupError("Tracker object listing is invalid") from exc
+            if (item.get("status") not in {None, "success"} or item.get("type") not in {None, "file"}):
+                raise BackupError("Tracker object listing contains an error")
+            key = _tracker_object_key(item.get("key"))
+            size = item.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0 or key in seen:
+                raise BackupError("Tracker object listing is invalid")
+            seen.add(key)
+            entries.append({"key": key, "bytes": size})
+            if len(entries) > 4096:
+                raise BackupError("Tracker object manifest exceeds its object quota")
+        if expected_attachment_count > 0 and not entries:
+            raise BackupError("Tracker attachments have no object-store entries")
+        total_bytes = sum(item["bytes"] for item in entries)
+        if total_bytes > 10 * 1024 * 1024 * 1024:
+            raise BackupError("Tracker object manifest exceeds its size quota")
+        objects: list[dict[str, Any]] = []
+        for item in entries:
+            temporary_fd, temporary_name = tempfile.mkstemp(prefix=".tracker-object-", dir=payload.parent)
+            os.chmod(temporary_name, 0o600)
+            try:
+                with os.fdopen(temporary_fd, "wb") as handle:
+                    run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
+                         "--env-file", env_name, client_image, "cat",
+                         f"local/{bucket}/{item['key']}"], stdout=handle)
+                temporary = Path(temporary_name)
+                if temporary.stat().st_size != item["bytes"]:
+                    raise BackupError("Tracker object size changed during export")
+                objects.append({"key": item["key"], "bytes": item["bytes"], "sha256": sha256(temporary)})
+            finally:
+                Path(temporary_name).unlink(missing_ok=True)
+    finally:
+        Path(env_name).unlink(missing_ok=True)
+    manifest = {"algorithm": TRACKER_OBJECT_MANIFEST_ALGORITHM, "bucket": bucket,
+                "objects": objects, "object_count": len(objects),
+                "total_bytes": sum(item["bytes"] for item in objects)}
+    destination = payload / "files" / "object-manifest.json"
+    atomic_json(destination, manifest, 0o600)
+    return {"name": "files/object-manifest.json", "sha256": sha256(destination),
+            "bytes": destination.stat().st_size}
+
+
+@contextlib.contextmanager
+def tracker_quiescence(app: dict[str, Any], before_minio: Any = None):
+    services = app.get("quiesce_services")
+    if (not isinstance(services, list) or not services
+            or any(not isinstance(service, str) or not ID_RE.fullmatch(service) for service in services)):
+        raise BackupError("Tracker quiescence service list is invalid")
+    try:
+        timeout = int(app.get("quiesce_timeout_seconds", 120))
+    except (TypeError, ValueError) as exc:
+        raise BackupError("Tracker quiescence timeout is invalid") from exc
+    if not 1 <= timeout <= 900:
+        raise BackupError("Tracker quiescence timeout is invalid")
+    compose = compose_command(app)
+    # Compose's ``stop`` accepts a service list, so first capture the active set.
+    # This avoids starting an intentionally stopped worker or one-shot dependency
+    # after an otherwise successful export.
+    running_services = run([*compose, "ps", "--status", "running", "--services"], timeout=timeout).stdout.decode().splitlines()
+    running_services = [service.strip() for service in running_services if service.strip()]
+    if any(service not in services for service in running_services):
+        raise BackupError("Tracker running orphan service detected")
+    active: list[str] = []
+    for service in services:
+        container_id = ""
+        if service in running_services:
+            container_id = run([*compose, "ps", "--status", "running", "--quiet", service], timeout=timeout).stdout.decode().strip()
+        if container_id:
+            if not re.fullmatch(r"^[0-9a-f]{64}$", container_id):
+                raise BackupError("Tracker running-service evidence is invalid")
+            active.append(service)
+    application_active = [service for service in active if service != "minio"]
+    minio_active = [service for service in active if service == "minio"]
+    try:
+        if application_active:
+            run([*compose, "stop", *application_active], timeout=timeout)
+        if before_minio is not None:
+            if not minio_active:
+                raise BackupError("Tracker object-store service is not running")
+            before_minio()
+        if minio_active:
+            run([*compose, "stop", *minio_active], timeout=timeout)
+        yield
+    finally:
+        try:
+            if active:
+                run([*compose, "start", *active], timeout=timeout)
+        except BackupError as exc:
+            raise BackupError("Tracker services could not be restarted after backup") from exc
+
+
 def compose_images(app: dict[str, Any]) -> list[str]:
-    result = run(["docker", "compose", "--project-name", app["compose_project"],
-                  "--file", app["compose_file"], "config", "--images"])
+    result = run([*compose_command(app), "config", "--images"])
     images = sorted(set(result.stdout.decode().splitlines()))
     if not images or any("@sha256:" not in image for image in images):
         raise BackupError("all application images must be pinned by digest")
     return images
 
 
+def image_digests(images: list[str]) -> set[str]:
+    digests = {image.rpartition("@sha256:")[2] for image in images}
+    if any(not SHA_RE.fullmatch(digest) for digest in digests):
+        raise BackupError("application image digest evidence is invalid")
+    return digests
+
+
+def compose_command(app: dict[str, Any]) -> list[str]:
+    command = ["docker", "compose", "--project-name", app["compose_project"]]
+    if app.get("adapter") == TRACKER_ADAPTER:
+        env_file = app.get("compose_env_file")
+        images_file = app.get("compose_images_file")
+        if (not isinstance(env_file, str) or not env_file or not isinstance(images_file, str)
+                or not images_file):
+            raise BackupError("Tracker Compose environment and image files are required")
+        command.extend(["--env-file", env_file])
+    command.extend(["--file", app["compose_file"]])
+    if app.get("adapter") == TRACKER_ADAPTER:
+        command.extend(["--file", app["compose_images_file"]])
+    return command
+
+
 def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
     approved = app.get("approved_images")
+    if app.get("adapter") == TRACKER_ADAPTER:
+        if (not isinstance(approved, dict) or not 2 <= len(approved) <= 32
+                or any(not isinstance(service, str) or not ID_RE.fullmatch(service) for service in approved)
+                or any(not isinstance(image, str) or not SHA_RE.fullmatch(image.rpartition("@sha256:")[2])
+                       for image in approved.values())):
+            raise BackupError("approved application image mapping is invalid")
+        configured = image_digests(compose_images(app))
+        if configured != image_digests(list(approved.values())):
+            raise BackupError("compose image configuration does not match the approved digests")
+        compose = compose_command(app)
+        observed: dict[str, str] = {}
+        runtime_services = app.get("runtime_image_services", list(approved))
+        if (not isinstance(runtime_services, list) or not runtime_services
+                or any(service not in approved for service in runtime_services)):
+            raise BackupError("Tracker runtime service mapping is invalid")
+        for service in runtime_services:
+            expected = approved[service]
+            container_id = run([*compose, "ps", "--quiet", service]).stdout.decode().strip()
+            if not re.fullmatch(r"^[0-9a-f]{64}$", container_id):
+                raise BackupError("approved compose service is not running")
+            image_id = run(["docker", "inspect", "--format", "{{.Image}}", container_id]).stdout.decode().strip()
+            if not re.fullmatch(r"^sha256:[0-9a-f]{64}$", image_id):
+                raise BackupError("running container image identity is invalid")
+            try:
+                repo_digests = json.loads(run(
+                    ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_id]
+                ).stdout)
+            except json.JSONDecodeError as exc:
+                raise BackupError("running container image digest evidence is invalid") from exc
+            expected_digest = expected.rpartition("@sha256:")[2]
+            if (not isinstance(repo_digests, list)
+                    or not any(isinstance(value, str) and value.endswith(f"@sha256:{expected_digest}")
+                               for value in repo_digests)):
+                raise BackupError("running container does not use the approved image digest")
+            observed[service] = expected
+        return observed
     services = {app.get("postgres_service"), app.get("application_service")}
     if (not isinstance(approved, dict) or set(approved) != services
             or any(not isinstance(image, str) or not SHA_RE.fullmatch(image.rpartition("@sha256:")[2])
@@ -512,8 +826,7 @@ def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
     configured = set(compose_images(app))
     if configured != set(approved.values()):
         raise BackupError("compose image configuration does not match the approved digests")
-    compose = ["docker", "compose", "--project-name", app["compose_project"],
-               "--file", app["compose_file"]]
+    compose = compose_command(app)
     observed: dict[str, str] = {}
     for service, expected in approved.items():
         container_id = run([*compose, "ps", "--quiet", service]).stdout.decode().strip()
@@ -538,11 +851,44 @@ def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
 
 
 def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
-    compose = ["docker", "compose", "--project-name", app["compose_project"],
-               "--file", app["compose_file"], "exec", "-T", app["postgres_service"], "sh", "-eu", "-c"]
+    compose = [*compose_command(app), "exec", "-T", app["postgres_service"], "sh", "-eu", "-c"]
     server = run([*compose, 'psql --tuples-only --no-align --username="$POSTGRES_USER" '
                            '--dbname="$POSTGRES_DB" --command="show server_version"']).stdout.decode().strip()
     dump = run([*compose, "pg_dump --version"]).stdout.decode().strip()
+    if app.get("adapter") == TRACKER_ADAPTER:
+        if not re.fullmatch(r"^17\.[0-9]+(?:\.[0-9]+)?$", server):
+            raise BackupError("running PostgreSQL server version is not approved")
+        if not re.fullmatch(r"^pg_dump \(PostgreSQL\) 17\.[0-9]+(?:\.[0-9]+)?$", dump):
+            raise BackupError("running pg_dump version is not approved")
+        migration_output = run([*compose, 'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 '
+                                      '--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" '
+                                      '--command="SELECT version FROM doctrine_migration_versions ORDER BY version"']).stdout
+        migrations = [line.strip() for line in migration_output.decode().splitlines() if line.strip()]
+        if not migrations or any(not re.fullmatch(r"[A-Za-z0-9_\\]+", value) for value in migrations):
+            raise BackupError("Tracker migration ledger is invalid")
+        content_output = run([*compose, f'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 '
+                                      f'--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" '
+                                      f'--command={json.dumps(TRACKER_CONTENT_MARKER_SQL)}']).stdout
+        if not 1 <= len(content_output) <= 16 * 1024:
+            raise BackupError("Tracker content marker is outside policy")
+        try:
+            content_marker = json.loads(content_output)
+        except json.JSONDecodeError as exc:
+            raise BackupError("Tracker content marker is invalid") from exc
+        expected_content_keys = {f"{table}_count" for table in TRACKER_MARKER_TABLES}
+        if (not isinstance(content_marker, dict) or set(content_marker) != expected_content_keys
+                or any(not isinstance(content_marker[key], int) or isinstance(content_marker[key], bool)
+                       or content_marker[key] < 0 for key in expected_content_keys)):
+            raise BackupError("Tracker content marker is invalid")
+        marker = {
+            "algorithm": TRACKER_MIGRATION_MARKER_ALGORITHM,
+            "sha256": hashlib.sha256(("\n".join(migrations) + "\n").encode()).hexdigest(),
+            "migration_count": len(migrations),
+            "row_counts": content_marker,
+        }
+        return {"engine": "postgresql", "server_version": server, "dump_version": dump,
+                "dump_format": "custom", "service": app["postgres_service"],
+                "content_marker": marker}
     if not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", server):
         raise BackupError("running PostgreSQL server version is not approved")
     if not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", dump):
@@ -582,7 +928,7 @@ def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
 def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     host = require_id(config["host_slug"], "host slug")
     app = application(config, app_id)
-    if app.get("adapter") != "postgres-compose-v1":
+    if app.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER}:
         raise BackupError("unsupported application adapter")
     spool = Path(config["spool_dir"])
     receipts = Path(config["receipt_dir"])
@@ -606,25 +952,42 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             root = Path(temporary)
             payload = root / "payload"
             payload.mkdir(mode=0o700)
-            database_dump = payload / "database.dump"
-            compose = ["docker", "compose", "--project-name", app["compose_project"],
-                       "--file", app["compose_file"]]
-            dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
-                'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
-            with database_dump.open("xb") as handle:
-                run(dump_command, stdout=handle)
-            os.chmod(database_dump, 0o600)
-            if database_dump.stat().st_size == 0:
-                raise BackupError("database export is empty")
-            inputs: list[dict[str, Any]] = [{"name": "database.dump", "sha256": sha256(database_dump),
-                                             "bytes": database_dump.stat().st_size}]
-            for item in app["included_files"]:
-                logical = require_id(item["name"], "input name")
-                copied = copy_regular(Path(item["path"]), payload / "files" / logical)
-                copied["name"] = f"files/{logical}"
-                inputs.append(copied)
+            compose = compose_command(app)
             actual_images = running_compose_images(app)
             database_versions = postgres_versions(app)
+            inputs: list[dict[str, Any]] = []
+            before_minio = None
+            if app.get("adapter") == TRACKER_ADAPTER:
+                expected_attachment_count = database_versions["content_marker"]["row_counts"]["attachment_count"]
+
+                def capture_tracker_objects() -> None:
+                    inputs.append(tracker_object_manifest(app, payload, expected_attachment_count))
+
+                before_minio = capture_tracker_objects
+            quiesce = (tracker_quiescence(app, before_minio=before_minio)
+                       if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
+            with quiesce:
+                database_dump = payload / "database.dump"
+                dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
+                    'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
+                with database_dump.open("xb") as handle:
+                    run(dump_command, stdout=handle)
+                os.chmod(database_dump, 0o600)
+                if database_dump.stat().st_size == 0:
+                    raise BackupError("database export is empty")
+                inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
+                                  "bytes": database_dump.stat().st_size})
+                for item in app["included_files"]:
+                    logical = require_id(item["name"], "input name")
+                    copied = copy_regular(Path(item["path"]), payload / "files" / logical)
+                    copied["name"] = f"files/{logical}"
+                    inputs.append(copied)
+                for item in app.get("included_directories", []):
+                    logical = require_id(item["name"], "directory input name")
+                    snapshot = payload / "files" / f"{logical}.tar"
+                    snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
+                    inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
+                                   "bytes": snapshot.stat().st_size})
             internal = {
                 "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
                 "host_slug": host, "app_id": app_id, "adapter": app["adapter"],
@@ -632,6 +995,8 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
                 "images": sorted(actual_images.values()), "image_services": actual_images,
                 "database": database_versions, "inputs": inputs,
             }
+            if app.get("adapter") == TRACKER_ADAPTER:
+                internal["object_store_bucket"] = app["object_store_bucket"]
             atomic_json(payload / "backup-manifest.json", internal, 0o600)
             archive = root / "payload.tar"
             with tarfile.open(archive, "w") as tar:
@@ -1413,17 +1778,25 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
     manifest_path = validated_input_path(payload_root, "backup-manifest.json")
     internal = json.loads(manifest_path.read_text(encoding="utf-8"))
     keys = set(internal) if isinstance(internal, dict) else set()
-    if keys != INTERNAL_MANIFEST_BASE_KEYS and keys != INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS:
+    allowed_keys = (INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS,
+                    INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_TRACKER_KEYS)
+    if keys not in allowed_keys:
         raise BackupError("encrypted payload manifest schema is invalid")
     for key in ("schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at"):
         if internal.get(key) != expected.get(key):
             raise BackupError("encrypted payload identity mismatch")
     if (not isinstance(internal.get("created_at"), str) or not internal["created_at"].endswith("Z")
             or not isinstance(internal.get("database_service"), str)
-            or internal.get("adapter") != "postgres-compose-v1"):
+            or internal.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER}):
         raise BackupError("encrypted payload manifest content is invalid")
     require_id(internal["database_service"], "database service")
     validate_materialized_images(internal.get("images"))
+    if internal["adapter"] == TRACKER_ADAPTER:
+        bucket = internal.get("object_store_bucket")
+        if not isinstance(bucket, str) or not ID_RE.fullmatch(bucket):
+            raise BackupError("encrypted payload object-store bucket is invalid")
+        object_manifest = validated_input_path(payload_root, "files/object-manifest.json")
+        _tracker_object_manifest(object_manifest, bucket)
     if INTERNAL_MANIFEST_VERSION_KEYS.issubset(keys):
         services = internal["image_services"]
         database = internal["database"]
@@ -1436,21 +1809,36 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
             "engine", "server_version", "dump_version", "dump_format", "service", "content_marker",
         }
         marker = database.get("content_marker") if isinstance(database, dict) else None
-        if (not isinstance(database, dict) or set(database) != expected_database_keys
-                or database.get("engine") != "postgresql"
-                or database.get("service") != internal["database_service"]
-                or database.get("dump_format") != "custom"
-                or not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", database.get("server_version", ""))
-                or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$",
-                                    database.get("dump_version", ""))
-                or not isinstance(marker, dict)
-                or set(marker) != {"algorithm", "sha256", "user_count", "two_factor_count"}
-                or marker.get("algorithm") != UMAMI_CONTENT_MARKER_ALGORITHM
-                or not isinstance(marker.get("sha256"), str) or not SHA_RE.fullmatch(marker["sha256"])
-                or not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool)
-                or marker["user_count"] < 1
-                or not isinstance(marker.get("two_factor_count"), int)
-                or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1):
+        database_shape_valid = (isinstance(database, dict) and set(database) == expected_database_keys
+                                and database.get("engine") == "postgresql"
+                                and database.get("service") == internal["database_service"]
+                                and database.get("dump_format") == "custom")
+        if not database_shape_valid:
+            raise BackupError("encrypted payload database version evidence is invalid")
+        if internal["adapter"] == TRACKER_ADAPTER:
+            if (not re.fullmatch(r"^17\.[0-9]+(?:\.[0-9]+)?$", database["server_version"])
+                    or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 17\.[0-9]+(?:\.[0-9]+)?$", database["dump_version"])
+                    or not isinstance(marker, dict)
+                    or set(marker) != {"algorithm", "sha256", "migration_count", "row_counts"}
+                    or marker.get("algorithm") != TRACKER_MIGRATION_MARKER_ALGORITHM
+                    or not isinstance(marker.get("sha256"), str) or not SHA_RE.fullmatch(marker["sha256"])
+                    or not isinstance(marker.get("migration_count"), int)
+                    or isinstance(marker["migration_count"], bool) or marker["migration_count"] < 1
+                    or not isinstance(marker.get("row_counts"), dict)
+                    or set(marker["row_counts"]) != {f"{table}_count" for table in TRACKER_MARKER_TABLES}
+                    or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
+                           for count in marker["row_counts"].values())):
+                raise BackupError("encrypted payload database version evidence is invalid")
+        elif (not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", database["server_version"])
+              or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", database["dump_version"])
+              or not isinstance(marker, dict)
+              or set(marker) != {"algorithm", "sha256", "user_count", "two_factor_count"}
+              or marker.get("algorithm") != UMAMI_CONTENT_MARKER_ALGORITHM
+              or not isinstance(marker.get("sha256"), str) or not SHA_RE.fullmatch(marker["sha256"])
+              or not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool)
+              or marker["user_count"] < 1
+              or not isinstance(marker.get("two_factor_count"), int)
+              or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1):
             raise BackupError("encrypted payload database version evidence is invalid")
     inputs = internal.get("inputs")
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= 128:
@@ -1518,6 +1906,44 @@ def validate_restore_adapter_result(value: Any) -> dict[str, Any]:
     if value.get("containers_removed") is not True or value.get("workspace_removed") is not True:
         raise BackupError("restore adapter cleanup did not succeed")
     return value
+
+
+def validate_tracker_restore_adapter_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != TRACKER_RESTORE_ADAPTER_KEYS:
+        raise BackupError("restore adapter evidence schema is invalid")
+    if (value.get("schema_version") != SCHEMA_VERSION
+            or value.get("adapter") != TRACKER_ADAPTER
+            or value.get("application") != "tracker" or value.get("status") != "passed"):
+        raise BackupError("restore adapter evidence identity is invalid")
+    if (not isinstance(value.get("public_table_count"), int)
+            or isinstance(value["public_table_count"], bool) or value["public_table_count"] < 1):
+        raise BackupError("restore adapter schema evidence is invalid")
+    if (value.get("application_health") != "not-run-external-effects-blocked"
+            or value.get("encrypted_secret_validation") != "not-applicable"
+            or value.get("database_content_marker") != "passed"
+            or value.get("object_store_reconciliation") != "passed"
+            or value.get("network") != "loopback-only-network-namespace"
+            or value.get("external_effects_blocked") is not True or value.get("host_ports") != 0):
+        raise BackupError("restore adapter isolation or health evidence is invalid")
+    if (not isinstance(value.get("postgres_image"), str) or "@sha256:" not in value["postgres_image"]
+            or not isinstance(value.get("application_image"), str)
+            or "@sha256:" not in value["application_image"]):
+        raise BackupError("restore adapter version evidence is invalid")
+    if value.get("containers_removed") is not True or value.get("workspace_removed") is not True:
+        raise BackupError("restore adapter cleanup did not succeed")
+    return value
+
+
+def restore_adapter_path(config: dict[str, Any], host_slug: str, app_id: str,
+                         adapter_name: str) -> str:
+    configured = config.get("restore_adapters", {})
+    if isinstance(configured, dict) and isinstance(configured.get(adapter_name), str):
+        return configured[adapter_name]
+    # Keep the original profile contract for Umami. Tracker must be explicitly
+    # installed because it has different data and isolation checks.
+    if adapter_name == "postgres-compose-v1":
+        return config["restore_adapter"]
+    raise BackupError("restore adapter is not configured")
 
 
 def validate_materialized_images(value: Any) -> list[str]:
@@ -1688,12 +2114,16 @@ def restore_test(config: dict[str, Any], host_slug: str, app_id: str, snapshot: 
             safe_extract(archive, extracted, int(config["max_artifact_bytes"]))
             internal = validate_payload(extracted, public)
             manifest_sha256 = sha256(extracted / "payload" / "backup-manifest.json")
-            if internal["adapter"] == "postgres-compose-v1":
-                result = run([config["restore_adapter"], str(extracted / "payload")], timeout=7200)
+            if internal["adapter"] in {"postgres-compose-v1", TRACKER_ADAPTER}:
+                adapter_path = restore_adapter_path(config, host_slug, app_id, internal["adapter"])
+                result = run([adapter_path, str(extracted / "payload")], timeout=7200)
                 try:
-                    adapter = validate_restore_adapter_result(json.loads(result.stdout))
+                    adapter_value = json.loads(result.stdout)
                 except json.JSONDecodeError as exc:
                     raise BackupError("restore adapter did not return valid evidence") from exc
+                adapter = (validate_restore_adapter_result(adapter_value)
+                           if internal["adapter"] == "postgres-compose-v1"
+                           else validate_tracker_restore_adapter_result(adapter_value))
             else:
                 raise BackupError("unsupported restore adapter")
         if temporary_path.exists() or temporary_path.is_symlink():

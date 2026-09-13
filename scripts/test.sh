@@ -60,3 +60,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_stage_backup_escrow.p
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_sanctuary_installer_contract.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_escrow.py
 ./scripts/production-backup-contract-test.sh
+./scripts/production-umami-test.sh

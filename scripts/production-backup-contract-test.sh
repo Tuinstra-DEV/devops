@@ -6,15 +6,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 -m json.tool "$repo_root/backup/profiles/prod01.json" >/dev/null
 python3 -m json.tool "$repo_root/backup/profiles/prod02.json" >/dev/null
 python3 -m json.tool "$repo_root/backup/profiles/sanctuary.json" >/dev/null
+python3 -m json.tool "$repo_root/install-input/manifest.json" >/dev/null
 python3 -c 'import pathlib,sys; [compile(pathlib.Path(p).read_text(encoding="utf-8"), p, "exec") for p in sys.argv[1:]]' \
   "$repo_root/backup/tuinstra_backup.py" "$repo_root/scripts/test_production_backup.py" \
   "$repo_root/scripts/bootstrap_backup_credentials.py" "$repo_root/scripts/test_backup_credential_bootstrap.py" \
   "$repo_root/scripts/stage_backup_escrow.py" "$repo_root/scripts/test_stage_backup_escrow.py" \
+  "$repo_root/scripts/verify-install-inputs.py" \
   "$repo_root/scripts/test_sanctuary_installer_contract.py" \
   "$repo_root/backup/onepassword-escrow.py" "$repo_root/scripts/test_backup_onepassword_escrow.py"
 bash -n "$repo_root/backup/restore-umami"
 python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
 python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
+bash -n "$repo_root/backup/restore-tracker"
+bash -n "$repo_root/backup/restore-tracker"
 bash -n "$repo_root/backup/tuinstra-backup-admin"
 bash -n "$repo_root/scripts/install-sanctuary-backups"
 bash -n "$repo_root/scripts/restic-retention-integration-test.sh"
@@ -58,6 +62,14 @@ grep -q 'encrypted_secret_validation' "$repo_root/backup/restore-umami"
 grep -q 'database_content_marker' "$repo_root/backup/restore-umami"
 grep -q 'files/two-factor-encryption-key' "$repo_root/backup/restore-umami"
 grep -q 'restored database content marker does not match the export' "$repo_root/backup/restore-umami"
+grep -q 'postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73' "$repo_root/backup/restore-tracker"
+grep -q 'quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e' "$repo_root/backup/restore-tracker"
+grep -q 'quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727' "$repo_root/backup/restore-tracker"
+grep -q 'files/object-manifest.json' "$repo_root/backup/restore-tracker"
+grep -q 'object_store_reconciliation' "$repo_root/backup/restore-tracker"
+grep -q -- '--network none' "$repo_root/backup/restore-tracker"
+grep -q 'tracker-doctrine-migrations-v1' "$repo_root/backup/restore-tracker"
+grep -q 'isolated Tracker restore cleanup failed' "$repo_root/backup/restore-tracker"
 grep -q 'JOIN \\"user\\" AS u ON u.user_id = t.user_id' "$repo_root/backup/restore-umami"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root/backup/restore-umami" <<'PY'
 from pathlib import Path
