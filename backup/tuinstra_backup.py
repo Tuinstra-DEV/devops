@@ -2295,6 +2295,11 @@ def inspect(config: dict[str, Any]) -> dict[str, Any]:
         if not host["applications"]:
             host_item.update({"status": "not-applicable", "reason": "no-enabled-production-applications"})
         for app_id in host["applications"]:
+            policy_file = policy_path(config, host["host_slug"], app_id)
+            if not policy_file.exists() and not policy_file.is_symlink():
+                host_item["applications"].append({"app_id": app_id,
+                    "status": "not-applicable", "reason": "no-active-policy"})
+                continue
             env, repository = restic_env(config, host["host_slug"], app_id)
             snapshots: list[dict[str, Any]] = []
             if (repository / "config").exists():
