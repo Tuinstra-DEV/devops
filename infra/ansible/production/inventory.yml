@@ -14,6 +14,7 @@ all:
             - umami
           production_admin_public_key_file: /Users/marceltuinstra/.ssh/id_ed25519_marcel.pub
           production_deploy_public_key_file: /Users/marceltuinstra/.ssh/id_ed25519_tuinstra_prod_01_deploy.pub
+          production_caddy_enable_https: true
           production_docker_package_versions:
             docker-ce: 5:29.8.0-1~ubuntu.26.04~resolute
             docker-ce-cli: 5:29.8.0-1~ubuntu.26.04~resolute

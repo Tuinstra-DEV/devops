@@ -82,6 +82,7 @@ bash -n scripts/install-sanctuary-backups
 bash -n scripts/restic-retention-integration-test.sh
 bash -n scripts/restore-network-isolation-integration-test.sh
 bash -n scripts/production-backup-contract-test.sh
+python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

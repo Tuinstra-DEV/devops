@@ -1,0 +1,14 @@
+---
+- name: Configure the production host baseline required by Umami
+  hosts: prod01
+  become: true
+  gather_facts: true
+  roles:
+    - production_host_baseline
+
+- name: Install and verify Umami
+  hosts: prod01
+  become: true
+  gather_facts: true
+  roles:
+    - production_umami
