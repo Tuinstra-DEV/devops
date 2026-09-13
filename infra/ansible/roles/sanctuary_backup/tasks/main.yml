@@ -1,0 +1,269 @@
+---
+- name: Validate Sanctuary backup destination
+  ansible.builtin.assert:
+    that:
+      - sanctuary_backup_repository_root == '/mnt/hdd1000-01/backups/production'
+      - sanctuary_backup_apps | length > 0
+    fail_msg: The approved production backup destination and at least one application are required.
+
+- name: Install Sanctuary backup dependencies
+  ansible.builtin.apt:
+    name:
+      - age
+      - python3
+      - restic
+    state: present
+    update_cache: true
+
+- name: Create shared host-operation group
+  ansible.builtin.group:
+    name: tuinstra-ops
+    system: true
+
+- name: Create non-login backup worker
+  ansible.builtin.user:
+    name: tuinstra-backup
+    comment: Sanctuary production backup pull worker
+    home: /var/lib/tuinstra-backup
+    create_home: true
+    shell: /usr/sbin/nologin
+    password_lock: true
+    groups: tuinstra-ops
+    append: true
+
+- name: Create Sanctuary backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/lib/tuinstra-backup, owner: root, group: root, mode: '0755' }
+    - { path: /etc/tuinstra-backup, owner: root, group: tuinstra-backup, mode: '0750' }
+    - { path: /etc/tuinstra-backup/ssh, owner: root, group: tuinstra-backup, mode: '0750' }
+    - { path: /etc/tuinstra-backup/restic-passwords, owner: root, group: root, mode: '0700' }
+    - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01, owner: root, group: root, mode: '0700' }
+    - { path: /usr/local/libexec/tuinstra-backup, owner: root, group: root, mode: '0755' }
+    - { path: /var/lib/tuinstra-backup/work, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/incoming, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/ingest, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/locks, owner: root, group: root, mode: '0711' }
+    - { path: /var/lib/tuinstra-backup/locks/pull, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/locks/operations, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/restore-evidence, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore/journal, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore/work, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/materialized, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/catalog, owner: root, group: root, mode: '0755' }
+    - { path: /var/lib/tuinstra-backup/retention-audit, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/policies, owner: root, group: root, mode: '0755' }
+    - { path: /run/lock/tuinstra, owner: root, group: tuinstra-ops, mode: '0750' }
+    - { path: /run/tuinstra-backup, owner: root, group: root, mode: '0700' }
+    - { path: "{{ sanctuary_backup_repository_root }}", owner: root, group: root, mode: '0711' }
+
+- name: Precreate authoritative host-operation locks
+  ansible.builtin.file:
+    path: "/run/lock/tuinstra/operations.host.{{ item }}.lock"
+    state: touch
+    owner: root
+    group: tuinstra-ops
+    mode: '0660'
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - tuinstra-prod-01
+    - tuinstra-prod-02
+
+- name: Persist authoritative host-operation locks across reboot
+  ansible.builtin.copy:
+    content: |
+      d /run/tuinstra-backup 0700 root root -
+      d /run/lock/tuinstra 0750 root tuinstra-ops -
+      f /run/lock/tuinstra/operations.host.tuinstra-prod-01.lock 0660 root tuinstra-ops -
+      f /run/lock/tuinstra/operations.host.tuinstra-prod-02.lock 0660 root tuinstra-ops -
+    dest: /etc/tmpfiles.d/tuinstra-operations.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Create allowlisted per-application repositories
+  ansible.builtin.file:
+    path: "{{ sanctuary_backup_repository_root }}/{{ item.host_slug }}/{{ item.app_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: "{{ sanctuary_backup_apps }}"
+
+- name: Install backup engine and restore adapter
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - { src: "{{ playbook_dir }}/../../backup/tuinstra_backup.py", dest: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py }
+    - { src: "{{ playbook_dir }}/../../backup/restore-umami", dest: /usr/local/libexec/tuinstra-backup/restore-umami }
+    - { src: "{{ playbook_dir }}/../../backup/production_restore.py", dest: /usr/local/libexec/tuinstra-backup/production_restore.py }
+    - { src: "{{ playbook_dir }}/../../backup/tuinstra-production-restore", dest: /usr/local/sbin/tuinstra-production-restore }
+    - { src: "{{ playbook_dir }}/../../backup/restore-tracker", dest: /usr/local/libexec/tuinstra-backup/restore-tracker }
+    - { src: "{{ playbook_dir }}/../../scripts/bootstrap_backup_credentials.py", dest: /usr/local/libexec/tuinstra-backup/bootstrap_backup_credentials.py }
+    - { src: "{{ playbook_dir }}/../../backup/tuinstra-backup-admin", dest: /usr/local/sbin/tuinstra-backup-admin }
+
+- name: Install Sanctuary worker profile
+  ansible.builtin.copy:
+    src: "{{ sanctuary_backup_profile_source }}"
+    dest: /etc/tuinstra-backup/worker.json
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install privileged retention service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Apply production backup retention and integrity check
+
+      [Service]
+      Type=oneshot
+      User=root
+      UMask=0077
+      ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app umami
+      PrivateTmp=true
+      NoNewPrivileges=true
+      ProtectHome=true
+      ProtectSystem=strict
+      ReadWritePaths={{ sanctuary_backup_repository_root }} /var/lib/tuinstra-backup/locks /var/lib/tuinstra-backup/retention-audit /var/lib/tuinstra-backup/catalog /run/lock/tuinstra
+    dest: /etc/systemd/system/tuinstra-backup-retention.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Install weekly retention timer
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Weekly production backup retention
+
+      [Timer]
+      OnCalendar=Sun *-*-* 05:00:00 Europe/Amsterdam
+      Persistent=true
+      Unit=tuinstra-backup-retention.service
+
+      [Install]
+      WantedBy=timers.target
+    dest: /etc/systemd/system/tuinstra-backup-retention.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Check separately provisioned backup credentials
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/tuinstra-backup/ssh/prod01
+    - /etc/tuinstra-backup/ssh/prod02
+    - /etc/tuinstra-backup/ssh/prod01-restore
+    - /etc/tuinstra-backup/ssh/known_hosts
+    - /etc/tuinstra-backup/age-identity.txt
+    - /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+  register: sanctuary_backup_credentials
+  no_log: true
+
+- name: Require independently provisioned credentials
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - item.stat.isreg | default(false)
+      - item.stat.mode | default('') in ['0600', '0640', '0644']
+    fail_msg: A required backup credential or pinned host-key file is absent or has unsafe permissions.
+  loop: "{{ sanctuary_backup_credentials.results }}"
+  no_log: true
+
+- name: Enforce backup credential ownership and permissions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/tuinstra-backup/ssh/prod01, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/ssh/prod02, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/ssh/prod01-restore, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/ssh/known_hosts, owner: root, group: root, mode: '0644' }
+    - { path: /etc/tuinstra-backup/age-identity.txt, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password, owner: root, group: root, mode: '0600' }
+
+- name: Remove obsolete delegated ingest sudo policy
+  ansible.builtin.file:
+    path: /etc/sudoers.d/93-tuinstra-backup-ingest
+    state: absent
+
+- name: Install bounded backup administration sudo policy
+  ansible.builtin.copy:
+    content: |
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin status
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test *
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
+    dest: /etc/sudoers.d/94-tuinstra-backup-admin
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Install production restore operator sudo policy
+  ansible.builtin.copy:
+    content: |
+      Defaults!/usr/local/sbin/tuinstra-production-restore timestamp_timeout=0
+      mtuinstra ALL=(root) /usr/local/sbin/tuinstra-production-restore *
+    dest: /etc/sudoers.d/95-tuinstra-production-restore
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Apply immutable default Umami backup policy
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
+      - --config
+      - /etc/tuinstra-backup/worker.json
+      - policy-reconcile
+      - --host
+      - tuinstra-prod-01
+      - --app
+      - umami
+      - --policy-version
+      - production-v1
+      - --plan-hash
+      - "{{ sanctuary_backup_default_policy_hash }}"
+      - --hour
+      - '2'
+      - --minute
+      - '0'
+      - --daily
+      - '7'
+      - --weekly
+      - '4'
+      - --monthly
+      - '12'
+  register: sanctuary_backup_policy_apply
+  changed_when: "'\"status\":\"applied\"' in sanctuary_backup_policy_apply.stdout"
+
+- name: Enable backup timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - tuinstra-backup-retention.timer

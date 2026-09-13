@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     ports:
       - "{{ production_caddy_http_bind_address }}:80:80"
+{% if production_caddy_enable_https | bool %}
+      - "{{ production_caddy_https_bind_address }}:443:443"
+      - "{{ production_caddy_https_bind_address }}:443:443/udp"
+{% endif %}
     volumes:
       - /var/www/_platform/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - /var/www/_platform/caddy/sites:/etc/caddy/sites:ro
@@ -19,3 +23,10 @@ services:
       - NET_BIND_SERVICE
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+    name: {{ production_caddy_edge_network }}

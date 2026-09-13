@@ -14,6 +14,9 @@ grep -q 'PasswordAuthentication no' "$role/templates/ssh-hardening.conf.j2"
 grep -q 'every image must be pinned by sha256 digest' "$role/templates/tuinstra-compose-deploy.j2"
 grep -q 'application is not allowlisted' "$role/templates/tuinstra-compose-deploy.j2"
 grep -q 'no-new-privileges:true' "$role/templates/caddy-compose.yml.j2"
+grep -q 'production_caddy_enable_https' "$role/templates/caddy-compose.yml.j2"
+grep -q 'not production_caddy_enable_https' "$role/templates/Caddyfile.j2"
+grep -q 'external: true' "$role/templates/caddy-compose.yml.j2"
 grep -q 'respond 404' "$role/templates/Caddyfile.j2"
 
 if grep -R -E '(PRIVATE KEY|BEGIN OPENSSH|password[[:space:]]*:)' \

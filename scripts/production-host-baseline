@@ -10,7 +10,7 @@ as_admin=false
 
 usage() {
   cat <<'EOF'
-Usage: production-host-baseline [options] bootstrap|configure|verify|harden-ssh
+Usage: production-host-baseline [options] bootstrap|configure|verify|harden-ssh|configure-umami-restore|verify-umami-restore
 
 Options:
   --check                 Run Ansible check mode with a diff.
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
       as_admin=true
       shift
       ;;
-    bootstrap|configure|verify|harden-ssh)
+    bootstrap|configure|verify|harden-ssh|configure-umami-restore|verify-umami-restore)
       [[ -z "$command_name" ]] || { usage >&2; exit 64; }
       command_name="$1"
       shift
@@ -122,6 +122,12 @@ case "$command_name" in
     args+=(--extra-vars ansible_user=mtuinstra
       --extra-vars production_admin_ssh_verified=true
       --extra-vars production_admin_sudo_verified=true)
+    ;;
+  configure-umami-restore)
+    playbook="$repo_root/infra/ansible/production-host-umami-restore.yml"
+    ;;
+  verify-umami-restore)
+    playbook="$repo_root/infra/ansible/production-host-umami-restore-verify.yml"
     ;;
 esac
 

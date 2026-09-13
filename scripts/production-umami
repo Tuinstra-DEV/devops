@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+inventory="$repo_root/infra/ansible/production/inventory.yml"
+limit="prod01"
+extra_vars_file=""
+
+usage() {
+  cat <<'EOF'
+Usage: production-umami [options] deploy|verify
+
+Options:
+  --inventory PATH   Use another inventory.
+  --limit HOST       Limit execution (default: prod01).
+  --extra-vars PATH  Load a protected YAML vars file.
+
+The command always connects as the verified mtuinstra administrator. It uses
+an existing ansible-playbook and never installs dependencies or prints secrets.
+EOF
+}
+
+command_name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --inventory)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      inventory="$2"
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      limit="$2"
+      shift 2
+      ;;
+    --extra-vars)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      extra_vars_file="$2"
+      shift 2
+      ;;
+    deploy|verify)
+      [[ -z "$command_name" ]] || { usage >&2; exit 64; }
+      command_name="$1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+[[ -n "$command_name" && -r "$inventory" ]] || { usage >&2; exit 64; }
+if [[ -n "$extra_vars_file" && ! -r "$extra_vars_file" ]]; then
+  echo "extra-vars file is not readable: $extra_vars_file" >&2
+  exit 66
+fi
+
+ansible_playbook="${ANSIBLE_PLAYBOOK:-}"
+if [[ -z "$ansible_playbook" ]]; then
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    ansible_playbook="$(command -v ansible-playbook)"
+  elif [[ -x "$repo_root/../.tooling/ansible/bin/ansible-playbook" ]]; then
+    ansible_playbook="$repo_root/../.tooling/ansible/bin/ansible-playbook"
+  else
+    echo "ansible-playbook is required; this wrapper never installs it" >&2
+    exit 69
+  fi
+fi
+[[ -x "$ansible_playbook" ]] || { echo "not executable: $ansible_playbook" >&2; exit 69; }
+
+playbook="$repo_root/infra/ansible/production-umami.yml"
+if [[ "$command_name" == verify ]]; then
+  playbook="$repo_root/infra/ansible/production-umami-verify.yml"
+fi
+
+args=(
+  --inventory "$inventory"
+  --limit "$limit"
+  --extra-vars ansible_user=mtuinstra
+)
+if [[ -n "$extra_vars_file" ]]; then
+  args+=(--extra-vars "@$extra_vars_file")
+fi
+
+export ANSIBLE_CONFIG="$repo_root/infra/ansible/ansible.cfg"
+export ANSIBLE_HOME="${ANSIBLE_HOME:-${TMPDIR:-/tmp}/tuinstra-ansible-${UID}}"
+/bin/mkdir -p "$ANSIBLE_HOME"
+/bin/chmod 0700 "$ANSIBLE_HOME"
+exec "$ansible_playbook" "${args[@]}" "$playbook"

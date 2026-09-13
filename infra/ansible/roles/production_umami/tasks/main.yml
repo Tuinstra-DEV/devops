@@ -1,0 +1,259 @@
+---
+- name: Validate the Umami deployment contract
+  ansible.builtin.assert:
+    that:
+      - ansible_hostname == production_umami_expected_hostname
+      - production_umami_domain is match('^[a-z0-9][a-z0-9.-]+[a-z0-9]$')
+      - production_umami_image is match('^ghcr\\.io/umami-software/umami:3\\.3\\.1@sha256:[a-f0-9]{64}$')
+      - production_umami_postgres_image is match('^docker\\.io/library/postgres:15-alpine@sha256:[a-f0-9]{64}$')
+      - production_umami_edge_network == (production_caddy_edge_network | default('tuinstra-edge'))
+      - production_caddy_enable_https | bool
+      - "'umami' in production_app_names"
+    fail_msg: Refusing to install Umami outside the pinned prod-01 deployment contract.
+
+- name: Create the PostgreSQL data directory
+  ansible.builtin.file:
+    path: "{{ production_umami_data_root }}/postgres"
+    state: directory
+    owner: '70'
+    group: '70'
+    mode: '0700'
+
+- name: Inspect managed Umami secrets
+  ansible.builtin.stat:
+    path: "{{ production_umami_secret_root }}/{{ item.name }}"
+  loop:
+    - { name: database-password, bytes: 32 }
+    - { name: app-secret, bytes: 32 }
+    - { name: two-factor-encryption-key, bytes: 32 }
+    - { name: admin-password, bytes: 24 }
+  register: production_umami_secret_stats
+  no_log: true
+
+- name: Generate missing Umami secrets
+  ansible.builtin.command:
+    argv: [/usr/bin/openssl, rand, -hex, "{{ item.item.bytes }}"]
+  loop: "{{ production_umami_secret_stats.results }}"
+  when: not item.stat.exists
+  register: production_umami_generated_secrets
+  changed_when: true
+  no_log: true
+
+- name: Store newly generated Umami secrets
+  ansible.builtin.copy:
+    content: "{{ item.stdout }}\n"
+    dest: "{{ production_umami_secret_root }}/{{ item.item.item.name }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop: "{{ production_umami_generated_secrets.results }}"
+  when: not (item.skipped | default(false))
+  no_log: true
+
+- name: Enforce Umami secret permissions
+  ansible.builtin.file:
+    path: "{{ production_umami_secret_root }}/{{ item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - database-password
+    - app-secret
+    - two-factor-encryption-key
+    - admin-password
+  no_log: true
+
+- name: Read managed Umami secrets
+  ansible.builtin.slurp:
+    src: "{{ production_umami_secret_root }}/{{ item }}"
+  loop:
+    - database-password
+    - app-secret
+    - two-factor-encryption-key
+  register: production_umami_secret_contents
+  no_log: true
+
+- name: Keep Umami secrets in memory for protected templates
+  ansible.builtin.set_fact:
+    production_umami_database_password: "{{ (production_umami_secret_contents.results | selectattr('item', 'equalto', 'database-password') | first).content | b64decode | trim }}"
+    production_umami_app_secret: "{{ (production_umami_secret_contents.results | selectattr('item', 'equalto', 'app-secret') | first).content | b64decode | trim }}"
+    production_umami_two_factor_encryption_key: "{{ (production_umami_secret_contents.results | selectattr('item', 'equalto', 'two-factor-encryption-key') | first).content | b64decode | trim }}"
+  no_log: true
+
+- name: Install the protected Umami environment
+  ansible.builtin.template:
+    src: umami.env.j2
+    dest: "{{ production_umami_secret_root }}/umami.env"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Install the protected PostgreSQL environment
+  ansible.builtin.template:
+    src: postgres.env.j2
+    dest: "{{ production_umami_secret_root }}/postgres.env"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Install the Umami administrator bootstrap program
+  ansible.builtin.template:
+    src: admin-bootstrap.mjs.j2
+    dest: "{{ production_umami_root }}/admin-bootstrap.mjs"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the constrained Umami 1Password handoff RPC
+  ansible.builtin.template:
+    src: onepassword-handoff.mjs.j2
+    dest: "{{ production_umami_root }}/onepassword-handoff.mjs"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the Umami Compose definition
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ production_umami_root }}/compose.yml"
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Validate the Umami Compose definition
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - config
+      - --quiet
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Pull and start the pinned Umami services
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/tuinstra-compose-deploy, deploy, umami]
+  register: production_umami_deploy
+  changed_when: production_umami_deploy.stdout is search('Started|Created|Recreated|Pulled')
+  when: not ansible_check_mode
+
+- name: Wait for the Umami heartbeat
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - umami
+      - --project-directory
+      - "{{ production_umami_root }}"
+      - --file
+      - "{{ production_umami_root }}/compose.yml"
+      - exec
+      - -T
+      - umami
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - http://127.0.0.1:3000/api/heartbeat
+  register: production_umami_heartbeat
+  retries: 24
+  delay: 5
+  until: production_umami_heartbeat.rc == 0
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect the administrator bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ production_umami_secret_root }}/admin-bootstrap.complete"
+  register: production_umami_admin_bootstrap
+
+- name: Replace the default administrator password and require 2FA
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      /usr/bin/python3 -c 'import json,sys; print(json.dumps({"newPassword": open(sys.argv[1], encoding="utf-8").read().strip()}))' \
+        {{ production_umami_secret_root | quote }}/admin-password \
+        | /usr/bin/docker compose \
+            --project-name umami \
+            --project-directory {{ production_umami_root | quote }} \
+            --file {{ (production_umami_root + '/compose.yml') | quote }} \
+            exec -T umami node /opt/tuinstra/admin-bootstrap.mjs
+  when:
+    - not ansible_check_mode
+    - not production_umami_admin_bootstrap.stat.exists
+  changed_when: true
+  no_log: true
+
+- name: Record successful administrator bootstrap
+  ansible.builtin.copy:
+    content: "{{ ansible_date_time.iso8601 }}\n"
+    dest: "{{ production_umami_secret_root }}/admin-bootstrap.complete"
+    owner: root
+    group: root
+    mode: '0600'
+  when:
+    - not ansible_check_mode
+    - not production_umami_admin_bootstrap.stat.exists
+
+- name: Install the Umami Caddy route after secure bootstrap
+  ansible.builtin.template:
+    src: umami.caddy.j2
+    dest: /var/www/_platform/caddy/sites/umami.caddy
+    owner: root
+    group: root
+    mode: '0644'
+  register: production_umami_caddy_route
+
+- name: Validate the complete Caddy configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-directory
+      - /var/www/_platform/caddy
+      - --file
+      - /var/www/_platform/caddy/compose.yml
+      - exec
+      - -T
+      - caddy
+      - caddy
+      - validate
+      - --config
+      - /etc/caddy/Caddyfile
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Reload Caddy when the Umami route changes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-directory
+      - /var/www/_platform/caddy
+      - --file
+      - /var/www/_platform/caddy/compose.yml
+      - exec
+      - -T
+      - caddy
+      - caddy
+      - reload
+      - --config
+      - /etc/caddy/Caddyfile
+  when:
+    - not ansible_check_mode
+    - production_umami_caddy_route.changed
+  changed_when: true
+
+- name: Verify the installed Umami service
+  ansible.builtin.import_tasks: verify.yml
+  when: not ansible_check_mode

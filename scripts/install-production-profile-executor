@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly executor_user=console-profile-executor
+readonly executor_root=/var/lib/tuinstra-profile-executor
+readonly config_root=/etc/tuinstra-profile-executor
+readonly staging_root=/var/lib/tuinstra-profile-executor/staging
+readonly bundle_root=/var/lib/tuinstra-profile-executor/bundles
+readonly operation_group=tuinstra-ops
+readonly source_repository=git@github.com:Tuinstra-DEV/devops.git
+
+die() { echo "profile-executor installer: $*" >&2; exit 1; }
+[[ ${EUID} -eq 0 ]] || die "root is required"
+[[ $# -eq 6 ]] || die "usage: install-production-profile-executor HOST SOURCE_SHA PROFILE_VERSION PROFILE_HASH PROCEDURE PUBLICATION_ID"
+
+readonly host="$1" source_sha="$2" profile_version="$3" profile_hash="$4" procedure="$5" publication_id="$6"
+[[ "$host" == tuinstra-prod-01 || "$host" == tuinstra-prod-02 || "$host" == tuinstra-rehearsal-01 ]] || die "host is outside the fixed executor registry"
+[[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || die "source SHA is invalid"
+[[ "$profile_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]] || die "profile version is invalid"
+[[ "$profile_hash" =~ ^[a-f0-9]{64}$ ]] || die "profile hash is invalid"
+case "$host:$procedure" in
+  tuinstra-prod-01:baseline_umami_restore) inventory=infra/ansible/production/local-prod01.yml; limit=prod01 ;;
+  tuinstra-prod-02:baseline) inventory=infra/ansible/production/local-prod02.yml; limit=prod02 ;;
+  tuinstra-rehearsal-01:baseline_umami_restore) inventory=infra/ansible/rehearsal/local-inventory.yml; limit=rehearsal01 ;;
+  *) die "procedure is outside the fixed executor registry" ;;
+esac
+readonly inventory limit
+[[ "$publication_id" =~ ^change-[A-Za-z0-9-]{8,120}$ ]] || die "publication approval id is invalid"
+
+readonly source_stage="$staging_root/$source_sha"
+readonly profile_key_stage="$staging_root/profile-worker.pub"
+readonly host_stage="$staging_root/$host"
+readonly destination="$bundle_root/$source_sha"
+readonly host_config="$config_root/hosts/$host"
+
+assert_regular() {
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" ]] || die "required regular file is missing"
+}
+
+assert_mode() {
+  local path="$1" expected="$2"
+  [[ ! -L "$path" && "$(stat -c '%U:%G:%a' "$path")" == "$expected" ]] || die "installed path has unsafe ownership or mode"
+}
+
+for file in "$profile_key_stage" "$host_stage/vars.yml" "$host_stage/admin.pub" "$host_stage/deploy.pub"; do
+  assert_regular "$file"
+done
+if [[ ! -d "$destination" ]]; then
+  [[ -d "$source_stage" && ! -L "$source_stage" ]] || die "fixed source staging checkout is missing"
+  [[ -z "$(find "$source_stage" -type l -print -quit)" ]] || die "source bundle contains a symlink"
+  [[ "$(git -c safe.directory="$source_stage" -C "$source_stage" rev-parse HEAD)" == "$source_sha" ]] || die "source checkout SHA differs"
+  [[ "$(git -c safe.directory="$source_stage" -C "$source_stage" config --get remote.origin.url)" == "$source_repository" ]] || die "source checkout repository differs"
+  [[ -z "$(git -c safe.directory="$source_stage" -C "$source_stage" status --porcelain --untracked-files=normal)" ]] || die "source checkout is not clean"
+fi
+
+read -r key_type key_body _ <"$profile_key_stage"
+[[ "$key_type" == ssh-ed25519 && "$key_body" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || die "profile worker public key is invalid"
+grep -Fq "$key_body" "$host_stage/admin.pub" && die "restricted profile key must not enter the admin allowlist"
+grep -Fq "$key_body" "$host_stage/deploy.pub" && die "restricted profile key must not enter the deploy allowlist"
+
+getent group "$executor_user" >/dev/null || groupadd --system "$executor_user"
+getent group "$operation_group" >/dev/null || groupadd --system "$operation_group"
+if ! id "$executor_user" >/dev/null 2>&1; then
+  useradd --system --gid "$executor_user" --home-dir /var/lib/tuinstra-profile-executor-account --shell /bin/sh "$executor_user"
+fi
+[[ "$(id -gn "$executor_user")" == "$executor_user" ]] || die "executor primary group differs"
+[[ "$(getent passwd "$executor_user" | cut -d: -f6-7)" == /var/lib/tuinstra-profile-executor-account:/bin/sh ]] || die "executor account contract differs"
+passwd --lock "$executor_user" >/dev/null
+
+install -d -o root -g root -m 0755 /var/lib/tuinstra-profile-executor-account "$executor_root" "$bundle_root"
+install -d -o root -g root -m 0700 "$config_root" "$config_root/profiles" "$config_root/hosts" "$host_config" "$executor_root/runtime" "$executor_root/journal"
+install -d -o root -g "$operation_group" -m 0750 /run/lock/tuinstra
+readonly host_lock=/run/lock/tuinstra/operations.host."$host".lock
+if [[ ! -e "$host_lock" ]]; then
+  install -o root -g "$operation_group" -m 0660 /dev/null "$host_lock"
+fi
+assert_mode /run/lock/tuinstra root:"$operation_group":750
+assert_mode "$host_lock" root:"$operation_group":660
+if [[ ! -e "$destination" ]]; then
+  chown -R root:root "$source_stage"
+  find "$source_stage" -type d -exec chmod 0755 {} +
+  find "$source_stage" -type f -exec chmod go-w {} +
+  mv "$source_stage" "$destination"
+fi
+[[ "$(git -c safe.directory="$destination" -C "$destination" rev-parse HEAD)" == "$source_sha" ]] || die "published bundle SHA differs"
+[[ "$(git -c safe.directory="$destination" -C "$destination" config --get remote.origin.url)" == "$source_repository" ]] || die "published bundle repository differs"
+[[ -z "$(git -c safe.directory="$destination" -C "$destination" status --porcelain --untracked-files=normal)" ]] || die "published bundle is not clean"
+[[ -z "$(find "$destination" \( -type d -o -type f \) -perm /022 -print -quit)" ]] || die "published bundle is writable"
+[[ -z "$(find "$destination" -type l -print -quit)" ]] || die "published bundle contains a symlink"
+assert_regular "$destination/scripts/production-profile-executor"
+assert_regular "$destination/scripts/production-profile-bridge"
+
+install -o root -g root -m 0600 "$host_stage/vars.yml" "$host_config/vars.yml"
+install -o root -g root -m 0600 "$host_stage/admin.pub" "$host_config/admin.pub"
+install -o root -g root -m 0600 "$host_stage/deploy.pub" "$host_config/deploy.pub"
+
+atomic_text() {
+  local target="$1" mode="$2" content="$3"
+  python3 - "$target" "$mode" "$content" <<'PY'
+import os, sys, tempfile
+target, raw_mode, content = sys.argv[1:]
+directory = os.path.dirname(target)
+descriptor, temporary = tempfile.mkstemp(prefix=".profile-executor.", dir=directory)
+try:
+    os.fchmod(descriptor, int(raw_mode, 8))
+    with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+        stream.write(content)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  chown root:root "$target"
+}
+
+atomic_text "$config_root/host-identity" 0644 "$host"
+
+python3 - "$config_root/profiles/$host.json" <<PY
+import json, os, sys, tempfile
+payload = {
+    "host_slug": "$host",
+    "profile_version": "$profile_version",
+    "profile_content_hash": "$profile_hash",
+    "source_repository": "$source_repository",
+    "source_sha": "$source_sha",
+    "procedure": "$procedure",
+    "inventory": "$inventory",
+    "limit": "$limit",
+    "vars": "hosts/$host/vars.yml",
+    "publication_id": "$publication_id",
+}
+target = sys.argv[1]
+descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(target))
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+os.chmod(temporary, 0o600)
+os.replace(temporary, target)
+PY
+
+install -o root -g root -m 0755 "$destination/scripts/production-profile-executor" /usr/local/sbin/tuinstra-profile-executor
+install -d -o root -g root -m 0755 /usr/local/libexec
+install -o root -g root -m 0755 "$destination/scripts/production-profile-bridge" /usr/local/libexec/tuinstra-profile-bridge
+cat >/etc/sudoers.d/tuinstra-profile-executor <<'EOF'
+Defaults!/usr/local/sbin/tuinstra-profile-executor env_reset, !setenv
+console-profile-executor ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-profile-executor ""
+EOF
+chown root:root /etc/sudoers.d/tuinstra-profile-executor
+chmod 0440 /etc/sudoers.d/tuinstra-profile-executor
+visudo -cf /etc/sudoers.d/tuinstra-profile-executor >/dev/null
+
+install -d -o root -g root -m 0755 /var/lib/tuinstra-profile-executor-account /var/lib/tuinstra-profile-executor-account/.ssh
+atomic_text /var/lib/tuinstra-profile-executor-account/.ssh/authorized_keys 0644 \
+  "restrict,no-user-rc,command=\"/usr/local/libexec/tuinstra-profile-bridge\" $key_type $key_body profile-worker"
+assert_mode "$config_root/profiles/$host.json" root:root:600
+assert_mode "$host_config/vars.yml" root:root:600
+assert_mode /usr/local/sbin/tuinstra-profile-executor root:root:755
+assert_mode /usr/local/libexec/tuinstra-profile-bridge root:root:755
+assert_mode /etc/sudoers.d/tuinstra-profile-executor root:root:440
+assert_mode /var/lib/tuinstra-profile-executor-account/.ssh/authorized_keys root:root:644
+echo "restricted local profile executor published for $host at approved profile $profile_version ($publication_id)"
