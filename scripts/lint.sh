@@ -75,6 +75,8 @@ python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").rea
 python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
 python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
 bash -n backup/restore-umami
+bash -n backup/restore-tracker
+bash -n scripts/test_tracker_restore_native.sh
 bash -n backup/tuinstra-backup-admin
 bash -n scripts/install-sanctuary-backups
 bash -n scripts/restic-retention-integration-test.sh

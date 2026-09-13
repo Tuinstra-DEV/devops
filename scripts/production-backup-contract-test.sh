@@ -13,6 +13,7 @@ python3 -c 'import pathlib,sys; [compile(pathlib.Path(p).read_text(encoding="utf
   "$repo_root/scripts/test_sanctuary_installer_contract.py" \
   "$repo_root/backup/onepassword-escrow.py" "$repo_root/scripts/test_backup_onepassword_escrow.py"
 bash -n "$repo_root/backup/restore-umami"
+bash -n "$repo_root/backup/restore-tracker"
 bash -n "$repo_root/backup/tuinstra-backup-admin"
 bash -n "$repo_root/scripts/install-sanctuary-backups"
 bash -n "$repo_root/scripts/restic-retention-integration-test.sh"
@@ -47,6 +48,11 @@ grep -q 'encrypted_secret_validation' "$repo_root/backup/restore-umami"
 grep -q 'database_content_marker' "$repo_root/backup/restore-umami"
 grep -q 'files/two-factor-encryption-key' "$repo_root/backup/restore-umami"
 grep -q 'restored database content marker does not match the export' "$repo_root/backup/restore-umami"
+grep -q 'postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73' "$repo_root/backup/restore-tracker"
+grep -q 'minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e' "$repo_root/backup/restore-tracker"
+grep -q -- '--network none' "$repo_root/backup/restore-tracker"
+grep -q 'tracker-doctrine-migrations-v1' "$repo_root/backup/restore-tracker"
+grep -q 'isolated Tracker restore cleanup failed' "$repo_root/backup/restore-tracker"
 grep -q 'JOIN \\"user\\" AS u ON u.user_id = t.user_id' "$repo_root/backup/restore-umami"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root/backup/restore-umami" <<'PY'
 from pathlib import Path

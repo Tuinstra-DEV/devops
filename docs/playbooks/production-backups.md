@@ -6,9 +6,11 @@ forced-command SSH-key een logische export op de productiehost, haalt het
 versleutelde artifact op, controleert checksum en omvang, schrijft het naar een
 eigen versleutelde Restic-repository en bevestigt ontvangst pas na `restic check`.
 
-De eerste actieve adapter is `tuinstra-prod-01/umami`. Prod-02 bevat nog geen
-geverifieerde productieapp en rapporteert daarom `not-applicable`. Sanctuary is
-alleen bestemming; zijn eigen workloads zijn geen bron in deze keten.
+De eerste actieve adapter is `tuinstra-prod-01/umami`. De Tracker-adapter voor
+`tuinstra-prod-02/tracker` staat als afzonderlijk profiel klaar en blijft
+uitgeschakeld totdat de productie-imagepins, credentials en een echte
+herstelproef door de release-owner zijn bevestigd. Sanctuary is alleen
+bestemming; zijn eigen workloads zijn geen bron in deze keten.
 
 ## Vaste indeling en geheimen
 
@@ -178,6 +180,27 @@ een anonieme pipe, ontsleutelt het seed uitsluitend in de geïsoleerde Umami-con
 maakt daar een verse TOTP en doorloopt login, 2FA en identiteitscontrole via
 loopback. Seed, wachtwoord, TOTP, tokens en HTTP-responses worden niet geschreven
 of gelogd.
+
+Voor Tracker gebruikt de geïnstalleerde `restore-tracker`-adapter PostgreSQL
+17 met de vastgelegde digest, herstelt hij de Doctrine-migratieledger en
+reconcilieert hij het getarbalde attachmentbestand in een nieuwe MinIO-dataroot
+met de vastgelegde MinIO-digest. De test start geen Tracker-webapp, workers of
+externe endpoints; de applicatie-healthstatus blijft daarom expliciet
+`not-run-external-effects-blocked`. De productie-export stopt de geconfigureerde
+Tracker-services alleen gedurende de quiescence-window (maximaal 120 seconden)
+en start daarna uitsluitend services die vóór de export actief waren. Een
+herstelbewijs is geen vervanging voor een gecontroleerde restore naar de echte
+productiedoelen.
+
+De native Tracker-gate maakt daarvoor een volledig synthetische PG17-dump en
+een MinIO-object met de vastgelegde images en voert daarna dezelfde adapter uit:
+
+```bash
+sudo ./scripts/test_tracker_restore_native.sh
+```
+
+Deze gate gebruikt alleen een tijdelijke map onder `/run/tuinstra-backup` en
+verwijdert haar containers en fixturedata bij afsluiten.
 
 Een volledige acceptatie-oefening gebruikt een lege geïsoleerde doelomgeving en
 de recoverycredentials uit 1Password. Noteer begin/eindtijd; het doel is herstel

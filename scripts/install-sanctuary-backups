@@ -17,13 +17,14 @@ if [[ "$bundle_root" != /home/mtuinstra/tuinstra-backup-install ]]; then
 fi
 engine_source="$bundle_root/backup/tuinstra_backup.py"
 restore_source="$bundle_root/backup/restore-umami"
+tracker_restore_source="$bundle_root/backup/restore-tracker"
 admin_source="$bundle_root/backup/tuinstra-backup-admin"
 profile_source="$bundle_root/backup/profiles/sanctuary.json"
 bootstrap_source="$bundle_root/scripts/bootstrap_backup_credentials.py"
 escrow_stage_source="$bundle_root/scripts/stage_backup_escrow.py"
 hostkey_root="$bundle_root/install-input/hostkeys"
 
-for source in "$engine_source" "$restore_source" "$admin_source" "$profile_source" \
+for source in "$engine_source" "$restore_source" "$tracker_restore_source" "$admin_source" "$profile_source" \
               "$bootstrap_source" "$escrow_stage_source" "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
   if [[ ! -f "$source" || -L "$source" ]]; then
     echo "installer input is missing or unsafe: $source" >&2
@@ -101,6 +102,7 @@ install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-p
 
 install -o root -g root -m 0755 "$engine_source" /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
 install -o root -g root -m 0755 "$restore_source" /usr/local/libexec/tuinstra-backup/restore-umami
+install -o root -g root -m 0755 "$tracker_restore_source" /usr/local/libexec/tuinstra-backup/restore-tracker
 install -o root -g root -m 0755 "$admin_source" /usr/local/sbin/tuinstra-backup-admin
 install -o root -g root -m 0600 "$profile_source" /etc/tuinstra-backup/worker.json
 chown root:root /etc/tuinstra-backup/age-identity.txt \

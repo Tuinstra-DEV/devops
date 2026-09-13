@@ -22,6 +22,9 @@
   "installed_config": "/etc/tuinstra-backup/worker.json",
   "age_identity_file": "/etc/tuinstra-backup/age-identity.txt",
   "restore_adapter": "/usr/local/libexec/tuinstra-backup/restore-umami",
+  "restore_adapters": {
+    "tracker-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-tracker"
+  },
   "hosts": [
     {
       "host_slug": "tuinstra-prod-01",
@@ -39,7 +42,7 @@
       "identity_file": "/etc/tuinstra-backup/ssh/prod02",
       "credential_name": "prod02.key",
       "known_hosts_file": "/etc/tuinstra-backup/ssh/known_hosts",
-      "applications": []
+      "applications": ["tracker"]
     }
   ]
 }

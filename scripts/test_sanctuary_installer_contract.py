@@ -46,6 +46,12 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         self.assertIn("d /run/tuinstra-backup 0700 root root -", INSTALLER)
         self.assertIn("d /run/tuinstra-backup 0700 root root -", ROLE)
 
+    def test_tracker_restore_adapter_is_installed_without_changing_umami_adapter(self):
+        self.assertIn('restore-tracker', INSTALLER)
+        self.assertIn('restore-tracker', ROLE)
+        self.assertIn('restore-umami', INSTALLER)
+        self.assertIn('restore-umami', ROLE)
+
 
 if __name__ == "__main__":
     unittest.main()
