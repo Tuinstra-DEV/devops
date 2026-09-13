@@ -1,0 +1,15 @@
+---
+- name: Verify the host profile and inert Umami restore prerequisites
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Verify the production host baseline
+      ansible.builtin.import_role:
+        name: production_host_baseline
+        tasks_from: verify
+
+    - name: Verify inert Umami restore prerequisites
+      ansible.builtin.import_role:
+        name: production_umami
+        tasks_from: verify_restore

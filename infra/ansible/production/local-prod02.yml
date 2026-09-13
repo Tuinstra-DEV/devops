@@ -1,0 +1,21 @@
+---
+all:
+  children:
+    production_hosts:
+      hosts:
+        prod02:
+          ansible_connection: local
+          ansible_python_interpreter: /usr/bin/python3
+          production_app_names:
+            - notify
+            - tracker
+            - wodiq
+            - sudoku
+          production_admin_public_key_file: /etc/tuinstra-profile-executor/hosts/tuinstra-prod-02/admin.pub
+          production_deploy_public_key_file: /etc/tuinstra-profile-executor/hosts/tuinstra-prod-02/deploy.pub
+          production_docker_package_versions:
+            docker-ce: 5:29.8.0-1~ubuntu.26.04~resolute
+            docker-ce-cli: 5:29.8.0-1~ubuntu.26.04~resolute
+            containerd.io: 2.3.5-1~ubuntu.26.04~resolute
+            docker-buildx-plugin: 0.37.1-1~ubuntu.26.04~resolute
+            docker-compose-plugin: 5.5.1-1~ubuntu.26.04~resolute

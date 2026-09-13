@@ -1,0 +1,26 @@
+---
+all:
+  children:
+    production_hosts:
+      hosts:
+        rehearsal01:
+          ansible_host: 127.0.0.1
+          ansible_port: 60022
+          ansible_user: mtuinstra
+          production_app_names:
+            - umami
+          # The worker-owned protected vars file must override both deliberately
+          # nonexistent paths. The fixture never falls back to personal keys.
+          production_admin_public_key_file: /nonexistent/tuinstra-rehearsal-01/admin.pub
+          production_deploy_public_key_file: /nonexistent/tuinstra-rehearsal-01/deploy.pub
+          production_caddy_enable_https: false
+          production_caddy_http_bind_address: 127.0.0.1
+          production_caddy_https_bind_address: 127.0.0.1
+          production_umami_expected_hostname: tuinstra-rehearsal-01
+          production_umami_domain: umami.rehearsal.invalid
+          production_docker_package_versions:
+            docker-ce: 5:29.8.0-1~ubuntu.26.04~resolute
+            docker-ce-cli: 5:29.8.0-1~ubuntu.26.04~resolute
+            containerd.io: 2.3.5-1~ubuntu.26.04~resolute
+            docker-buildx-plugin: 0.37.1-1~ubuntu.26.04~resolute
+            docker-compose-plugin: 5.5.1-1~ubuntu.26.04~resolute

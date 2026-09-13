@@ -1,0 +1,182 @@
+---
+- name: Validate production backup inputs
+  ansible.builtin.assert:
+    that:
+      - production_backup_host_slug in ['tuinstra-prod-01', 'tuinstra-prod-02']
+      - production_backup_profile_source | length > 0
+      - production_backup_public_key_root | length > 0
+      - production_backup_pull_public_key_file | length > 0
+      - production_backup_host_slug != 'tuinstra-prod-01' or production_restore_public_key_file | length > 0
+    fail_msg: Production backup requires an allowlisted host, profile and dedicated pull key.
+
+- name: Install backup runtime dependencies
+  ansible.builtin.apt:
+    name:
+      - age
+      - python3
+    state: present
+    update_cache: true
+
+- name: Create restricted pull account
+  ansible.builtin.user:
+    name: tuinstra-backup-pull
+    comment: Restricted production backup pull transport
+    create_home: true
+    home: /var/lib/tuinstra-backup-pull
+    shell: /bin/sh
+    password_lock: true
+
+- name: Create dedicated production restore account
+  ansible.builtin.user:
+    name: tuinstra-restore
+    comment: Restricted production restore target transport
+    create_home: true
+    home: /var/lib/tuinstra-restore
+    shell: /bin/sh
+    password_lock: true
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Create producer directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/tuinstra-backup, owner: root, group: root, mode: '0700' }
+    - { path: /usr/local/libexec/tuinstra-backup, owner: root, group: root, mode: '0755' }
+    - { path: /var/lib/tuinstra-backup, owner: root, group: tuinstra-backup-pull, mode: '0750' }
+    - { path: /var/lib/tuinstra-backup/spool, owner: root, group: root, mode: '0750' }
+    - { path: /var/lib/tuinstra-backup/receipts, owner: root, group: root, mode: '0750' }
+    - { path: /run/tuinstra-backup, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup-pull/.ssh, owner: tuinstra-backup-pull, group: tuinstra-backup-pull, mode: '0700' }
+
+- name: Create fixed production restore directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/lib/tuinstra-restore/.ssh, owner: tuinstra-restore, group: tuinstra-restore, mode: '0700' }
+    - { path: /var/lib/tuinstra-production-restore, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-production-restore/staging, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-production-restore/journal, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-production-restore/maintenance, owner: root, group: root, mode: '0700' }
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Install backup engine
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../backup/tuinstra_backup.py"
+    dest: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install fixed Umami production restore target
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../backup/production_restore_target.py"
+    dest: /usr/local/libexec/tuinstra-backup/production_restore_target.py
+    owner: root
+    group: root
+    mode: '0755'
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Install production backup profile
+  ansible.builtin.copy:
+    src: "{{ production_backup_profile_source }}"
+    dest: /etc/tuinstra-backup/producer.json
+    owner: root
+    group: tuinstra-backup-pull
+    mode: '0640'
+
+- name: Install restricted transport key
+  ansible.builtin.copy:
+    content: >-
+      restrict,command="/usr/bin/sudo -n --preserve-env=SSH_ORIGINAL_COMMAND
+      /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
+      --config /etc/tuinstra-backup/producer.json dispatch"
+      {{ lookup('ansible.builtin.file', production_backup_pull_public_key_file) }}
+    dest: /var/lib/tuinstra-backup-pull/.ssh/authorized_keys
+    owner: tuinstra-backup-pull
+    group: tuinstra-backup-pull
+    mode: '0600'
+  no_log: true
+
+- name: Install separate restricted production restore key
+  ansible.builtin.copy:
+    content: >-
+      restrict,command="/usr/bin/sudo -n --preserve-env=SSH_ORIGINAL_COMMAND
+      /usr/local/libexec/tuinstra-backup/production_restore_target.py"
+      {{ lookup('ansible.builtin.file', production_restore_public_key_file) }}
+    dest: /var/lib/tuinstra-restore/.ssh/authorized_keys
+    owner: tuinstra-restore
+    group: tuinstra-restore
+    mode: '0600'
+  no_log: true
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Allow pull transport to invoke only the root-owned dispatcher
+  ansible.builtin.copy:
+    content: |
+      Defaults:tuinstra-backup-pull env_keep += "SSH_ORIGINAL_COMMAND"
+      tuinstra-backup-pull ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/producer.json dispatch
+    dest: /etc/sudoers.d/92-tuinstra-backup-pull
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Allow restore transport to invoke only the root-owned fixed target
+  ansible.builtin.copy:
+    content: |
+      Defaults:tuinstra-restore env_keep += "SSH_ORIGINAL_COMMAND"
+      tuinstra-restore ALL=(root) NOPASSWD: /usr/local/libexec/tuinstra-backup/production_restore_target.py
+    dest: /etc/sudoers.d/95-tuinstra-production-restore
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Install export service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Create encrypted production application exports
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      User=root
+      UMask=0077
+      RuntimeDirectory=tuinstra-backup
+      RuntimeDirectoryMode=0700
+      ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/producer.json export-all
+      PrivateTmp=true
+      NoNewPrivileges=true
+      ProtectHome=true
+      ProtectSystem=strict
+      ReadWritePaths=/var/lib/tuinstra-backup /run/tuinstra-backup /run/lock
+    dest: /etc/systemd/system/tuinstra-backup-export.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Verify recipient exists without reading it
+  ansible.builtin.stat:
+    path: /etc/tuinstra-backup/age-recipient.txt
+  register: production_backup_age_recipient
+
+- name: Require separately provisioned age recipient
+  ansible.builtin.assert:
+    that:
+      - production_backup_age_recipient.stat.exists | default(false)
+      - production_backup_age_recipient.stat.isreg | default(false)
+      - production_backup_age_recipient.stat.pw_name | default('') == 'root'
+      - production_backup_age_recipient.stat.mode | default('') == '0600'
+    fail_msg: Provision the Sanctuary age public recipient as root:0600 before enabling exports.
