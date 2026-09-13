@@ -18,6 +18,9 @@ SECRET_ROOT = Path("/etc/tuinstra-backup")
 PUBLIC_ROOT = Path("/var/lib/tuinstra-backup/public")
 BACKUP_MOUNT = Path("/mnt/hdd1000-01")
 MINIMUM_FREE_BYTES = 100 * 1024**3
+ROOT_UID = 0
+ROOT_GID = 0
+SSH_IDENTITY_HOSTS = frozenset({"prod01", "prod02", "prod01-restore"})
 
 
 class BootstrapError(RuntimeError):
@@ -46,12 +49,36 @@ def validate_secret(path: Path, allowed_uids: set[int] | None = None) -> None:
 
 
 def ssh_credential_uids() -> set[int]:
-    allowed = {0}
+    allowed = {ROOT_UID}
     try:
         allowed.add(pwd.getpwnam("tuinstra-backup").pw_uid)
     except KeyError:
         pass
     return allowed
+
+
+def normalize_ssh_identity(path: Path) -> None:
+    """Migrate one validated fixed identity from the legacy service owner to root."""
+    allowed_paths = {SECRET_ROOT / "ssh" / host for host in SSH_IDENTITY_HOSTS}
+    if path not in allowed_paths:
+        raise BootstrapError("SSH identity path is not allowlisted")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise BootstrapError("existing SSH identity is unavailable or unsafe") from exc
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in ssh_credential_uids()
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise BootstrapError("existing credential has unexpected ownership, type or permissions")
+        os.fchown(descriptor, ROOT_UID, ROOT_GID)
+        os.fchmod(descriptor, 0o600)
+        normalized = os.fstat(descriptor)
+        if (not stat.S_ISREG(normalized.st_mode) or normalized.st_uid != ROOT_UID
+                or normalized.st_gid != ROOT_GID or stat.S_IMODE(normalized.st_mode) != 0o600):
+            raise BootstrapError("existing SSH identity ownership migration failed")
+    finally:
+        os.close(descriptor)
 
 
 def link_secret(temporary: Path, destination: Path) -> None:
@@ -108,6 +135,8 @@ def ensure_age_identity() -> Path:
 
 
 def ensure_ssh_identity(host: str) -> Path:
+    if host not in SSH_IDENTITY_HOSTS:
+        raise BootstrapError("SSH identity name is not allowlisted")
     destination = SECRET_ROOT / "ssh" / host
     if not destination.exists():
         temporary_dir = Path(tempfile.mkdtemp(prefix=f".{host}.", dir=SECRET_ROOT / "ssh"))
@@ -121,10 +150,19 @@ def ensure_ssh_identity(host: str) -> Path:
             raise BootstrapError("SSH identity generation failed") from exc
         finally:
             shutil.rmtree(temporary_dir, ignore_errors=True)
-    validate_secret(destination, ssh_credential_uids())
+    normalize_ssh_identity(destination)
     public = run_public(["ssh-keygen", "-y", "-f", str(destination)])
     atomic_public(PUBLIC_ROOT / f"{host}.pub", public.rstrip(b"\n") + f" tuinstra-backup-{host}\n".encode())
     return destination
+
+
+def require_distinct_ssh_identities(identities: list[Path]) -> None:
+    public_keys = {
+        run_public(["ssh-keygen", "-y", "-f", str(identity)]).strip()
+        for identity in identities
+    }
+    if len(public_keys) != len(identities) or b"" in public_keys:
+        raise BootstrapError("backup and production restore SSH identities must be distinct")
 
 
 def ensure_restic_password() -> Path:
@@ -158,8 +196,12 @@ def main() -> int:
             os.chown(path, 0, 0)
             os.chmod(path, mode)
         ensure_age_identity()
-        ensure_ssh_identity("prod01")
-        ensure_ssh_identity("prod02")
+        identities = [
+            ensure_ssh_identity("prod01"),
+            ensure_ssh_identity("prod02"),
+            ensure_ssh_identity("prod01-restore"),
+        ]
+        require_distinct_ssh_identities(identities)
         ensure_restic_password()
         print(f"backup credential bootstrap complete; destination_free_gib={available // 1024**3}; public_dir={PUBLIC_ROOT}")
         return 0

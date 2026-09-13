@@ -15,6 +15,9 @@ python3 -c 'import pathlib,sys; [compile(pathlib.Path(p).read_text(encoding="utf
   "$repo_root/scripts/test_sanctuary_installer_contract.py" \
   "$repo_root/backup/onepassword-escrow.py" "$repo_root/scripts/test_backup_onepassword_escrow.py"
 bash -n "$repo_root/backup/restore-umami"
+python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
+python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
+bash -n "$repo_root/backup/restore-tracker"
 bash -n "$repo_root/backup/restore-tracker"
 bash -n "$repo_root/backup/tuinstra-backup-admin"
 bash -n "$repo_root/scripts/install-sanctuary-backups"
@@ -27,6 +30,15 @@ grep -q -- '--network none' "$repo_root/backup/restore-umami"
 grep -q -- 'docker run --rm --interactive --network none --entrypoint pg_restore' \
   "$repo_root/backup/restore-umami"
 grep -q -- '--network "container:' "$repo_root/backup/restore-umami"
+grep -q 'tuinstra:production-restore-safety' "$repo_root/backup/production_restore.py"
+grep -q 'production restore requires a full snapshot id' "$repo_root/backup/production_restore.py"
+grep -q 'tuinstra-restore' "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q 'production_restore_target.py' "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q 'application is in a production restore maintenance window' \
+  "$repo_root/infra/ansible/roles/production_host_baseline/templates/tuinstra-compose-deploy.j2"
+grep -q "confirmation='umami / tuinstra-prod-01 / production'" \
+  "$repo_root/backup/tuinstra-production-restore"
+grep -q 'timestamp_timeout=0' "$repo_root/infra/ansible/roles/sanctuary_backup/tasks/main.yml"
 grep -q '/usr/bin/install -d -m 0700 "$work/postgres"' \
   "$repo_root/backup/restore-umami"
 grep -q '/usr/bin/chown 70:70 "$work/postgres"' \

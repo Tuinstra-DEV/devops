@@ -2196,10 +2196,12 @@ def validate_recovery_bundle(source: Path) -> tuple[dict[str, str], tuple[int, i
     finally:
         os.close(descriptor)
     value = json.loads(encoded.decode("utf-8"))
-    keys = {"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"}
+    legacy_keys = {"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"}
+    keys = legacy_keys | {"ssh_prod01_restore"}
     if (not isinstance(value, dict) or set(value) != {"schema_version", "source_host", "secrets"}
             or value.get("schema_version") != SCHEMA_VERSION or value.get("source_host") != "sanctuary"
-            or not isinstance(value.get("secrets"), dict) or set(value["secrets"]) != keys
+            or not isinstance(value.get("secrets"), dict)
+            or frozenset(value["secrets"]) not in {frozenset(legacy_keys), frozenset(keys)}
             or any(not isinstance(secret, str) or not 16 <= len(secret) <= 16384
                    for secret in value["secrets"].values())):
         raise BackupError("independent recovery bundle schema is invalid")
@@ -2215,7 +2217,10 @@ def validate_recovery_bundle(source: Path) -> tuple[dict[str, str], tuple[int, i
             or not secrets["ssh_prod01"].startswith(SSH_PRIVATE_BEGIN)
             or not secrets["ssh_prod02"].startswith(SSH_PRIVATE_BEGIN)
             or not secrets["ssh_prod01"].rstrip().endswith(SSH_PRIVATE_END)
-            or not secrets["ssh_prod02"].rstrip().endswith(SSH_PRIVATE_END)):
+            or not secrets["ssh_prod02"].rstrip().endswith(SSH_PRIVATE_END)
+            or ("ssh_prod01_restore" in secrets and (
+                not secrets["ssh_prod01_restore"].startswith(SSH_PRIVATE_BEGIN)
+                or not secrets["ssh_prod01_restore"].rstrip().endswith(SSH_PRIVATE_END)))):
         raise BackupError("independent recovery bundle secret format is invalid")
     return secrets, (info.st_dev, info.st_ino)
 
@@ -2257,6 +2262,8 @@ def escrow_recovery_test(config: dict[str, Any], source: Path = RECOVERY_BUNDLE)
         write_recovered_secret(password / "umami.password", secrets["restic_prod01_umami"])
         write_recovered_secret(identities / "prod01", secrets["ssh_prod01"])
         write_recovered_secret(identities / "prod02", secrets["ssh_prod02"])
+        if "ssh_prod01_restore" in secrets:
+            write_recovered_secret(identities / "prod01-restore", secrets["ssh_prod01_restore"])
         recovered_config = json.loads(json.dumps(config))
         recovered_config["age_identity_file"] = str(age_identity)
         recovered_config["password_root"] = str(root / "passwords")

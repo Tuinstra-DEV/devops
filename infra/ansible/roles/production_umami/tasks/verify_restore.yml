@@ -1,0 +1,95 @@
+---
+- name: Inspect inert Umami restore files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - { path: "{{ production_umami_root }}/admin-bootstrap.mjs", mode: '0644' }
+    - { path: "{{ production_umami_root }}/onepassword-handoff.mjs", mode: '0644' }
+    - { path: "{{ production_umami_root }}/compose.yml", mode: '0640' }
+    - { path: /var/www/_platform/caddy/sites/umami.caddy, mode: '0644' }
+  register: production_umami_restore_files
+
+- name: Verify inert Umami restore file boundaries
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == item.item.mode
+    quiet: true
+  loop: "{{ production_umami_restore_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Inspect the empty PostgreSQL restore target
+  ansible.builtin.stat:
+    path: "{{ production_umami_data_root }}/postgres"
+  register: production_umami_restore_postgres
+
+- name: Verify the empty PostgreSQL restore target boundary
+  ansible.builtin.assert:
+    that:
+      - production_umami_restore_postgres.stat.isdir
+      - production_umami_restore_postgres.stat.uid == 70
+      - production_umami_restore_postgres.stat.gid == 70
+      - production_umami_restore_postgres.stat.mode == '0700'
+
+- name: Read the inert Umami Compose definition
+  ansible.builtin.slurp:
+    src: "{{ production_umami_root }}/compose.yml"
+  register: production_umami_restore_compose_raw
+
+- name: Parse the inert Umami Compose definition
+  ansible.builtin.set_fact:
+    production_umami_restore_compose: "{{ production_umami_restore_compose_raw.content | b64decode | from_yaml }}"
+
+- name: Verify the inert Umami Compose contract
+  ansible.builtin.assert:
+    that:
+      - production_umami_restore_compose.services.keys() | sort == ['db', 'umami']
+      - production_umami_restore_compose.services.db.image == production_umami_postgres_image
+      - production_umami_restore_compose.services.umami.image == production_umami_image
+      - "'ports' not in production_umami_restore_compose.services.db"
+      - "'ports' not in production_umami_restore_compose.services.umami"
+      - production_umami_restore_compose.networks.data.internal | bool
+      - production_umami_restore_compose.networks.edge.external | bool
+      - production_umami_restore_compose.networks.edge.name == production_umami_edge_network
+      - production_umami_restore_compose.services.db.env_file == [production_umami_secret_root + '/postgres.env']
+      - production_umami_restore_compose.services.umami.env_file == [production_umami_secret_root + '/umami.env']
+    fail_msg: Inert Umami restore Compose does not match the pinned no-host-port contract.
+
+- name: Detect Umami project containers before restore
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - ps
+      - --all
+      - --filter
+      - label=com.docker.compose.project=umami
+      - --quiet
+  register: production_umami_restore_containers
+  changed_when: false
+
+- name: Inspect restored Umami environment markers
+  ansible.builtin.stat:
+    path: "{{ production_umami_secret_root }}/{{ item }}"
+  loop:
+    - postgres.env
+    - umami.env
+  register: production_umami_restore_environments
+  no_log: true
+
+- name: Reject a partially restored Umami environment
+  ansible.builtin.assert:
+    that:
+      - >-
+        (production_umami_restore_environments.results | selectattr('stat.exists') | list | length) in [0, 2]
+    fail_msg: Umami restore environment files are incomplete.
+  no_log: true
+
+- name: Require an inert fresh target before data restore
+  ansible.builtin.assert:
+    that:
+      - production_umami_restore_containers.stdout | trim == ''
+    fail_msg: Umami project containers exist before the restore handoff.
+  when: production_umami_restore_environments.results | selectattr('stat.exists') | list | length == 0

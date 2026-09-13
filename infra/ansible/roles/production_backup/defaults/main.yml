@@ -4,4 +4,5 @@ production_backup_public_key_root: ""
 production_backup_profile_source: >-
   {{ playbook_dir }}/../../backup/profiles/{{ 'prod01.json' if production_backup_host_slug == 'tuinstra-prod-01' else 'prod02.json' }}
 production_backup_pull_public_key_file: ""
+production_restore_public_key_file: ""
 production_backup_spool_quota_bytes: 10737418240

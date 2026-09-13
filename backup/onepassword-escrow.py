@@ -68,7 +68,14 @@ SECRET_SPECS = {
         "relative_path": "etc/tuinstra-backup/ssh/prod02",
         "validator": "ssh",
     },
+    "ssh_prod01_restore": {
+        "field_id": "tuinstraBackupSshProd01Restore",
+        "label": "/etc/tuinstra-backup/ssh/prod01-restore",
+        "relative_path": "etc/tuinstra-backup/ssh/prod01-restore",
+        "validator": "ssh",
+    },
 }
+LEGACY_SECRET_NAMES = frozenset({"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"})
 SCHEMA_FIELD_ID = "tuinstraBackupEscrowSchema"
 SOURCE_FIELD_ID = "tuinstraBackupEscrowSource"
 NOTES_FIELD_ID = "notesPlain"
@@ -195,9 +202,14 @@ def _validate_secret(name: str, value: Any) -> str:
 
 
 def _validate_secret_set(values: dict[str, Any]) -> dict[str, str]:
-    validated = {name: _validate_secret(name, values[name]) for name in SECRET_SPECS}
+    if frozenset(values) not in {LEGACY_SECRET_NAMES, frozenset(SECRET_SPECS)}:
+        raise EscrowError("Credential set does not match a supported schema")
+    validated = {name: _validate_secret(name, values[name]) for name in SECRET_SPECS if name in values}
     if validated["ssh_prod01"] == validated["ssh_prod02"]:
         raise EscrowError("Production pull hosts must use distinct SSH identities")
+    if "ssh_prod01_restore" in validated and validated["ssh_prod01_restore"] in {
+            validated["ssh_prod01"], validated["ssh_prod02"]}:
+        raise EscrowError("Production restore must use a distinct SSH identity")
     return validated
 
 
@@ -216,7 +228,7 @@ def parse_bundle(stream) -> dict[str, str]:
     if document.get("schema_version") != SCHEMA_VERSION or document.get("source_host") != SOURCE_HOST:
         raise EscrowError("Escrow input identity does not match Sanctuary schema v1")
     values = document.get("secrets")
-    if not isinstance(values, dict) or set(values) != set(SECRET_SPECS):
+    if not isinstance(values, dict) or frozenset(values) not in {LEGACY_SECRET_NAMES, frozenset(SECRET_SPECS)}:
         raise EscrowError("Escrow input does not contain the exact credential allowlist")
     return _validate_secret_set(values)
 
@@ -236,6 +248,8 @@ def build_item(secrets: dict[str, str]) -> dict[str, Any]:
         purpose="NOTES",
     )
     for name, spec in SECRET_SPECS.items():
+        if name not in secrets:
+            continue
         _set_field(item, spec["field_id"], "CONCEALED", spec["label"], secrets[name])
     return item
 
@@ -250,11 +264,14 @@ def validate_managed_item(item: dict[str, Any]) -> str:
     if not isinstance(item_id, str) or not ITEM_ID_PATTERN.fullmatch(item_id):
         raise EscrowError("Managed 1Password item has an invalid identity")
     protected_ids = {SCHEMA_FIELD_ID, SOURCE_FIELD_ID} | {
-        spec["field_id"] for spec in SECRET_SPECS.values()
+        SECRET_SPECS[name]["field_id"] for name in LEGACY_SECRET_NAMES
     }
     field_ids = [field.get("id") for field in item.get("fields", []) if isinstance(field, dict)]
     if any(field_ids.count(field_id) != 1 for field_id in protected_ids):
         raise EscrowError("Managed 1Password item has missing or duplicate protected fields")
+    restore_field_id = SECRET_SPECS["ssh_prod01_restore"]["field_id"]
+    if field_ids.count(restore_field_id) > 1:
+        raise EscrowError("Managed 1Password item has duplicate production restore identity")
     if item.get("title") != ITEM_TITLE or _category_name(item) != ITEM_CATEGORY \
             or item.get("tags") != [ITEM_TAG] \
             or _field_value(item, SCHEMA_FIELD_ID) != "1" \
@@ -267,7 +284,9 @@ def item_secrets(item: dict[str, Any]) -> dict[str, str]:
     validate_managed_item(item)
     values: dict[str, Any] = {}
     for name, spec in SECRET_SPECS.items():
-        values[name] = _field_value(item, spec["field_id"])
+        value = _field_value(item, spec["field_id"])
+        if value is not None:
+            values[name] = value
     return _validate_secret_set(values)
 
 
@@ -347,6 +366,36 @@ class OnePassword:
             raise EscrowError("1Password creation returned a conflicting item identity")
         return current
 
+    def add_restore_identity_once(self, current: dict[str, Any], value: str) -> dict[str, Any]:
+        item_id = validate_managed_item(current)
+        if _field_value(current, SECRET_SPECS["ssh_prod01_restore"]["field_id"]) is not None:
+            raise EscrowError("Managed escrow production restore identity already exists")
+        candidate = json.loads(json.dumps(current))
+        candidate.pop("id", None)
+        spec = SECRET_SPECS["ssh_prod01_restore"]
+        _set_field(candidate, spec["field_id"], "CONCEALED", spec["label"], value)
+        edit_error = None
+        try:
+            self.commands.json(
+                [self.executable, "item", "edit", item_id, "--vault", self.vault_id,
+                 "--format", "json"],
+                input_value=candidate,
+                operation="1Password managed escrow upgrade",
+            )
+        except EscrowError as error:
+            edit_error = error
+        try:
+            updated = self.resolve()
+        except EscrowError:
+            if edit_error:
+                raise edit_error
+            raise
+        if updated is None:
+            raise EscrowError("1Password upgrade outcome is uncertain; managed item not found") from edit_error
+        if validate_managed_item(updated) != item_id:
+            raise EscrowError("1Password upgrade returned a conflicting item identity")
+        return updated
+
 
 class BackupEscrow:
     def __init__(self, executable: str, vault_id: str, *, runner: ProcessRunner | None = None):
@@ -354,11 +403,17 @@ class BackupEscrow:
         self.onepassword = OnePassword(executable, vault_id, commands)
 
     def escrow(self, secrets: dict[str, str]) -> dict[str, Any]:
+        secrets = _validate_secret_set(secrets)
         current = self.onepassword.resolve()
         created = current is None
         if current is None:
             current = self.onepassword.create_once(build_item(secrets))
         stored = item_secrets(current)
+        if set(stored) == LEGACY_SECRET_NAMES and set(secrets) == set(SECRET_SPECS):
+            if stored != {name: secrets[name] for name in LEGACY_SECRET_NAMES}:
+                raise EscrowError("Managed escrow exists with different credentials; refusing overwrite")
+            current = self.onepassword.add_restore_identity_once(current, secrets["ssh_prod01_restore"])
+            stored = item_secrets(current)
         if stored != secrets:
             raise EscrowError("Managed escrow exists with different credentials; refusing overwrite")
         return {
@@ -419,6 +474,8 @@ def materialize(secrets: dict[str, str], recovery_root: str | None = None) -> Pa
                     raise EscrowError("Recovery path contains an unsafe component")
         _write_private(directory / RECOVERY_MARKER, MARKER_CONTENT)
         for name, spec in SECRET_SPECS.items():
+            if name not in secrets:
+                continue
             destination = directory / spec["relative_path"]
             _write_private(destination, secrets[name])
             if destination.read_text(encoding="ascii") != secrets[name]:
@@ -455,7 +512,10 @@ def _validate_recovery_tree(directory: Path, *, require_complete: bool) -> None:
                 raise EscrowError("Recovery directory contains an unsafe file")
             actual_files.add(str(child.relative_to(directory)))
     expected = _expected_relative_paths()
-    if actual_files - expected or (require_complete and actual_files != expected):
+    legacy_expected = {
+        SECRET_SPECS[name]["relative_path"] for name in LEGACY_SECRET_NAMES
+    } | {RECOVERY_MARKER}
+    if actual_files - expected or (require_complete and actual_files != expected and actual_files != legacy_expected):
         raise EscrowError("Recovery directory contains unexpected or missing files")
     expected_directories: set[str] = set()
     for path in expected:

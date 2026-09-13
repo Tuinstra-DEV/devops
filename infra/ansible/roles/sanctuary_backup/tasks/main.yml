@@ -52,6 +52,9 @@
     - { path: /var/lib/tuinstra-backup/locks/pull, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/locks/operations, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/restore-evidence, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore/journal, owner: root, group: root, mode: '0700' }
+    - { path: /var/lib/tuinstra-backup/production-restore/work, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/materialized, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup/catalog, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/tuinstra-backup/retention-audit, owner: root, group: root, mode: '0700' }
@@ -104,6 +107,8 @@
   loop:
     - { src: "{{ playbook_dir }}/../../backup/tuinstra_backup.py", dest: /usr/local/libexec/tuinstra-backup/tuinstra_backup.py }
     - { src: "{{ playbook_dir }}/../../backup/restore-umami", dest: /usr/local/libexec/tuinstra-backup/restore-umami }
+    - { src: "{{ playbook_dir }}/../../backup/production_restore.py", dest: /usr/local/libexec/tuinstra-backup/production_restore.py }
+    - { src: "{{ playbook_dir }}/../../backup/tuinstra-production-restore", dest: /usr/local/sbin/tuinstra-production-restore }
     - { src: "{{ playbook_dir }}/../../backup/restore-tracker", dest: /usr/local/libexec/tuinstra-backup/restore-tracker }
     - { src: "{{ playbook_dir }}/../../scripts/bootstrap_backup_credentials.py", dest: /usr/local/libexec/tuinstra-backup/bootstrap_backup_credentials.py }
     - { src: "{{ playbook_dir }}/../../backup/tuinstra-backup-admin", dest: /usr/local/sbin/tuinstra-backup-admin }
@@ -163,6 +168,7 @@
   loop:
     - /etc/tuinstra-backup/ssh/prod01
     - /etc/tuinstra-backup/ssh/prod02
+    - /etc/tuinstra-backup/ssh/prod01-restore
     - /etc/tuinstra-backup/ssh/known_hosts
     - /etc/tuinstra-backup/age-identity.txt
     - /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
@@ -188,6 +194,7 @@
   loop:
     - { path: /etc/tuinstra-backup/ssh/prod01, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/ssh/prod02, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/ssh/prod01-restore, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/ssh/known_hosts, owner: root, group: root, mode: '0644' }
     - { path: /etc/tuinstra-backup/age-identity.txt, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password, owner: root, group: root, mode: '0600' }
@@ -208,6 +215,17 @@
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test *
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
     dest: /etc/sudoers.d/94-tuinstra-backup-admin
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Install production restore operator sudo policy
+  ansible.builtin.copy:
+    content: |
+      Defaults!/usr/local/sbin/tuinstra-production-restore timestamp_timeout=0
+      mtuinstra ALL=(root) /usr/local/sbin/tuinstra-production-restore *
+    dest: /etc/sudoers.d/95-tuinstra-production-restore
     owner: root
     group: root
     mode: '0440'

@@ -22,6 +22,9 @@
   "installed_config": "/etc/tuinstra-backup/worker.json",
   "age_identity_file": "/etc/tuinstra-backup/age-identity.txt",
   "restore_adapter": "/usr/local/libexec/tuinstra-backup/restore-umami",
+  "production_restore_executable": "/usr/local/libexec/tuinstra-backup/production_restore.py",
+  "production_restore_journal_root": "/var/lib/tuinstra-backup/production-restore/journal",
+  "production_restore_work_root": "/var/lib/tuinstra-backup/production-restore/work",
   "restore_adapters": {
     "tracker-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-tracker"
   },
@@ -32,6 +35,9 @@
       "ssh_user": "tuinstra-backup-pull",
       "identity_file": "/etc/tuinstra-backup/ssh/prod01",
       "credential_name": "prod01.key",
+      "restore_ssh_user": "tuinstra-restore",
+      "restore_identity_file": "/etc/tuinstra-backup/ssh/prod01-restore",
+      "restore_credential_name": "prod01-restore.key",
       "known_hosts_file": "/etc/tuinstra-backup/ssh/known_hosts",
       "applications": ["umami"]
     },
