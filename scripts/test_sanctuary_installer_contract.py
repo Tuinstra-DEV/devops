@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import grp
+import json
+import os
+import pwd
+import stat
+import subprocess
+import tempfile
 import unittest
 
 
@@ -9,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = (ROOT / "scripts/install-sanctuary-backups").read_text(encoding="utf-8")
 ROLE = (ROOT / "infra/ansible/roles/sanctuary_backup/tasks/main.yml").read_text(encoding="utf-8")
 BOOTSTRAP = (ROOT / "scripts/bootstrap_backup_credentials.py").read_text(encoding="utf-8")
+INPUT_VERIFIER = ROOT / "scripts/verify-install-inputs.py"
+INPUT_MANIFEST = ROOT / "install-input/manifest.json"
 
 
 class SanctuaryInstallerContractTests(unittest.TestCase):
@@ -51,6 +60,65 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         self.assertIn('restore-tracker', ROLE)
         self.assertIn('restore-umami', INSTALLER)
         self.assertIn('restore-umami', ROLE)
+
+    def test_installer_verifies_reviewed_external_inputs_before_mutation(self):
+        self.assertIn('install_input_manifest="$bundle_root/install-input/manifest.json"', INSTALLER)
+        self.assertIn('python3 "$install_input_verifier" --root "$bundle_root" --manifest "$install_input_manifest"', INSTALLER)
+        self.assertLess(INSTALLER.index('python3 "$install_input_verifier"'), INSTALLER.index("apt-get update"))
+
+    def test_manifest_matches_verified_production_hostkeys(self):
+        manifest = json.loads(INPUT_MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["algorithm"], "sha256")
+        self.assertEqual([item["host"] for item in manifest["files"]], ["vps01.tuinstra.dev", "vps02.tuinstra.dev"])
+        self.assertEqual(
+            [item["fingerprint"] for item in manifest["files"]],
+            [
+                "SHA256:F/0WJ/wTeXCpYhZWUwfwlt+vQ6/Hnv0bp3v2mpypYxY",
+                "SHA256:QKqCwXfnMmKmzicVshD/EebUre5e1NS59ukR2AX+9gY",
+            ],
+        )
+
+    def test_verifier_accepts_exactly_owned_staged_key(self):
+        public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEjqmlxPsPC+r38FrfDZSowv077eLGppVVEy8e2yZvld root@tuinstra-prod-01\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "install-input/hostkeys/vps01.pub"
+            target.parent.mkdir(parents=True)
+            target.write_text(public_key, encoding="utf-8")
+            os.chmod(target, 0o600)
+            manifest = json.loads(INPUT_MANIFEST.read_text(encoding="utf-8"))
+            manifest["files"] = [dict(manifest["files"][0])]
+            manifest["files"][0]["owner"] = pwd.getpwuid(os.getuid()).pw_name
+            manifest["files"][0]["group"] = grp.getgrgid(os.getgid()).gr_name
+            manifest_path = root / "install-input/manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(INPUT_VERIFIER), "--root", str(root), "--manifest", str(manifest_path)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_verifier_rejects_mode_drift(self):
+        public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEjqmlxPsPC+r38FrfDZSowv077eLGppVVEy8e2yZvld root@tuinstra-prod-01\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "install-input/hostkeys/vps01.pub"
+            target.parent.mkdir(parents=True)
+            target.write_text(public_key, encoding="utf-8")
+            os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
+            manifest = json.loads(INPUT_MANIFEST.read_text(encoding="utf-8"))
+            manifest["files"] = [dict(manifest["files"][0])]
+            manifest["files"][0]["owner"] = pwd.getpwuid(os.getuid()).pw_name
+            manifest["files"][0]["group"] = grp.getgrgid(os.getgid()).gr_name
+            manifest_path = root / "install-input/manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(INPUT_VERIFIER), "--root", str(root), "--manifest", str(manifest_path)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("mode mismatch", result.stderr)
 
 
 if __name__ == "__main__":

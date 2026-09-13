@@ -6,10 +6,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 -m json.tool "$repo_root/backup/profiles/prod01.json" >/dev/null
 python3 -m json.tool "$repo_root/backup/profiles/prod02.json" >/dev/null
 python3 -m json.tool "$repo_root/backup/profiles/sanctuary.json" >/dev/null
+python3 -m json.tool "$repo_root/install-input/manifest.json" >/dev/null
 python3 -c 'import pathlib,sys; [compile(pathlib.Path(p).read_text(encoding="utf-8"), p, "exec") for p in sys.argv[1:]]' \
   "$repo_root/backup/tuinstra_backup.py" "$repo_root/scripts/test_production_backup.py" \
   "$repo_root/scripts/bootstrap_backup_credentials.py" "$repo_root/scripts/test_backup_credential_bootstrap.py" \
   "$repo_root/scripts/stage_backup_escrow.py" "$repo_root/scripts/test_stage_backup_escrow.py" \
+  "$repo_root/scripts/verify-install-inputs.py" \
   "$repo_root/scripts/test_sanctuary_installer_contract.py" \
   "$repo_root/backup/onepassword-escrow.py" "$repo_root/scripts/test_backup_onepassword_escrow.py"
 bash -n "$repo_root/backup/restore-umami"

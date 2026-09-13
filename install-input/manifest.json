@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "install-input/hostkeys/vps01.pub",
+      "kind": "ssh-ed25519-host-public-key",
+      "owner": "mtuinstra",
+      "group": "mtuinstra",
+      "mode": "0600",
+      "sha256": "e8d25df122053d2c5130389620353c8e36d490954b387a3076076880e2dcce65",
+      "fingerprint": "SHA256:F/0WJ/wTeXCpYhZWUwfwlt+vQ6/Hnv0bp3v2mpypYxY",
+      "host": "vps01.tuinstra.dev"
+    },
+    {
+      "path": "install-input/hostkeys/vps02.pub",
+      "kind": "ssh-ed25519-host-public-key",
+      "owner": "mtuinstra",
+      "group": "mtuinstra",
+      "mode": "0600",
+      "sha256": "29df55f10ec9a286aefe4a269d56e7207970bfcc2d59a00d14689a13299173f7",
+      "fingerprint": "SHA256:QKqCwXfnMmKmzicVshD/EebUre5e1NS59ukR2AX+9gY",
+      "host": "vps02.tuinstra.dev"
+    }
+  ]
+}

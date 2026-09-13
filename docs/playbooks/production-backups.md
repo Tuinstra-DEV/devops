@@ -75,6 +75,16 @@ De helper maakt één beheerde Secure Note en vergelijkt de readback. Verwijder 
 handoffbestand op Sanctuary pas na die geslaagde readback. Een root-owned marker
 voorkomt dat een herhaalde installatie ongemerkt een nieuwe leesbare kopie maakt.
 
+De source-only `git archive` bevat bewust niet de twee externe hostkeybestanden.
+Het getrackte `install-input/manifest.json` bevat hun SHA-256, eigenaar, mode,
+hostnaam en verwachte Ed25519-fingerprint. Stage de bestanden alleen na een
+vergelijking met de actuele `/etc/ssh/ssh_host_ed25519_key.pub` op beide
+productiehosts via de bestaande strict-SSH-verbinding én met de lokale
+`known_hosts`-entry. De bundle-installer voert daarna
+`scripts/verify-install-inputs.py` uit vóór `apt-get`, accountcreatie of andere
+mutaties. Een ontbrekende, symlinked, verkeerd geownerde, verkeerd gemodeerde of
+afwijkende key stopt de installatie fail-closed.
+
 Verifieer de productiehostkeys via de bestaande StrictHostKeyChecking-verbinding:
 lees op iedere host `/etc/ssh/ssh_host_ed25519_key.pub` met sudo, vergelijk de
 fingerprint met de al vertrouwde lokale `known_hosts`-entry en bouw daarna pas

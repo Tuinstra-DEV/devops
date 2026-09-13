@@ -22,26 +22,19 @@ admin_source="$bundle_root/backup/tuinstra-backup-admin"
 profile_source="$bundle_root/backup/profiles/sanctuary.json"
 bootstrap_source="$bundle_root/scripts/bootstrap_backup_credentials.py"
 escrow_stage_source="$bundle_root/scripts/stage_backup_escrow.py"
+install_input_manifest="$bundle_root/install-input/manifest.json"
+install_input_verifier="$bundle_root/scripts/verify-install-inputs.py"
 hostkey_root="$bundle_root/install-input/hostkeys"
 
 for source in "$engine_source" "$restore_source" "$tracker_restore_source" "$admin_source" "$profile_source" \
-              "$bootstrap_source" "$escrow_stage_source" "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
+              "$bootstrap_source" "$escrow_stage_source" "$install_input_manifest" "$install_input_verifier"; do
   if [[ ! -f "$source" || -L "$source" ]]; then
     echo "installer input is missing or unsafe: $source" >&2
     exit 1
   fi
 done
 
-for hostkey in "$hostkey_root/vps01.pub" "$hostkey_root/vps02.pub"; do
-  if ! ssh-keygen -l -f "$hostkey" >/dev/null 2>&1; then
-    echo "verified Ed25519 host key input is invalid: $hostkey" >&2
-    exit 1
-  fi
-  [[ "$(awk 'NR==1 { print $1 }' "$hostkey")" == ssh-ed25519 ]] || {
-    echo "only verified Ed25519 host keys are accepted" >&2
-    exit 1
-  }
-done
+python3 "$install_input_verifier" --root "$bundle_root" --manifest "$install_input_manifest"
 
 if ! mountpoint -q /mnt/hdd1000-01; then
   echo "approved backup destination is not an active mountpoint" >&2
