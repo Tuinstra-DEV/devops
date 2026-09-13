@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+readonly payload="${1:-}"
+readonly postgres_image='docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73'
+readonly minio_image='quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
+readonly mc_image='quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
+
+if [[ ! "$payload" =~ ^/run/tuinstra-backup/ ]] || [[ -L "$payload" ]] || [[ ! -d "$payload" ]]; then
+  echo 'restore payload is outside the controlled workspace' >&2
+  exit 64
+fi
+for relative in database.dump files/attachments.tar files/env files/object-manifest.json backup-manifest.json; do
+  if [[ ! -f "$payload/$relative" || -L "$payload/$relative" ]]; then
+    echo 'restore payload is incomplete' >&2
+    exit 65
+  fi
+done
+
+manifest_evidence=""
+if ! manifest_evidence="$(/usr/bin/python3 - "$payload/backup-manifest.json" "$postgres_image" "$minio_image" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+if (manifest.get("schema_version") != 1 or manifest.get("adapter") != "tracker-compose-v1"
+        or manifest.get("app_id") != "tracker"):
+    raise SystemExit("restore artifact identity is invalid")
+services = manifest.get("image_services")
+images = manifest.get("images")
+if not isinstance(services, dict) or not isinstance(images, list) or sorted(services.values()) != sorted(images):
+    raise SystemExit("restore artifact image evidence is invalid")
+if services.get("postgres") != sys.argv[2] or services.get("minio") != sys.argv[3]:
+    raise SystemExit("restore artifact database or object-store image is not approved")
+if not isinstance(services.get("php"), str) or not re.fullmatch(r".+@sha256:[0-9a-f]{64}", services["php"]):
+    raise SystemExit("restore artifact application image evidence is invalid")
+database = manifest.get("database")
+marker = database.get("content_marker") if isinstance(database, dict) else None
+if (not isinstance(marker, dict) or set(marker) != {"algorithm", "sha256", "migration_count", "row_counts"}
+        or marker.get("algorithm") != "tracker-doctrine-migrations-v1"
+        or not re.fullmatch(r"[0-9a-f]{64}", str(marker.get("sha256")))
+        or not isinstance(marker.get("migration_count"), int)
+        or isinstance(marker["migration_count"], bool) or marker["migration_count"] < 1
+        or not isinstance(marker.get("row_counts"), dict)
+        or set(marker["row_counts"]) != {"organization_count", "project_count", "story_count", "attachment_count"}
+        or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+               for value in marker["row_counts"].values())):
+    raise SystemExit("restore artifact migration marker is invalid")
+bucket = manifest.get("object_store_bucket")
+if not isinstance(bucket, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", bucket):
+    raise SystemExit("restore artifact object-store bucket is invalid")
+print(json.dumps({"application_image": services["php"], "migration_marker": marker,
+                  "object_store_bucket": bucket},
+                 separators=(",", ":")))
+PY
+)"; then
+  echo 'restore artifact evidence is invalid' >&2
+  exit 65
+fi
+
+readonly operation="restore-tracker-$PPID-$$"
+readonly db_container="${operation}-db"
+readonly minio_container="${operation}-minio"
+readonly work="/run/tuinstra-backup/$operation"
+/usr/bin/install -d -m 0700 "$work/postgres" "$work/minio/data"
+/usr/bin/chown 70:70 "$work/postgres"
+
+cleanup_done=false
+containers_removed=false
+workspace_removed=false
+
+remove_container() {
+  local container="$1"
+  local container_id
+  container_id="$(/usr/bin/docker container ls --all --quiet --filter "name=^/${container}$")"
+  if [[ -n "$container_id" ]]; then
+    /usr/bin/docker rm --force "$container" >/dev/null
+  fi
+  container_id="$(/usr/bin/docker container ls --all --quiet --filter "name=^/${container}$")"
+  [[ -z "$container_id" ]]
+}
+
+cleanup() {
+  local status=0
+  remove_container "$minio_container" || status=1
+  remove_container "$db_container" || status=1
+  if (( status == 0 )); then
+    containers_removed=true
+  fi
+  if [[ "$work" =~ ^/run/tuinstra-backup/restore-tracker-[0-9]+-[0-9]+$ ]]; then
+    /usr/bin/rm -rf -- "$work" || status=1
+    if [[ ! -e "$work" && ! -L "$work" ]]; then
+      workspace_removed=true
+    else
+      status=1
+    fi
+  else
+    status=1
+  fi
+  return "$status"
+}
+
+on_exit() {
+  local original_status="$?"
+  trap - EXIT
+  if [[ "$cleanup_done" != true ]] && ! cleanup; then
+    echo 'isolated Tracker restore cleanup failed' >&2
+    exit 70
+  fi
+  exit "$original_status"
+}
+trap on_exit EXIT
+
+# Read only the three PostgreSQL values from the captured environment. Values are
+# written to a private file and passed via Docker's env-file mechanism; they are
+# never placed in command output or restore evidence.
+/usr/bin/python3 - "$payload/files/env" "$work/postgres.env" <<'PY'
+import sys
+from pathlib import Path
+
+required = {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}
+values = {}
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    key, separator, value = line.partition("=")
+    if separator != "=" or key in values:
+        raise SystemExit("Tracker environment is malformed")
+    if key in required:
+        values[key] = value
+if set(values) != required or any("\n" in value or "\r" in value for value in values.values()):
+    raise SystemExit("Tracker PostgreSQL environment is incomplete")
+target = Path(sys.argv[2])
+target.write_text("".join(f"{key}={values[key]}\n" for key in sorted(values)), encoding="utf-8")
+target.chmod(0o600)
+PY
+
+# The synthetic restore credentials are kept in a private env file so they never
+# appear in Docker command arguments. The file is removed by the normal cleanup.
+readonly minio_env="$work/minio.env"
+/usr/bin/python3 - "$minio_env" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_text("MC_HOST_local=http://restore-check:restore-check-password@127.0.0.1:9000\n", encoding="utf-8")
+os.chmod(path, 0o600)
+with path.open("rb") as handle:
+    os.fsync(handle.fileno())
+PY
+
+# Validate and unpack the attachment snapshot before starting MinIO. The archive
+# format is deliberately narrower than tar's full feature set: regular files and
+# directories below attachments/ only, with no links or path escapes.
+attachment_summary=""
+if ! attachment_summary="$(/usr/bin/python3 - "$payload/files/attachments.tar" "$work/minio/data" <<'PY'
+import json
+import stat
+import sys
+import tarfile
+from pathlib import Path, PurePosixPath
+
+archive_path, target = Path(sys.argv[1]), Path(sys.argv[2])
+files = 0
+bytes_total = 0
+with tarfile.open(archive_path, "r:") as archive:
+    for member in archive.getmembers():
+        relative = PurePosixPath(member.name)
+        if (relative.is_absolute() or not relative.parts or relative.parts[0] != "attachments"
+                or any(part in {"", ".", ".."} for part in relative.parts)
+                or member.issym() or member.islnk() or not (member.isdir() or member.isfile())):
+            raise SystemExit("Tracker attachment snapshot contains an unsafe member")
+        if member.isfile():
+            files += 1
+            bytes_total += member.size
+        # The archive namespace is attachments/<relative object path>; the
+        # MinIO data root receives the object path below that namespace.
+        destination = target / Path(*relative.parts[1:])
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            assert source is not None
+            with destination.open("xb") as output:
+                while chunk := source.read(1024 * 1024):
+                    output.write(chunk)
+target_files = [item for item in target.rglob("*") if item.is_file()]
+if len(target_files) != files or sum(item.stat().st_size for item in target_files) != bytes_total:
+    raise SystemExit("Tracker attachment snapshot reconciliation failed")
+for item in target_files:
+    with item.open("rb") as source:
+        while source.read(1024 * 1024):
+            pass
+print(json.dumps({"files": files, "bytes": bytes_total}, separators=(",", ":")))
+PY
+)"; then
+  echo 'Tracker attachment snapshot is invalid' >&2
+  exit 65
+fi
+
+/usr/bin/docker run --rm --interactive --network none --entrypoint pg_restore "$postgres_image" \
+  --list <"$payload/database.dump" >/dev/null
+# The official MinIO image runs as its unprivileged uid. Restore the extracted
+# full data root with that ownership before starting the isolated server.
+/usr/bin/chown -R 1000:1000 "$work/minio/data"
+/usr/bin/docker run --detach --name "$db_container" --network none \
+  --env-file "$work/postgres.env" \
+  --mount "type=bind,source=$work/postgres,target=/var/lib/postgresql/data" \
+  --security-opt no-new-privileges:true "$postgres_image" >/dev/null
+readonly db_container_id="$(/usr/bin/docker inspect --format '{{.Id}}' "$db_container")"
+[[ "$(/usr/bin/docker inspect --format '{{.HostConfig.NetworkMode}}' "$db_container")" == none ]] || {
+  echo 'Tracker restore PostgreSQL network isolation failed' >&2
+  exit 66
+}
+[[ "$(/usr/bin/docker inspect --format '{{len .HostConfig.PortBindings}}' "$db_container")" == 0 ]] || {
+  echo 'Tracker restore PostgreSQL publishes a host port' >&2
+  exit 66
+}
+
+ready=false
+for _ in {1..60}; do
+  if /usr/bin/docker exec "$db_container" sh -eu -c 'pg_isready --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$ready" == true ]] || { echo 'isolated Tracker PostgreSQL did not become ready' >&2; exit 66; }
+/usr/bin/docker exec -i "$db_container" sh -eu -c \
+  'exec pg_restore --exit-on-error --no-owner --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
+  <"$payload/database.dump"
+
+readonly table_count="$(/usr/bin/docker exec "$db_container" sh -eu -c \
+  'psql --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="select count(*) from information_schema.tables where table_schema = '\''public'\''"')"
+[[ "$table_count" =~ ^[1-9][0-9]*$ ]] || { echo 'restored Tracker database has no public tables' >&2; exit 67; }
+readonly migration_marker="$(/usr/bin/docker exec "$db_container" sh -eu -c \
+  'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT version FROM doctrine_migration_versions ORDER BY version"' | \
+  /usr/bin/python3 -c 'import hashlib, json, sys; values=[line.strip() for line in sys.stdin if line.strip()]; print(json.dumps({"algorithm": "tracker-doctrine-migrations-v1", "sha256": hashlib.sha256(("\n".join(values)+"\n").encode()).hexdigest(), "migration_count": len(values)}, separators=(",", ":")))')"
+readonly row_counts="$(/usr/bin/docker exec "$db_container" sh -eu -c \
+  'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT jsonb_build_object('\''organization_count'\'',(SELECT count(*) FROM organization),'\''project_count'\'',(SELECT count(*) FROM project),'\''story_count'\'',(SELECT count(*) FROM story),'\''attachment_count'\'',(SELECT count(*) FROM attachment))::text"')"
+/usr/bin/python3 - "$manifest_evidence" "$migration_marker" "$row_counts" <<'PY'
+import json
+import sys
+expected = json.loads(sys.argv[1])["migration_marker"]
+actual = json.loads(sys.argv[2])
+actual["row_counts"] = json.loads(sys.argv[3])
+if actual != expected:
+    raise SystemExit("restored Tracker migration marker does not match the export")
+PY
+
+# The snapshot is reconciled into a fresh MinIO data root and served in a second
+# network-none container. No Tracker application, worker, or external endpoint is
+# started during this test.
+/usr/bin/docker run --detach --name "$minio_container" --network none \
+  --env MINIO_ROOT_USER=restore-check --env MINIO_ROOT_PASSWORD=restore-check-password \
+  --mount "type=bind,source=$work/minio/data,target=/data" \
+  --security-opt no-new-privileges:true "$minio_image" server /data --address :9000 >/dev/null
+[[ "$(/usr/bin/docker inspect --format '{{.State.Running}}' "$minio_container")" == true ]] || {
+  echo 'isolated Tracker MinIO did not remain running' >&2
+  exit 68
+}
+[[ "$(/usr/bin/docker inspect --format '{{.HostConfig.NetworkMode}}' "$minio_container")" == none ]] || {
+  echo 'Tracker MinIO network isolation failed' >&2
+  exit 68
+}
+[[ "$(/usr/bin/docker inspect --format '{{len .HostConfig.PortBindings}}' "$minio_container")" == 0 ]] || {
+  echo 'Tracker MinIO publishes a host port' >&2
+  exit 68
+}
+readonly listing_file="$work/minio-list.json"
+ready=false
+for _ in {1..30}; do
+  if /usr/bin/docker run --rm --network "container:$minio_container" \
+    --env-file "$minio_env" "$mc_image" \
+    ls --recursive --json "local/$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["object_store_bucket"])' <<<"$manifest_evidence")" \
+    >"$listing_file" 2>"$work/mc-list.stderr"; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$ready" == true ]] || { echo 'isolated Tracker MinIO did not become S3-ready' >&2; exit 68; }
+
+# Reconcile the complete source-side object manifest through S3. MinIO's
+# on-disk xl.meta and part files are implementation details, never object bytes.
+object_plan=""
+if ! object_plan="$(/usr/bin/python3 - "$payload/files/object-manifest.json" "$listing_file" "$manifest_evidence" <<'PY'
+import json
+import re
+import sys
+from pathlib import PurePosixPath
+
+manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+evidence = json.loads(sys.argv[3])
+if (set(manifest) != {"algorithm", "bucket", "objects", "object_count", "total_bytes"}
+        or manifest.get("algorithm") != "tracker-s3-object-v1"
+        or manifest.get("bucket") != evidence.get("object_store_bucket")):
+    raise SystemExit("Tracker object manifest identity is invalid")
+objects = manifest.get("objects")
+if (not isinstance(objects, list) or len(objects) > 4096
+        or manifest.get("object_count") != len(objects)
+        or not isinstance(manifest.get("total_bytes"), int) or manifest["total_bytes"] < 0):
+    raise SystemExit("Tracker object manifest shape is invalid")
+expected = {}
+for item in objects:
+    key = item.get("key") if isinstance(item, dict) else None
+    if (not isinstance(item, dict) or set(item) != {"key", "bytes", "sha256"}
+            or not isinstance(key, str) or not key or "\\" in key
+            or any(c in key for c in "\x00\r\n\t") or PurePosixPath(key).is_absolute()
+            or str(PurePosixPath(key)) != key
+            or any(part in {"", ".", ".."} for part in PurePosixPath(key).parts)
+            or not isinstance(item.get("bytes"), int) or isinstance(item["bytes"], bool) or item["bytes"] < 0
+            or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256")))
+            or key in expected):
+        raise SystemExit("Tracker object manifest entry is invalid")
+    expected[key] = (item["bytes"], item["sha256"])
+if sum(size for size, _ in expected.values()) != manifest["total_bytes"]:
+    raise SystemExit("Tracker object manifest byte count is invalid")
+marker = evidence.get("migration_marker", {})
+if marker.get("row_counts", {}).get("attachment_count", 0) > 0 and not expected:
+    raise SystemExit("Tracker database attachments have no object-store entries")
+actual = {}
+for line in open(sys.argv[2], encoding="utf-8"):
+    if not line.strip():
+        continue
+    item = json.loads(line)
+    key = item.get("key")
+    if (item.get("status") not in {None, "success"} or item.get("type") not in {None, "file"}
+            or not isinstance(key, str) or key in actual or not isinstance(item.get("size"), int)):
+        raise SystemExit("Tracker object listing is invalid")
+    actual[key] = item["size"]
+if set(actual) != set(expected) or any(actual[key] != expected[key][0] for key in expected):
+    raise SystemExit("Tracker object listing does not match the export")
+for key, (size, digest) in expected.items():
+    print(f"{key}\t{size}\t{digest}")
+PY
+)"; then
+  echo 'Tracker object-store reconciliation failed' >&2
+  exit 68
+fi
+if [[ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["object_count"])' <"$payload/files/object-manifest.json")" -gt 0 ]]; then
+  while IFS=$'\t' read -r object_key expected_bytes expected_sha; do
+    [[ -n "$object_key" ]] || continue
+    object_download="$work/object-download"
+    /usr/bin/rm -f "$object_download" "$work/mc-cat.stderr"
+    if ! /usr/bin/docker run --rm --network "container:$minio_container" \
+      --env-file "$minio_env" "$mc_image" cat "local/$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["object_store_bucket"])' <<<"$manifest_evidence")/$object_key" \
+      >"$object_download" 2>"$work/mc-cat.stderr"; then
+      echo 'isolated Tracker MinIO object download failed' >&2
+      exit 68
+    fi
+    actual_bytes="$(/usr/bin/stat -c '%s' "$object_download")"
+    actual_sha="$(/usr/bin/sha256sum "$object_download" | /usr/bin/awk '{print $1}')"
+    if [[ "$actual_bytes" != "$expected_bytes" || "$actual_sha" != "$expected_sha" ]]; then
+      echo 'isolated Tracker MinIO object checksum does not match the export' >&2
+      exit 68
+    fi
+    /usr/bin/rm -f "$object_download"
+  done <<<"$object_plan"
+fi
+/usr/bin/rm -f "$listing_file" "$work/mc-list.stderr" "$work/mc-cat.stderr"
+if ! cleanup; then
+  echo 'isolated Tracker restore cleanup failed' >&2
+  exit 70
+fi
+cleanup_done=true
+trap - EXIT
+
+/usr/bin/python3 - "$table_count" "$manifest_evidence" "$attachment_summary" <<'PY'
+import json
+import sys
+manifest = json.loads(sys.argv[2])
+summary = json.loads(sys.argv[3])
+print(json.dumps({
+    "schema_version": 1,
+    "adapter": "tracker-compose-v1",
+    "application": "tracker",
+    "status": "passed",
+    "public_table_count": int(sys.argv[1]),
+    "application_health": "not-run-external-effects-blocked",
+    "encrypted_secret_validation": "not-applicable",
+    "database_content_marker": "passed",
+    "object_store_reconciliation": "passed",
+    "network": "loopback-only-network-namespace",
+    "external_effects_blocked": True,
+    "host_ports": 0,
+    "postgres_image": "docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+    "application_image": manifest["application_image"],
+    "containers_removed": True,
+    "workspace_removed": True,
+}, sort_keys=True, separators=(",", ":")))
+PY

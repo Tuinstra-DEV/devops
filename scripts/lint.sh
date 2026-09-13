@@ -19,6 +19,7 @@ required_paths=(
   "scripts/heavy-ci-v2-contract-test.rb"
   "scripts/heavy-ci-rollout-docs-test.sh"
   "scripts/heavy-ci-baseline-test.sh"
+  "scripts/verify-install-inputs.py"
   "tests/test_classify_ci_changes.py"
   "docs/workflows/change-aware-routing.md"
   "scripts/dependency-update-policy-test.rb"
@@ -74,14 +75,18 @@ python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(
 python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
 python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
 python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
+python3 -c 'compile(open("scripts/verify-install-inputs.py", encoding="utf-8").read(), "scripts/verify-install-inputs.py", "exec")'
 python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
 python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
 bash -n backup/restore-umami
+bash -n backup/restore-tracker
+bash -n scripts/test_tracker_restore_native.sh
 bash -n backup/tuinstra-backup-admin
 bash -n scripts/install-sanctuary-backups
 bash -n scripts/restic-retention-integration-test.sh
 bash -n scripts/restore-network-isolation-integration-test.sh
 bash -n scripts/production-backup-contract-test.sh
+python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 ruby scripts/dependency-update-policy-test.rb
 
 echo "lint passed"

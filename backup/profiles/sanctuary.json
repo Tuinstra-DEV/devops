@@ -25,6 +25,9 @@
   "production_restore_executable": "/usr/local/libexec/tuinstra-backup/production_restore.py",
   "production_restore_journal_root": "/var/lib/tuinstra-backup/production-restore/journal",
   "production_restore_work_root": "/var/lib/tuinstra-backup/production-restore/work",
+  "restore_adapters": {
+    "tracker-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-tracker"
+  },
   "hosts": [
     {
       "host_slug": "tuinstra-prod-01",
@@ -45,7 +48,7 @@
       "identity_file": "/etc/tuinstra-backup/ssh/prod02",
       "credential_name": "prod02.key",
       "known_hosts_file": "/etc/tuinstra-backup/ssh/known_hosts",
-      "applications": []
+      "applications": ["tracker"]
     }
   ]
 }

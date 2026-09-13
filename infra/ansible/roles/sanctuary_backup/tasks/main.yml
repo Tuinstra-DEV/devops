@@ -109,6 +109,7 @@
     - { src: "{{ playbook_dir }}/../../backup/restore-umami", dest: /usr/local/libexec/tuinstra-backup/restore-umami }
     - { src: "{{ playbook_dir }}/../../backup/production_restore.py", dest: /usr/local/libexec/tuinstra-backup/production_restore.py }
     - { src: "{{ playbook_dir }}/../../backup/tuinstra-production-restore", dest: /usr/local/sbin/tuinstra-production-restore }
+    - { src: "{{ playbook_dir }}/../../backup/restore-tracker", dest: /usr/local/libexec/tuinstra-backup/restore-tracker }
     - { src: "{{ playbook_dir }}/../../scripts/bootstrap_backup_credentials.py", dest: /usr/local/libexec/tuinstra-backup/bootstrap_backup_credentials.py }
     - { src: "{{ playbook_dir }}/../../backup/tuinstra-backup-admin", dest: /usr/local/sbin/tuinstra-backup-admin }
 
