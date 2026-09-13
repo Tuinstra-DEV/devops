@@ -34,6 +34,7 @@ class StageBackupEscrowTests(unittest.TestCase):
     def test_exact_bundle_is_staged_once_with_private_permissions(self):
         destination = self.root / "home/.local/share/tuinstra-backup-escrow.json"
         (self.root / "home").mkdir()
+        (self.root / "home").chmod(0o700)
         marker = self.root / "state/escrow-staged-v1"
         result = stage.stage(destination, marker, os.getuid(), os.getgid(), self.sources)
         self.assertEqual(result, "staged")
@@ -51,6 +52,7 @@ class StageBackupEscrowTests(unittest.TestCase):
     def test_refuses_unsafe_source_or_unmarked_existing_handoff(self):
         destination = self.root / "home/.local/share/tuinstra-backup-escrow.json"
         (self.root / "home").mkdir()
+        (self.root / "home").chmod(0o700)
         marker = self.root / "state/escrow-staged-v1"
         self.sources["ssh_prod02"].chmod(0o644)
         with self.assertRaisesRegex(stage.StageError, "unsafe"):
