@@ -70,7 +70,9 @@ class BackupTests(unittest.TestCase):
 
     def tracker_app(self):
         compose = self.root / "tracker-compose.json"
-        compose.write_text('{"services": {}}')
+        compose.write_text(json.dumps({"services": {
+            "minio": {"environment": ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"]},
+        }}))
         env_file = self.root / "tracker.env"
         env_file.write_text("S3_BUCKET=tracker-attachments\nMINIO_ROOT_USER=fixture-user\nMINIO_ROOT_PASSWORD=fixture-password\n")
         env_file.chmod(0o600)
@@ -167,8 +169,10 @@ class BackupTests(unittest.TestCase):
         with self.assertRaisesRegex(backup.BackupError, "health"):
             backup.validate_tracker_restore_adapter_result(evidence)
 
-    def test_tracker_export_records_migrations_rows_and_attachment_checkpoint(self):
+    def test_tracker_export_uses_host_bucket_when_minio_exposes_only_credentials(self):
         app = self.tracker_app()
+        compose_contract = json.loads(Path(app["compose_file"]).read_text(encoding="utf-8"))
+        self.assertNotIn("S3_BUCKET", compose_contract["services"]["minio"]["environment"])
         config = {
             "schema_version": 1, "host_slug": "tuinstra-prod-02",
             "spool_dir": str(self.root / "spool"), "work_dir": str(self.root / "work"),

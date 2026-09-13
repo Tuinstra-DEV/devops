@@ -596,7 +596,12 @@ def _tracker_object_store_bucket(app: dict[str, Any]) -> str:
         raise BackupError("Tracker object-store bucket is invalid")
     env_path = Path(env_name)
     reject_symlink_components(env_path)
-    if env_path.is_symlink() or not env_path.is_file() or stat.S_IMODE(env_path.stat().st_mode) & 0o022:
+    try:
+        env_info = env_path.lstat()
+    except OSError as exc:
+        raise BackupError("Tracker Compose environment is unavailable") from exc
+    if (not stat.S_ISREG(env_info.st_mode) or env_path.is_symlink()
+            or env_info.st_uid != ROOT_UID or stat.S_IMODE(env_info.st_mode) != 0o600):
         raise BackupError("Tracker Compose environment is unavailable")
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines()
