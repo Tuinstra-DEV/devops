@@ -192,8 +192,10 @@ of gelogd.
 
 Voor Tracker gebruikt de geïnstalleerde `restore-tracker`-adapter PostgreSQL
 17 met de vastgelegde digest, herstelt hij de Doctrine-migratieledger en
-reconcilieert hij het getarbalde attachmentbestand in een nieuwe MinIO-dataroot
-met de vastgelegde MinIO-digest. De test start geen Tracker-webapp, workers of
+reconcilieert hij elk object uit het tijdens de quiescence-window vastgelegde
+S3-objectmanifest op sleutel, omvang en SHA-256. Het getarbalde volledige MinIO-
+dataroot is transportmateriaal; MinIO's interne `xl.meta`- en part-bestanden
+worden niet als objectinhoud geïnterpreteerd. De test start geen Tracker-webapp, workers of
 externe endpoints; de applicatie-healthstatus blijft daarom expliciet
 `not-run-external-effects-blocked`. De productie-export stopt de geconfigureerde
 Tracker-services alleen gedurende de quiescence-window (maximaal 120 seconden)

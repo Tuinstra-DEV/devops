@@ -11,8 +11,8 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 readonly postgres_image='docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73'
-readonly minio_image='minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
-readonly mc_image='minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
+readonly minio_image='quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
+readonly mc_image='quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
 readonly php_image='ghcr.io/tuinstra-dev/tracker@sha256:0000000000000000000000000000000000000000000000000000000000000000'
 readonly root_dir="/run/tuinstra-backup/tracker-native-fixture-$$"
 readonly source_db="tracker-fixture-db-$$"
@@ -67,15 +67,15 @@ for _ in {1..30}; do
 done
 /usr/bin/docker run --rm --network "container:$source_minio" \
   --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 "$mc_image" \
-  mb local/attachments >/dev/null
+  mb local/tracker-attachments >/dev/null
 /usr/bin/printf 'native tracker attachment fixture\n' >"$root_dir/fixture.txt"
 /usr/bin/docker run --rm --network "container:$source_minio" \
   --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 \
   --mount "type=bind,source=$root_dir/fixture.txt,target=/fixture.txt,readonly" "$mc_image" \
-  cp /fixture.txt local/attachments/fixture.txt >/dev/null
+  cp /fixture.txt local/tracker-attachments/fixture.txt >/dev/null
 /usr/bin/docker run --rm --network "container:$source_minio" \
   --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 "$mc_image" \
-  cat local/attachments/fixture.txt | /usr/bin/sha256sum >"$root_dir/object.sha256"
+  cat local/tracker-attachments/fixture.txt | /usr/bin/sha256sum >"$root_dir/object.sha256"
 [[ "$(/usr/bin/awk '{print $1}' "$root_dir/object.sha256")" == "$(/usr/bin/sha256sum "$root_dir/fixture.txt" | /usr/bin/awk '{print $1}')" ]] || {
   echo 'native MinIO object checksum did not match the fixture' >&2
   exit 1
@@ -98,11 +98,23 @@ import sys
 root = pathlib.Path(sys.argv[1]).parent
 migrations = ["DoctrineMigrations\\Version20260813120000", "DoctrineMigrations\\Version20260912160000"]
 images = {"postgres": sys.argv[3], "php": sys.argv[5], "minio": sys.argv[4]}
+fixture = (root / "fixture.txt").read_bytes()
+s3_sha = (root / "object.sha256").read_text(encoding="utf-8").split()[0]
+if s3_sha != hashlib.sha256(fixture).hexdigest():
+    raise SystemExit("native object manifest source checksum is invalid")
+(root / "files/object-manifest.json").write_text(json.dumps({
+    "algorithm": "tracker-s3-object-v1", "bucket": "tracker-attachments",
+    "objects": [{"key": "fixture.txt", "bytes": len(fixture),
+                  "sha256": s3_sha}],
+    "object_count": 1, "total_bytes": len(fixture),
+}, sort_keys=True, separators=(",", ":")) + "\n")
+(root / "files/object-manifest.json").chmod(0o600)
 manifest = {
     "schema_version": 1, "artifact_id": "11111111-1111-4111-8111-111111111111",
     "host_slug": "tuinstra-prod-02", "app_id": "tracker", "adapter": "tracker-compose-v1",
     "created_at": "2026-09-13T00:00:00Z", "database_service": "postgres",
     "images": list(images.values()), "image_services": images,
+    "object_store_bucket": "tracker-attachments",
     "database": {"engine": "postgresql", "server_version": "17.5",
         "dump_version": "pg_dump (PostgreSQL) 17.5", "dump_format": "custom",
         "service": "postgres", "content_marker": {
@@ -116,6 +128,8 @@ manifest = {
                  "bytes": (root / "database.dump").stat().st_size},
                 {"name": "files/attachments.tar", "sha256": hashlib.sha256((root / "files/attachments.tar").read_bytes()).hexdigest(),
                  "bytes": (root / "files/attachments.tar").stat().st_size},
+                {"name": "files/object-manifest.json", "sha256": hashlib.sha256((root / "files/object-manifest.json").read_bytes()).hexdigest(),
+                 "bytes": (root / "files/object-manifest.json").stat().st_size},
                 {"name": "files/env", "sha256": hashlib.sha256((root / "files/env").read_bytes()).hexdigest(),
                  "bytes": (root / "files/env").stat().st_size}],
 }

@@ -27,6 +27,7 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
+from urllib.parse import quote
 
 
 SCHEMA_VERSION = 1
@@ -58,11 +59,13 @@ RESTORE_ADAPTER_KEYS = {
     "external_effects_blocked", "host_ports",
     "postgres_image", "application_image", "containers_removed", "workspace_removed",
 }
+TRACKER_RESTORE_ADAPTER_KEYS = RESTORE_ADAPTER_KEYS | {"object_store_reconciliation"}
 INTERNAL_MANIFEST_BASE_KEYS = {
     "schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at",
     "database_service", "images", "inputs",
 }
 INTERNAL_MANIFEST_VERSION_KEYS = {"image_services", "database"}
+INTERNAL_MANIFEST_TRACKER_KEYS = INTERNAL_MANIFEST_VERSION_KEYS | {"object_store_bucket"}
 INPUT_KEYS = {"name", "sha256", "bytes"}
 SAFETY_TAG = "tuinstra:production-restore-safety"
 RECOVERY_BUNDLE = Path("/home/mtuinstra/.local/share/tuinstra-backup-recovery.json")
@@ -72,6 +75,7 @@ SSH_PRIVATE_END = "-----END OPENSSH " + "PRIVATE KEY-----"
 UMAMI_CONTENT_MARKER_ALGORITHM = "umami-admin-two-factor-v1"
 TRACKER_ADAPTER = "tracker-compose-v1"
 TRACKER_MIGRATION_MARKER_ALGORITHM = "tracker-doctrine-migrations-v1"
+TRACKER_OBJECT_MANIFEST_ALGORITHM = "tracker-s3-object-v1"
 TRACKER_MARKER_TABLES = ("organization", "project", "story", "attachment")
 TRACKER_CONTENT_MARKER_SQL = (
     "SELECT jsonb_build_object(" + ",".join(
@@ -535,8 +539,140 @@ def snapshot_directory(source: Path, target: Path, maximum_bytes: int) -> None:
     os.chmod(target, 0o600)
 
 
+def _tracker_object_key(value: Any) -> str:
+    if (not isinstance(value, str) or not value or len(value) > 1024 or "\\" in value
+            or any(character in value for character in "\x00\r\n\t")):
+        raise BackupError("Tracker object key is invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or str(relative) != value or any(part in {"", ".", ".."} for part in relative.parts):
+        raise BackupError("Tracker object key is invalid")
+    return value
+
+
+def _tracker_object_manifest(path: Path, expected_bucket: str | None = None) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackupError("Tracker object manifest is invalid") from exc
+    if not isinstance(value, dict) or set(value) != {
+            "algorithm", "bucket", "objects", "object_count", "total_bytes"}:
+        raise BackupError("Tracker object manifest is invalid")
+    bucket = value.get("bucket")
+    if (not isinstance(bucket, str) or not ID_RE.fullmatch(bucket)
+            or (expected_bucket is not None and bucket != expected_bucket)):
+        raise BackupError("Tracker object manifest bucket is invalid")
+    objects = value.get("objects")
+    if (value.get("algorithm") != TRACKER_OBJECT_MANIFEST_ALGORITHM
+            or not isinstance(objects, list) or len(objects) > 4096
+            or value.get("object_count") != len(objects)
+            or not isinstance(value.get("total_bytes"), int)
+            or isinstance(value["total_bytes"], bool) or value["total_bytes"] < 0):
+        raise BackupError("Tracker object manifest is invalid")
+    seen: set[str] = set()
+    total = 0
+    for item in objects:
+        if (not isinstance(item, dict) or set(item) != {"key", "bytes", "sha256"}
+                or not isinstance(item.get("bytes"), int) or isinstance(item["bytes"], bool)
+                or item["bytes"] < 0 or not isinstance(item.get("sha256"), str)
+                or not SHA_RE.fullmatch(item["sha256"])):
+            raise BackupError("Tracker object manifest entry is invalid")
+        key = _tracker_object_key(item["key"])
+        if key in seen:
+            raise BackupError("Tracker object manifest contains duplicate keys")
+        seen.add(key)
+        total += item["bytes"]
+        if total > 10 * 1024 * 1024 * 1024:
+            raise BackupError("Tracker object manifest exceeds its size quota")
+    if total != value["total_bytes"]:
+        raise BackupError("Tracker object manifest byte count is invalid")
+    return value
+
+
+def tracker_object_manifest(app: dict[str, Any], payload: Path,
+                            expected_attachment_count: int = 0) -> dict[str, Any]:
+    configured_bucket = app.get("object_store_bucket")
+    if not isinstance(configured_bucket, str) or not ID_RE.fullmatch(configured_bucket):
+        raise BackupError("Tracker object-store bucket is invalid")
+    approved = app.get("approved_images")
+    client_image = approved.get("minio-init") if isinstance(approved, dict) else None
+    if (not isinstance(client_image, str) or not SHA_RE.fullmatch(client_image.rpartition("@sha256:")[2])):
+        raise BackupError("Tracker object-store client image is invalid")
+    compose = compose_command(app)
+    minio_id = run([*compose, "ps", "--quiet", "minio"]).stdout.decode().strip()
+    if not re.fullmatch(r"^[0-9a-f]{64}$", minio_id):
+        raise BackupError("Tracker object-store service is not running")
+    credentials = run([*compose, "exec", "-T", "minio", "sh", "-eu", "-c",
+                       'printf "%s\\n%s\\n%s\\n" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" "$S3_BUCKET"']
+                      ).stdout.decode().splitlines()
+    if (len(credentials) != 3 or any(not value or "\x00" in value for value in credentials)
+            or credentials[2] != configured_bucket):
+        raise BackupError("Tracker object-store environment is invalid")
+    user, password, bucket = credentials
+    env_fd, env_name = tempfile.mkstemp(prefix=".tracker-mc-", dir=payload.parent)
+    os.chmod(env_name, 0o600)
+    try:
+        with os.fdopen(env_fd, "w", encoding="utf-8") as handle:
+            handle.write("MC_HOST_local=http://" + quote(user, safe="") + ":" + quote(password, safe="")
+                         + "@127.0.0.1:9000\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        listing = run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
+                       "--env-file", env_name, client_image, "ls", "--recursive", "--json",
+                       f"local/{bucket}"]).stdout
+        if len(listing) > 8 * 1024 * 1024:
+            raise BackupError("Tracker object listing exceeds its size quota")
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for line in listing.splitlines():
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise BackupError("Tracker object listing is invalid") from exc
+            if (item.get("status") not in {None, "success"} or item.get("type") not in {None, "file"}):
+                raise BackupError("Tracker object listing contains an error")
+            key = _tracker_object_key(item.get("key"))
+            size = item.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0 or key in seen:
+                raise BackupError("Tracker object listing is invalid")
+            seen.add(key)
+            entries.append({"key": key, "bytes": size})
+            if len(entries) > 4096:
+                raise BackupError("Tracker object manifest exceeds its object quota")
+        if expected_attachment_count > 0 and not entries:
+            raise BackupError("Tracker attachments have no object-store entries")
+        total_bytes = sum(item["bytes"] for item in entries)
+        if total_bytes > 10 * 1024 * 1024 * 1024:
+            raise BackupError("Tracker object manifest exceeds its size quota")
+        objects: list[dict[str, Any]] = []
+        for item in entries:
+            temporary_fd, temporary_name = tempfile.mkstemp(prefix=".tracker-object-", dir=payload.parent)
+            os.chmod(temporary_name, 0o600)
+            try:
+                with os.fdopen(temporary_fd, "wb") as handle:
+                    run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
+                         "--env-file", env_name, client_image, "cat",
+                         f"local/{bucket}/{item['key']}"], stdout=handle)
+                temporary = Path(temporary_name)
+                if temporary.stat().st_size != item["bytes"]:
+                    raise BackupError("Tracker object size changed during export")
+                objects.append({"key": item["key"], "bytes": item["bytes"], "sha256": sha256(temporary)})
+            finally:
+                Path(temporary_name).unlink(missing_ok=True)
+    finally:
+        Path(env_name).unlink(missing_ok=True)
+    manifest = {"algorithm": TRACKER_OBJECT_MANIFEST_ALGORITHM, "bucket": bucket,
+                "objects": objects, "object_count": len(objects),
+                "total_bytes": sum(item["bytes"] for item in objects)}
+    destination = payload / "files" / "object-manifest.json"
+    atomic_json(destination, manifest, 0o600)
+    return {"name": "files/object-manifest.json", "sha256": sha256(destination),
+            "bytes": destination.stat().st_size}
+
+
 @contextlib.contextmanager
-def tracker_quiescence(app: dict[str, Any]):
+def tracker_quiescence(app: dict[str, Any], before_minio: Any = None):
     services = app.get("quiesce_services")
     if (not isinstance(services, list) or not services
             or any(not isinstance(service, str) or not ID_RE.fullmatch(service) for service in services)):
@@ -564,9 +700,17 @@ def tracker_quiescence(app: dict[str, Any]):
             if not re.fullmatch(r"^[0-9a-f]{64}$", container_id):
                 raise BackupError("Tracker running-service evidence is invalid")
             active.append(service)
+    application_active = [service for service in active if service != "minio"]
+    minio_active = [service for service in active if service == "minio"]
     try:
-        if active:
-            run([*compose, "stop", *active], timeout=timeout)
+        if application_active:
+            run([*compose, "stop", *application_active], timeout=timeout)
+        if before_minio is not None:
+            if not minio_active:
+                raise BackupError("Tracker object-store service is not running")
+            before_minio()
+        if minio_active:
+            run([*compose, "stop", *minio_active], timeout=timeout)
         yield
     finally:
         try:
@@ -781,7 +925,17 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             compose = compose_command(app)
             actual_images = running_compose_images(app)
             database_versions = postgres_versions(app)
-            quiesce = tracker_quiescence(app) if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext()
+            inputs: list[dict[str, Any]] = []
+            before_minio = None
+            if app.get("adapter") == TRACKER_ADAPTER:
+                expected_attachment_count = database_versions["content_marker"]["row_counts"]["attachment_count"]
+
+                def capture_tracker_objects() -> None:
+                    inputs.append(tracker_object_manifest(app, payload, expected_attachment_count))
+
+                before_minio = capture_tracker_objects
+            quiesce = (tracker_quiescence(app, before_minio=before_minio)
+                       if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
             with quiesce:
                 database_dump = payload / "database.dump"
                 dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
@@ -791,8 +945,8 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
                 os.chmod(database_dump, 0o600)
                 if database_dump.stat().st_size == 0:
                     raise BackupError("database export is empty")
-                inputs: list[dict[str, Any]] = [{"name": "database.dump", "sha256": sha256(database_dump),
-                                                 "bytes": database_dump.stat().st_size}]
+                inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
+                                  "bytes": database_dump.stat().st_size})
                 for item in app["included_files"]:
                     logical = require_id(item["name"], "input name")
                     copied = copy_regular(Path(item["path"]), payload / "files" / logical)
@@ -811,6 +965,8 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
                 "images": sorted(actual_images.values()), "image_services": actual_images,
                 "database": database_versions, "inputs": inputs,
             }
+            if app.get("adapter") == TRACKER_ADAPTER:
+                internal["object_store_bucket"] = app["object_store_bucket"]
             atomic_json(payload / "backup-manifest.json", internal, 0o600)
             archive = root / "payload.tar"
             with tarfile.open(archive, "w") as tar:
@@ -1592,7 +1748,9 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
     manifest_path = validated_input_path(payload_root, "backup-manifest.json")
     internal = json.loads(manifest_path.read_text(encoding="utf-8"))
     keys = set(internal) if isinstance(internal, dict) else set()
-    if keys != INTERNAL_MANIFEST_BASE_KEYS and keys != INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS:
+    allowed_keys = (INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS,
+                    INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_TRACKER_KEYS)
+    if keys not in allowed_keys:
         raise BackupError("encrypted payload manifest schema is invalid")
     for key in ("schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at"):
         if internal.get(key) != expected.get(key):
@@ -1603,6 +1761,12 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
         raise BackupError("encrypted payload manifest content is invalid")
     require_id(internal["database_service"], "database service")
     validate_materialized_images(internal.get("images"))
+    if internal["adapter"] == TRACKER_ADAPTER:
+        bucket = internal.get("object_store_bucket")
+        if not isinstance(bucket, str) or not ID_RE.fullmatch(bucket):
+            raise BackupError("encrypted payload object-store bucket is invalid")
+        object_manifest = validated_input_path(payload_root, "files/object-manifest.json")
+        _tracker_object_manifest(object_manifest, bucket)
     if INTERNAL_MANIFEST_VERSION_KEYS.issubset(keys):
         services = internal["image_services"]
         database = internal["database"]
@@ -1715,7 +1879,7 @@ def validate_restore_adapter_result(value: Any) -> dict[str, Any]:
 
 
 def validate_tracker_restore_adapter_result(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != RESTORE_ADAPTER_KEYS:
+    if not isinstance(value, dict) or set(value) != TRACKER_RESTORE_ADAPTER_KEYS:
         raise BackupError("restore adapter evidence schema is invalid")
     if (value.get("schema_version") != SCHEMA_VERSION
             or value.get("adapter") != TRACKER_ADAPTER
@@ -1727,6 +1891,7 @@ def validate_tracker_restore_adapter_result(value: Any) -> dict[str, Any]:
     if (value.get("application_health") != "not-run-external-effects-blocked"
             or value.get("encrypted_secret_validation") != "not-applicable"
             or value.get("database_content_marker") != "passed"
+            or value.get("object_store_reconciliation") != "passed"
             or value.get("network") != "loopback-only-network-namespace"
             or value.get("external_effects_blocked") is not True or value.get("host_ports") != 0):
         raise BackupError("restore adapter isolation or health evidence is invalid")

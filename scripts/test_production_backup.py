@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -83,6 +84,7 @@ class BackupTests(unittest.TestCase):
             "app_id": "tracker", "enabled": True, "adapter": "tracker-compose-v1",
             "compose_project": "tracker", "compose_file": str(compose),
             "compose_images_file": str(compose), "compose_env_file": str(compose),
+            "object_store_bucket": "tracker-attachments",
             "postgres_service": "postgres", "application_service": "php",
             "runtime_image_services": ["postgres", "php", "php-mcp", "worker",
                                         "catalog-worker", "release-evidence-worker", "nginx", "minio"],
@@ -151,6 +153,7 @@ class BackupTests(unittest.TestCase):
             "status": "passed", "public_table_count": 3,
             "application_health": "not-run-external-effects-blocked",
             "encrypted_secret_validation": "not-applicable", "database_content_marker": "passed",
+            "object_store_reconciliation": "passed",
             "network": "loopback-only-network-namespace", "external_effects_blocked": True,
             "host_ports": 0, "postgres_image": "postgres@sha256:" + "a" * 64,
             "application_image": "tracker@sha256:" + "b" * 64,
@@ -195,7 +198,7 @@ class BackupTests(unittest.TestCase):
             if argv[:2] == ["docker", "compose"] and "ps" in argv:
                 if "--status" in argv:
                     if "--services" in argv:
-                        return mock.Mock(stdout=b"php\nworker\n")
+                        return mock.Mock(stdout=b"php\nworker\nminio\n")
                     return mock.Mock(stdout=("d" * 64 + "\n").encode())
                 service = argv[-1]
                 return mock.Mock(stdout=(service_ids[service] + "\n").encode())
@@ -204,6 +207,14 @@ class BackupTests(unittest.TestCase):
             if argv[:3] == ["docker", "image", "inspect"]:
                 digest = argv[-1].partition("sha256:")[2]
                 return mock.Mock(stdout=json.dumps(["registry@sha256:" + digest]).encode())
+            if argv[:2] == ["docker", "run"] and "ls" in argv:
+                return mock.Mock(stdout=(json.dumps({"status": "success", "type": "file",
+                    "key": "nested/report.txt", "size": len(b"safe attachment\n")}) + "\n").encode())
+            if argv[:2] == ["docker", "run"] and "cat" in argv:
+                kwargs["stdout"].write(b"safe attachment\n")
+                return mock.Mock(stdout=None)
+            if "exec" in argv and "MINIO_ROOT_USER" in argv[-1]:
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\ntracker-attachments\n")
             if "exec" in argv and "pg_dump --version" in argv[-1]:
                 return mock.Mock(stdout=b"pg_dump (PostgreSQL) 17.5\n")
             if "exec" in argv and "show server_version" in argv[-1]:
@@ -225,9 +236,35 @@ class BackupTests(unittest.TestCase):
         with tarfile.open(next((self.root / "spool").glob("*.age"))) as archive:
             internal = json.load(archive.extractfile("payload/backup-manifest.json"))
             self.assertIn("payload/files/attachments.tar", archive.getnames())
+            object_manifest = json.load(archive.extractfile("payload/files/object-manifest.json"))
         self.assertEqual(internal["database"]["content_marker"]["row_counts"], row_counts)
         self.assertEqual(internal["database"]["content_marker"]["migration_count"], len(migrations))
+        self.assertEqual(internal["object_store_bucket"], "tracker-attachments")
+        self.assertEqual(object_manifest["objects"][0]["bytes"], len(b"safe attachment\n"))
+        self.assertEqual(object_manifest["objects"][0]["sha256"], hashlib.sha256(b"safe attachment\n").hexdigest())
         self.assertTrue(any("--env-file" in call and call.count("--file") == 2 for call in calls))
+        self.assertFalse(any("fixture-password" in argument for call in calls for argument in call))
+
+    def test_tracker_object_manifest_fails_when_database_has_attachments_but_store_is_empty(self):
+        app = self.tracker_app()
+        payload = self.root / "payload"
+        payload.mkdir()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["docker", "compose"] and "ps" in argv:
+                return mock.Mock(stdout=("d" * 64 + "\n").encode())
+            if "exec" in argv:
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\ntracker-attachments\n")
+            if argv[:2] == ["docker", "run"]:
+                return mock.Mock(stdout=b"")
+            raise AssertionError(argv)
+
+        with mock.patch.object(backup, "run", side_effect=fake_run), \
+             self.assertRaisesRegex(backup.BackupError, "no object-store entries"):
+            backup.tracker_object_manifest(app, payload, expected_attachment_count=1)
+        self.assertFalse(list(payload.rglob("object-manifest.json")))
 
     def fake_export_run(self, config, encrypted_hook=None):
         app = config["applications"][0]

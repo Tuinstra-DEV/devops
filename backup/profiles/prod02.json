@@ -17,6 +17,7 @@
       "compose_file": "/var/www/tracker/docker-compose.prod02.json",
       "compose_images_file": "/var/www/tracker/docker-compose.images.yml",
       "compose_env_file": "/etc/tuinstra/tracker/.env",
+      "object_store_bucket": "tracker-attachments",
       "postgres_service": "postgres",
       "application_service": "php",
       "runtime_image_services": ["postgres", "php", "php-mcp", "worker", "catalog-worker", "release-evidence-worker", "nginx", "minio"],
@@ -30,8 +31,8 @@
         "catalog-worker": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
         "release-evidence-worker": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
         "nginx": "ghcr.io/tuinstra-dev/tracker-nginx:sha-required@sha256:sha-required",
-        "minio": "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
-        "minio-init": "minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727",
+        "minio": "quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+        "minio-init": "quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727",
         "clamav": "clamav/clamav@sha256:657128a6c8d901db3efe75faaa27ba3c8fc78b239dd1b5851310486d6531539b"
       },
       "included_files": [
