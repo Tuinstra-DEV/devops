@@ -66,6 +66,7 @@ class StageBackupEscrowTests(unittest.TestCase):
     def test_legacy_marker_allows_exactly_one_five_credential_upgrade_handoff(self):
         destination = self.root / "home/.local/share/tuinstra-backup-escrow.json"
         (self.root / "home").mkdir()
+        (self.root / "home").chmod(0o700)
         marker = self.root / "state/escrow-staged-v1"
         marker.parent.mkdir()
         marker.write_text("schema-version=1\n", encoding="ascii")
