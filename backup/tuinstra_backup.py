@@ -588,11 +588,36 @@ def _tracker_object_manifest(path: Path, expected_bucket: str | None = None) -> 
     return value
 
 
+def _tracker_object_store_bucket(app: dict[str, Any]) -> str:
+    configured_bucket = app.get("object_store_bucket")
+    env_name = app.get("compose_env_file")
+    if (not isinstance(configured_bucket, str) or not ID_RE.fullmatch(configured_bucket)
+            or not isinstance(env_name, str) or not env_name):
+        raise BackupError("Tracker object-store bucket is invalid")
+    env_path = Path(env_name)
+    reject_symlink_components(env_path)
+    if env_path.is_symlink() or not env_path.is_file() or stat.S_IMODE(env_path.stat().st_mode) & 0o022:
+        raise BackupError("Tracker Compose environment is unavailable")
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise BackupError("Tracker Compose environment is unavailable") from exc
+    matches = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator == "=" and key == "S3_BUCKET":
+            matches.append(value.strip())
+    if len(matches) != 1 or matches[0] != configured_bucket:
+        raise BackupError("Tracker Compose environment bucket is invalid")
+    return configured_bucket
+
+
 def tracker_object_manifest(app: dict[str, Any], payload: Path,
                             expected_attachment_count: int = 0) -> dict[str, Any]:
-    configured_bucket = app.get("object_store_bucket")
-    if not isinstance(configured_bucket, str) or not ID_RE.fullmatch(configured_bucket):
-        raise BackupError("Tracker object-store bucket is invalid")
+    configured_bucket = _tracker_object_store_bucket(app)
     approved = app.get("approved_images")
     client_image = approved.get("minio-init") if isinstance(approved, dict) else None
     if (not isinstance(client_image, str) or not SHA_RE.fullmatch(client_image.rpartition("@sha256:")[2])):
@@ -602,12 +627,12 @@ def tracker_object_manifest(app: dict[str, Any], payload: Path,
     if not re.fullmatch(r"^[0-9a-f]{64}$", minio_id):
         raise BackupError("Tracker object-store service is not running")
     credentials = run([*compose, "exec", "-T", "minio", "sh", "-eu", "-c",
-                       'printf "%s\\n%s\\n%s\\n" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" "$S3_BUCKET"']
+                       'printf "%s\\n%s\\n" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"']
                       ).stdout.decode().splitlines()
-    if (len(credentials) != 3 or any(not value or "\x00" in value for value in credentials)
-            or credentials[2] != configured_bucket):
+    if len(credentials) != 2 or any(not value or "\x00" in value for value in credentials):
         raise BackupError("Tracker object-store environment is invalid")
-    user, password, bucket = credentials
+    user, password = credentials
+    bucket = configured_bucket
     env_fd, env_name = tempfile.mkstemp(prefix=".tracker-mc-", dir=payload.parent)
     os.chmod(env_name, 0o600)
     try:

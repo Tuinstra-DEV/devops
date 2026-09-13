@@ -71,6 +71,9 @@ class BackupTests(unittest.TestCase):
     def tracker_app(self):
         compose = self.root / "tracker-compose.json"
         compose.write_text('{"services": {}}')
+        env_file = self.root / "tracker.env"
+        env_file.write_text("S3_BUCKET=tracker-attachments\nMINIO_ROOT_USER=fixture-user\nMINIO_ROOT_PASSWORD=fixture-password\n")
+        env_file.chmod(0o600)
         attachments = self.root / "attachments"
         (attachments / "nested").mkdir(parents=True)
         (attachments / "nested" / "report.txt").write_text("safe attachment\n")
@@ -83,7 +86,7 @@ class BackupTests(unittest.TestCase):
         return {
             "app_id": "tracker", "enabled": True, "adapter": "tracker-compose-v1",
             "compose_project": "tracker", "compose_file": str(compose),
-            "compose_images_file": str(compose), "compose_env_file": str(compose),
+            "compose_images_file": str(compose), "compose_env_file": str(env_file),
             "object_store_bucket": "tracker-attachments",
             "postgres_service": "postgres", "application_service": "php",
             "runtime_image_services": ["postgres", "php", "php-mcp", "worker",
@@ -214,7 +217,7 @@ class BackupTests(unittest.TestCase):
                 kwargs["stdout"].write(b"safe attachment\n")
                 return mock.Mock(stdout=None)
             if "exec" in argv and "MINIO_ROOT_USER" in argv[-1]:
-                return mock.Mock(stdout=b"fixture-user\nfixture-password\ntracker-attachments\n")
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
             if "exec" in argv and "pg_dump --version" in argv[-1]:
                 return mock.Mock(stdout=b"pg_dump (PostgreSQL) 17.5\n")
             if "exec" in argv and "show server_version" in argv[-1]:
@@ -244,6 +247,8 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(object_manifest["objects"][0]["sha256"], hashlib.sha256(b"safe attachment\n").hexdigest())
         self.assertTrue(any("--env-file" in call and call.count("--file") == 2 for call in calls))
         self.assertFalse(any("fixture-password" in argument for call in calls for argument in call))
+        self.assertFalse(any("S3_BUCKET" in argument for call in calls for argument in call
+                             if "exec" in call))
 
     def test_tracker_object_manifest_fails_when_database_has_attachments_but_store_is_empty(self):
         app = self.tracker_app()
@@ -256,7 +261,7 @@ class BackupTests(unittest.TestCase):
             if argv[:2] == ["docker", "compose"] and "ps" in argv:
                 return mock.Mock(stdout=("d" * 64 + "\n").encode())
             if "exec" in argv:
-                return mock.Mock(stdout=b"fixture-user\nfixture-password\ntracker-attachments\n")
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
             if argv[:2] == ["docker", "run"]:
                 return mock.Mock(stdout=b"")
             raise AssertionError(argv)
