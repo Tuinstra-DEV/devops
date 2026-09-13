@@ -1,0 +1,27 @@
+---
+- name: Run baseline preflight
+  ansible.builtin.import_tasks: preflight.yml
+  tags:
+    - always
+
+- name: Configure production accounts
+  ansible.builtin.import_tasks: accounts.yml
+  tags:
+    - bootstrap
+
+- name: Configure the Docker apt source
+  ansible.builtin.import_tasks: docker_repository.yml
+  tags:
+    - bootstrap
+
+- name: Configure Docker
+  ansible.builtin.import_tasks: docker.yml
+
+- name: Apply Docker configuration before starting platform containers
+  ansible.builtin.meta: flush_handlers
+
+- name: Configure production filesystem and deploy boundary
+  ansible.builtin.import_tasks: filesystem.yml
+
+- name: Configure the empty Caddy edge
+  ansible.builtin.import_tasks: caddy.yml

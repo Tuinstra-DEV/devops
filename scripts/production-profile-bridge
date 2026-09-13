@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || [ "${#SSH_ORIGINAL_COMMAND}" -gt 16384 ]; then
+  exit 64
+fi
+
+printf '%s' "$SSH_ORIGINAL_COMMAND" | exec /usr/bin/sudo -n -- /usr/local/sbin/tuinstra-profile-executor

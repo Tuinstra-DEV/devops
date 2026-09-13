@@ -1,0 +1,7 @@
+---
+- name: Configure the production host baseline
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  roles:
+    - production_host_baseline

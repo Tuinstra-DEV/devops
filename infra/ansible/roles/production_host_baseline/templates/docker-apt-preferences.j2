@@ -1,0 +1,6 @@
+{% for package, version in production_docker_package_versions | dictsort %}
+Package: {{ package }}
+Pin: version {{ version }}
+Pin-Priority: 1001
+
+{% endfor %}

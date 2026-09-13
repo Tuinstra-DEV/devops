@@ -1,0 +1,10 @@
+---
+- name: Verify Umami without changing it
+  hosts: prod01
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Run Umami verification
+      ansible.builtin.import_role:
+        name: production_umami
+        tasks_from: verify

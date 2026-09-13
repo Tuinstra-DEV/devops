@@ -1,0 +1,44 @@
+---
+- name: Create apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Download the Docker repository signing key
+  ansible.builtin.get_url:
+    url: "{{ production_docker_apt_key_url }}"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Read the Docker signing-key fingerprint
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/gpg
+      - --batch
+      - --show-keys
+      - --with-colons
+      - /etc/apt/keyrings/docker.asc
+  register: production_docker_key_details
+  check_mode: false
+  changed_when: false
+
+- name: Require the expected Docker signing key
+  ansible.builtin.assert:
+    that:
+      - production_docker_apt_key_fingerprint in production_docker_key_details.stdout
+    fail_msg: Refusing an unexpected Docker apt signing key.
+
+- name: Configure the official Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      {{ production_docker_apt_repository_url }} {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+    update_cache: true

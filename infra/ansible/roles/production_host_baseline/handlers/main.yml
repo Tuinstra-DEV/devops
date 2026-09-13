@@ -1,0 +1,13 @@
+---
+- name: Restart Docker
+  ansible.builtin.systemd_service:
+    name: docker.service
+    state: restarted
+    daemon_reload: true
+  when: not ansible_check_mode
+
+- name: Reload SSH
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: reloaded
+  when: not ansible_check_mode

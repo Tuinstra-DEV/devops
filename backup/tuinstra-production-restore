@@ -1,0 +1,54 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+coordinator=/usr/local/libexec/tuinstra-backup/production_restore.py
+config=/etc/tuinstra-backup/worker.json
+host=tuinstra-prod-01
+app=umami
+confirmation='umami / tuinstra-prod-01 / production'
+
+fail_usage() {
+  echo "usage: sudo tuinstra-production-restore preflight SNAPSHOT OPERATION PLAN_HASH" >&2
+  echo "       sudo tuinstra-production-restore status SNAPSHOT OPERATION PLAN_HASH" >&2
+  echo "       sudo tuinstra-production-restore apply SNAPSHOT OPERATION PLAN_HASH 'umami / tuinstra-prod-01 / production'" >&2
+  echo "       sudo tuinstra-production-restore rollback SNAPSHOT OPERATION PLAN_HASH ROLLBACK_PLAN_HASH 'umami / tuinstra-prod-01 / production'" >&2
+  exit 2
+}
+
+[[ "$EUID" -eq 0 ]] || {
+  echo "production restore failed: privileged wrapper must run through sudo" >&2
+  exit 1
+}
+
+snapshot_pattern='^[0-9a-f]{64}$'
+operation_pattern='^[a-z0-9][a-z0-9-]{0,62}$'
+
+case "${1:-}" in
+  preflight|status)
+    [[ $# -eq 4 && "$2" =~ $snapshot_pattern && "$3" =~ $operation_pattern && "$4" =~ $snapshot_pattern ]] || fail_usage
+    exec "$coordinator" --config "$config" "$1" --host "$host" --app "$app" \
+      --snapshot "$2" --operation "$3" --plan-hash "$4"
+    ;;
+  apply)
+    [[ $# -eq 5 && "$2" =~ $snapshot_pattern && "$3" =~ $operation_pattern && "$4" =~ $snapshot_pattern ]] || fail_usage
+    [[ "$5" == "$confirmation" ]] || {
+      echo "production restore failed: exact target confirmation is required" >&2
+      exit 2
+    }
+    exec "$coordinator" --config "$config" apply --host "$host" --app "$app" \
+      --snapshot "$2" --operation "$3" --plan-hash "$4"
+    ;;
+  rollback)
+    [[ $# -eq 6 && "$2" =~ $snapshot_pattern && "$3" =~ $operation_pattern \
+      && "$4" =~ $snapshot_pattern && "$5" =~ $snapshot_pattern ]] || fail_usage
+    [[ "$6" == "$confirmation" ]] || {
+      echo "production rollback failed: exact target confirmation is required" >&2
+      exit 2
+    }
+    exec "$coordinator" --config "$config" rollback --host "$host" --app "$app" \
+      --snapshot "$2" --operation "$3" --plan-hash "$4" --rollback-plan-hash "$5"
+    ;;
+  *)
+    fail_usage
+    ;;
+esac

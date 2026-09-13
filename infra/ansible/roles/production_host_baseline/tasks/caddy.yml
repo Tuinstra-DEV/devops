@@ -1,0 +1,91 @@
+---
+- name: Require an immutable Caddy image
+  ansible.builtin.assert:
+    that:
+      - production_caddy_image is match('^\\S+@sha256:[a-f0-9]{64}$')
+      - production_caddy_edge_network is match('^[a-z0-9][a-z0-9_.-]{0,62}$')
+    fail_msg: production_caddy_image must use an immutable sha256 digest.
+
+- name: Inspect the shared edge network
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, network, inspect, "{{ production_caddy_edge_network }}"]
+  register: production_caddy_edge_network_inspect
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Create the shared edge network
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, network, create, "{{ production_caddy_edge_network }}"]
+  when:
+    - not ansible_check_mode
+    - production_caddy_edge_network_inspect.rc != 0
+  changed_when: true
+
+- name: Install the empty Caddy route
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /var/www/_platform/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the Caddy compose definition
+  ansible.builtin.template:
+    src: caddy-compose.yml.j2
+    dest: /var/www/_platform/caddy/compose.yml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Validate the Caddy compose definition
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-directory
+      - /var/www/_platform/caddy
+      - --file
+      - /var/www/_platform/caddy/compose.yml
+      - config
+      - --quiet
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect the pinned Caddy image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - "{{ production_caddy_image }}"
+  register: production_caddy_image_inspect
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Pull the pinned Caddy image when absent
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - pull
+      - "{{ production_caddy_image }}"
+  when:
+    - not ansible_check_mode
+    - production_caddy_image_inspect.rc != 0
+  changed_when: true
+
+- name: Start the Caddy edge
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-directory
+      - /var/www/_platform/caddy
+      - --file
+      - /var/www/_platform/caddy/compose.yml
+      - up
+      - --detach
+  register: production_caddy_up
+  changed_when: production_caddy_up.stderr is search('Created|Recreated|Started')
+  when: not ansible_check_mode

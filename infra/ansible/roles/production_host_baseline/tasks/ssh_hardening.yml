@@ -1,0 +1,74 @@
+---
+- name: Require independently verified administrator access
+  ansible.builtin.assert:
+    that:
+      - production_admin_ssh_verified | bool
+      - production_admin_sudo_verified | bool
+      - ansible_user == production_admin_user
+    fail_msg: Run this separate playbook as the verified administrator with both confirmations true.
+
+- name: Inspect the existing SSH hardening drop-in
+  ansible.builtin.stat:
+    path: /etc/ssh/sshd_config.d/00-tuinstra-hardening.conf
+  register: production_ssh_hardening_existing
+
+- name: Preserve the existing SSH hardening drop-in for rollback
+  ansible.builtin.slurp:
+    src: /etc/ssh/sshd_config.d/00-tuinstra-hardening.conf
+  register: production_ssh_hardening_previous
+  when: production_ssh_hardening_existing.stat.exists
+
+- name: Install and validate SSH hardening
+  block:
+    - name: Install first-match SSH hardening drop-in
+      ansible.builtin.template:
+        src: ssh-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/00-tuinstra-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload SSH
+
+    - name: Validate the complete SSH configuration
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -t]
+      changed_when: false
+
+    - name: Read the effective SSH configuration
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -T]
+      register: production_ssh_effective
+      changed_when: false
+
+    - name: Require effective public-key-only administrator access
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in production_ssh_effective.stdout_lines"
+          - "'passwordauthentication no' in production_ssh_effective.stdout_lines"
+          - "'kbdinteractiveauthentication no' in production_ssh_effective.stdout_lines"
+          - "'pubkeyauthentication yes' in production_ssh_effective.stdout_lines"
+  rescue:
+    - name: Restore the previous SSH hardening drop-in
+      ansible.builtin.copy:
+        content: "{{ production_ssh_hardening_previous.content | b64decode }}"
+        dest: /etc/ssh/sshd_config.d/00-tuinstra-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+      when: production_ssh_hardening_existing.stat.exists
+
+    - name: Remove a newly introduced invalid SSH hardening drop-in
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/00-tuinstra-hardening.conf
+        state: absent
+      when: not production_ssh_hardening_existing.stat.exists
+
+    - name: Validate the restored SSH configuration
+      ansible.builtin.command:
+        argv: [/usr/sbin/sshd, -t]
+      changed_when: false
+
+    - name: Stop after rolling back invalid SSH hardening
+      ansible.builtin.fail:
+        msg: SSH hardening did not produce the required effective configuration; the prior state was restored.

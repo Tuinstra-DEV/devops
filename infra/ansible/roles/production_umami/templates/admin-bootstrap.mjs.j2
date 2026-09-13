@@ -1,0 +1,89 @@
+import process from 'node:process';
+
+const baseUrl = 'http://127.0.0.1:3000';
+const input = await new Promise(resolve => {
+  let body = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    body += chunk;
+  });
+  process.stdin.on('end', () => resolve(body));
+});
+const { newPassword } = JSON.parse(input);
+
+if (typeof newPassword !== 'string' || newPassword.length < 24) {
+  throw new Error('Managed administrator password is missing or too short.');
+}
+
+async function request(path, { body, token } = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: {
+      Accept: 'application/json',
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function login(password) {
+  const result = await request('/api/auth/login', {
+    body: { username: 'admin', password },
+  });
+  if (result.response.status === 401) {
+    return null;
+  }
+  if (!result.response.ok) {
+    throw new Error(`Administrator login failed with HTTP ${result.response.status}.`);
+  }
+  if (result.payload.requiresTwoFactor) {
+    return { requiresTwoFactor: true };
+  }
+  if (typeof result.payload.token !== 'string' || typeof result.payload.user?.id !== 'string') {
+    throw new Error('Administrator login returned an unexpected response.');
+  }
+  return { token: result.payload.token, userId: result.payload.user.id };
+}
+
+let loginResult = await login(newPassword);
+if (loginResult?.requiresTwoFactor) {
+  process.exit(0);
+}
+
+if (!loginResult) {
+  const defaultLogin = await login('umami');
+  if (!defaultLogin || defaultLogin.requiresTwoFactor) {
+    throw new Error('Neither the managed nor initial administrator credential is valid.');
+  }
+  const changed = await request(`/api/users/${defaultLogin.userId}`, {
+    token: defaultLogin.token,
+    body: { password: newPassword },
+  });
+  if (!changed.response.ok) {
+    throw new Error(`Administrator password change failed with HTTP ${changed.response.status}.`);
+  }
+  loginResult = await login(newPassword);
+}
+
+if (!loginResult?.token) {
+  throw new Error('Managed administrator credential could not be verified.');
+}
+if (await login('umami')) {
+  throw new Error('Initial administrator credential remains valid.');
+}
+
+const required = await request('/api/admin/2fa/global', {
+  token: loginResult.token,
+  body: { required: true },
+});
+if (!required.response.ok || required.payload.required !== true) {
+  throw new Error(`Global 2FA requirement failed with HTTP ${required.response.status}.`);
+}
+
+const status = await request('/api/2fa/status', { token: loginResult.token });
+if (!status.response.ok || status.payload.isRequired !== true) {
+  throw new Error('Global 2FA requirement could not be verified.');
+}

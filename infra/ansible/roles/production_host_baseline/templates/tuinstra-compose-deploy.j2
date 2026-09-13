@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+readonly allowed_apps=({% for app in production_app_names %}{{ app | quote }} {% endfor %})
+readonly production_host={{ ansible_hostname | quote }}
+{% raw %}
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: tuinstra-compose-deploy status|deploy <application>" >&2
+  exit 64
+fi
+
+readonly action="$1"
+readonly app="$2"
+case "$action" in
+  status|deploy) ;;
+  *) echo "unsupported action" >&2; exit 64 ;;
+esac
+
+allowed=false
+for candidate in "${allowed_apps[@]}"; do
+  if [[ "$candidate" == "$app" ]]; then
+    allowed=true
+    break
+  fi
+done
+if [[ "$allowed" != true ]]; then
+  echo "application is not allowlisted" >&2
+  exit 64
+fi
+
+if [[ "$action" == deploy ]]; then
+  readonly host_lock="/run/lock/tuinstra/operations.host.$production_host.lock"
+  if [[ -L "$host_lock" || ! -f "$host_lock" ||
+        "$(/usr/bin/stat -c '%u' "$host_lock")" != 0 ||
+        "$(/usr/bin/stat -c '%a' "$host_lock")" != 660 ]]; then
+    echo "authoritative host operation lock is unsafe" >&2
+    exit 77
+  fi
+  exec 9<>"$host_lock"
+  if ! /usr/bin/flock --exclusive --nonblock 9; then
+    echo "host has another active operation" >&2
+    exit 75
+  fi
+  readonly maintenance_marker="/var/lib/tuinstra-production-restore/maintenance/$app"
+  if [[ -L "$maintenance_marker" || -e "$maintenance_marker" ]]; then
+    echo "application is in a production restore maintenance window" >&2
+    exit 75
+  fi
+fi
+
+readonly app_root="/var/www/$app"
+readonly compose_file="$app_root/compose.yml"
+if [[ ! -f "$compose_file" || -L "$compose_file" ]]; then
+  echo "root-owned compose definition is not installed" >&2
+  exit 66
+fi
+
+if [[ "$(/usr/bin/stat -c '%u' "$app_root")" != 0 ||
+      "$(/usr/bin/stat -c '%u' "$compose_file")" != 0 ]]; then
+  echo "application root and compose definition must be owned by root" >&2
+  exit 77
+fi
+for path in "$app_root" "$compose_file"; do
+  mode="$(/usr/bin/stat -c '%a' "$path")"
+  if (( (8#$mode & 0022) != 0 )); then
+    echo "application root and compose definition must not be group/world writable" >&2
+    exit 77
+  fi
+done
+
+compose=(/usr/bin/docker compose --project-name "$app" --project-directory "$app_root" --file "$compose_file")
+"${compose[@]}" config --quiet
+mapfile -t images < <("${compose[@]}" config --images)
+if [[ ${#images[@]} -eq 0 ]]; then
+  echo "compose definition has no images" >&2
+  exit 65
+fi
+for image in "${images[@]}"; do
+  if [[ ! "$image" =~ @sha256:[a-f0-9]{64}$ ]]; then
+    echo "every image must be pinned by sha256 digest" >&2
+    exit 65
+  fi
+done
+
+if [[ "$action" == status ]]; then
+  exec "${compose[@]}" ps --all
+fi
+
+"${compose[@]}" pull
+"${compose[@]}" up --detach --remove-orphans
+exec "${compose[@]}" ps --all
+{% endraw %}

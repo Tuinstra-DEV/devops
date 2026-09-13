@@ -1,0 +1,11 @@
+---
+production_umami_expected_hostname: tuinstra-prod-01
+production_umami_domain: umami.tuinstra.dev
+production_umami_image: ghcr.io/umami-software/umami:3.3.1@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a
+production_umami_postgres_image: docker.io/library/postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+production_umami_edge_network: tuinstra-edge
+production_umami_root: /var/www/umami
+production_umami_secret_root: /etc/tuinstra/umami
+production_umami_data_root: /var/lib/tuinstra/umami
+production_umami_database_name: umami
+production_umami_database_user: umami

@@ -1,0 +1,12 @@
+---
+- name: Configure the host profile and inert Umami restore prerequisites
+  hosts: production_hosts
+  become: true
+  gather_facts: true
+  roles:
+    - production_host_baseline
+  tasks:
+    - name: Provision inert Umami restore prerequisites
+      ansible.builtin.import_role:
+        name: production_umami
+        tasks_from: provision_restore

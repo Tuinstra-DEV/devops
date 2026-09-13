@@ -27,6 +27,7 @@ ruby ./scripts/heavy-ci-v2-contract-test.rb
 ./scripts/heavy-ci-rollout-docs-test.sh
 ./scripts/heavy-ci-baseline-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_classify_ci_changes.py
+./scripts/production-profile-executor-contract-test.sh
 ruby ./scripts/dependency-update-policy-test.rb
 
 if [[ -n "${DEPENDABOT_FLEET_ROOT:-}" ]]; then
@@ -47,3 +48,16 @@ else
 fi
 
 echo "test passed"
+
+./scripts/production-host-baseline-test.sh
+./scripts/production-host-rehearsal-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
+./scripts/production-umami-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_backup.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_restore.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_credential_bootstrap.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_stage_backup_escrow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_sanctuary_installer_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_escrow.py
+./scripts/production-backup-contract-test.sh
+./scripts/production-umami-test.sh

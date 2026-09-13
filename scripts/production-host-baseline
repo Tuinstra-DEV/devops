@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+inventory="$repo_root/infra/ansible/production/inventory.yml"
+limit="prod01"
+check_mode=false
+extra_vars_file=""
+as_admin=false
+
+usage() {
+  cat <<'EOF'
+Usage: production-host-baseline [options] bootstrap|configure|verify|harden-ssh|configure-umami-restore|verify-umami-restore
+
+Options:
+  --check                 Run Ansible check mode with a diff.
+  --inventory PATH        Use another inventory.
+  --limit HOST            Limit execution (default: prod01).
+  --extra-vars PATH       Load a protected YAML vars file.
+  --as-admin              Connect as mtuinstra instead of inventory root.
+
+The command uses an existing ansible-playbook. Set ANSIBLE_PLAYBOOK when it is
+not on PATH. harden-ssh additionally requires both
+PRODUCTION_ADMIN_SSH_VERIFIED=true and PRODUCTION_ADMIN_SUDO_VERIFIED=true.
+EOF
+}
+
+command_name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      check_mode=true
+      shift
+      ;;
+    --inventory)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      inventory="$2"
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      limit="$2"
+      shift 2
+      ;;
+    --extra-vars)
+      [[ $# -ge 2 ]] || { usage >&2; exit 64; }
+      extra_vars_file="$2"
+      shift 2
+      ;;
+    --as-admin)
+      as_admin=true
+      shift
+      ;;
+    bootstrap|configure|verify|harden-ssh|configure-umami-restore|verify-umami-restore)
+      [[ -z "$command_name" ]] || { usage >&2; exit 64; }
+      command_name="$1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+[[ -n "$command_name" && -r "$inventory" ]] || { usage >&2; exit 64; }
+if [[ -n "$extra_vars_file" && ! -r "$extra_vars_file" ]]; then
+  echo "extra-vars file is not readable: $extra_vars_file" >&2
+  exit 66
+fi
+
+ansible_playbook="${ANSIBLE_PLAYBOOK:-}"
+if [[ -z "$ansible_playbook" ]]; then
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    ansible_playbook="$(command -v ansible-playbook)"
+  elif [[ -x "$repo_root/../.tooling/ansible/bin/ansible-playbook" ]]; then
+    ansible_playbook="$repo_root/../.tooling/ansible/bin/ansible-playbook"
+  else
+    echo "ansible-playbook is required; this wrapper never installs it" >&2
+    exit 69
+  fi
+fi
+[[ -x "$ansible_playbook" ]] || { echo "not executable: $ansible_playbook" >&2; exit 69; }
+
+playbook="$repo_root/infra/ansible/production-host-baseline.yml"
+args=(--inventory "$inventory" --limit "$limit")
+if [[ "$as_admin" == true ]]; then
+  args+=(--extra-vars ansible_user=mtuinstra)
+fi
+if [[ "$check_mode" == true ]]; then
+  args+=(--check --diff)
+fi
+if [[ -n "$extra_vars_file" ]]; then
+  args+=(--extra-vars "@$extra_vars_file")
+fi
+
+case "$command_name" in
+  bootstrap)
+    if [[ "$check_mode" == true ]]; then
+      # Check mode does not create users or apt files needed by later tasks.
+      args+=(--tags always)
+    else
+      args+=(--tags bootstrap)
+    fi
+    ;;
+  configure)
+    ;;
+  verify)
+    playbook="$repo_root/infra/ansible/production-host-verify.yml"
+    ;;
+  harden-ssh)
+    if [[ "${PRODUCTION_ADMIN_SSH_VERIFIED:-}" != true ||
+          "${PRODUCTION_ADMIN_SUDO_VERIFIED:-}" != true ]]; then
+      echo "refusing SSH hardening without both independent verification flags" >&2
+      exit 77
+    fi
+    playbook="$repo_root/infra/ansible/production-host-ssh-hardening.yml"
+    args+=(--extra-vars ansible_user=mtuinstra
+      --extra-vars production_admin_ssh_verified=true
+      --extra-vars production_admin_sudo_verified=true)
+    ;;
+  configure-umami-restore)
+    playbook="$repo_root/infra/ansible/production-host-umami-restore.yml"
+    ;;
+  verify-umami-restore)
+    playbook="$repo_root/infra/ansible/production-host-umami-restore-verify.yml"
+    ;;
+esac
+
+export ANSIBLE_CONFIG="$repo_root/infra/ansible/ansible.cfg"
+export ANSIBLE_HOME="${ANSIBLE_HOME:-${TMPDIR:-/tmp}/tuinstra-ansible-${UID}}"
+/bin/mkdir -p "$ANSIBLE_HOME"
+/bin/chmod 0700 "$ANSIBLE_HOME"
+exec "$ansible_playbook" "${args[@]}" "$playbook"
