@@ -826,6 +826,23 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(forget[forget.index("--keep-tag") + 1], "tuinstra:production-restore-safety")
         self.assertEqual(execute.call_args_list[2].args[0][:2], ["restic", "check"])
 
+    def test_inspect_reports_allowlisted_app_without_active_policy_as_not_applicable(self):
+        config = {
+            "hosts": [{"host_slug": "tuinstra-prod-02", "applications": ["tracker"]}],
+            "policy_root": str(self.root / "policies"),
+            "repository_root": str(self.root / "repositories"),
+            "password_root": str(self.root / "passwords"),
+        }
+        result = backup.inspect(config)
+        self.assertEqual(result["hosts"], [{
+            "host_slug": "tuinstra-prod-02",
+            "applications": [{
+                "app_id": "tracker",
+                "status": "not-applicable",
+                "reason": "no-active-policy",
+            }],
+        }])
+
     def test_retention_rejects_mutable_or_unknown_policy(self):
         config = {"policy_root": str(self.root / "policies")}
         with self.assertRaisesRegex(backup.BackupError, "policy"):
