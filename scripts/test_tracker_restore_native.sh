@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # Disposable native gate for DEV-30. It creates a PostgreSQL 17 custom dump and
 # a real MinIO object with the reviewed images, then feeds the paired payload to
@@ -26,6 +27,7 @@ trap cleanup EXIT
 
 /usr/bin/install -d -m 0700 "$root_dir/files" "$root_dir/minio-data"
 /usr/bin/install -d -m 0700 "$root_dir/seed"
+/usr/bin/chown 70:70 "$root_dir/seed"
 
 /usr/bin/docker run --detach --name "$source_db" --network none \
   --env POSTGRES_DB=tracker_fixture --env POSTGRES_USER=tracker_fixture \
@@ -58,21 +60,31 @@ SQL
   --mount "type=bind,source=$root_dir/minio-data,target=/data" \
   --security-opt no-new-privileges:true "$minio_image" server /data --address :9000 >/dev/null
 for _ in {1..30}; do
-  if /usr/bin/docker run --rm --network "container:$source_minio" "$mc_image" \
-    alias set local http://127.0.0.1:9000 fixture-root fixture-password >/dev/null 2>&1; then break; fi
+  if /usr/bin/docker run --rm --network "container:$source_minio" \
+    --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 "$mc_image" \
+    ls local >/dev/null 2>&1; then break; fi
   sleep 1
 done
-/usr/bin/docker run --rm --network "container:$source_minio" "$mc_image" mb local/attachments >/dev/null
+/usr/bin/docker run --rm --network "container:$source_minio" \
+  --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 "$mc_image" \
+  mb local/attachments >/dev/null
 /usr/bin/printf 'native tracker attachment fixture\n' >"$root_dir/fixture.txt"
 /usr/bin/docker run --rm --network "container:$source_minio" \
+  --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 \
   --mount "type=bind,source=$root_dir/fixture.txt,target=/fixture.txt,readonly" "$mc_image" \
   cp /fixture.txt local/attachments/fixture.txt >/dev/null
-/usr/bin/docker run --rm --network "container:$source_minio" "$mc_image" \
+/usr/bin/docker run --rm --network "container:$source_minio" \
+  --env MC_HOST_local=http://fixture-root:fixture-password@127.0.0.1:9000 "$mc_image" \
   cat local/attachments/fixture.txt | /usr/bin/sha256sum >"$root_dir/object.sha256"
+[[ "$(/usr/bin/awk '{print $1}' "$root_dir/object.sha256")" == "$(/usr/bin/sha256sum "$root_dir/fixture.txt" | /usr/bin/awk '{print $1}')" ]] || {
+  echo 'native MinIO object checksum did not match the fixture' >&2
+  exit 1
+}
+/usr/bin/docker stop "$source_minio" >/dev/null
 # snapshot_directory's first component is an archive namespace. Keep the real
 # MinIO bucket below it so restore-tracker strips only that namespace.
 /usr/bin/install -d -m 0700 "$root_dir/archive-root/attachments"
-/usr/bin/cp -R "$root_dir/minio-data/attachments" "$root_dir/archive-root/attachments/attachments"
+/usr/bin/cp -a "$root_dir/minio-data/." "$root_dir/archive-root/attachments/"
 /usr/bin/tar -cf "$root_dir/files/attachments.tar" -C "$root_dir/archive-root" attachments
 /usr/bin/printf 'POSTGRES_DB=tracker_fixture\nPOSTGRES_USER=tracker_fixture\nPOSTGRES_PASSWORD=fixture-password\n' >"$root_dir/files/env"
 /usr/bin/chmod 0600 "$root_dir/files/env"

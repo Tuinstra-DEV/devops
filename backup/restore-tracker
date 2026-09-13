@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 readonly payload="${1:-}"
 readonly postgres_image='docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73'
@@ -242,18 +243,50 @@ PY
   exit 68
 }
 if [[ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["files"])' <<<"$attachment_summary")" -gt 0 ]]; then
+  readonly listing_file="$work/minio-list.json"
   ready=false
   for _ in {1..30}; do
-    if /usr/bin/docker run --rm --network "container:$minio_container" "$mc_image" \
-      alias set local http://127.0.0.1:9000 restore-check restore-check-password >/dev/null 2>&1; then
+    if /usr/bin/docker run --rm --network "container:$minio_container" \
+      --env MC_HOST_local=http://restore-check:restore-check-password@127.0.0.1:9000 "$mc_image" \
+      ls --recursive --json local/attachments >"$listing_file"; then
       ready=true
       break
     fi
     sleep 1
   done
   [[ "$ready" == true ]] || { echo 'isolated Tracker MinIO did not become S3-ready' >&2; exit 68; }
-  /usr/bin/docker run --rm --network "container:$minio_container" "$mc_image" \
-    ls --recursive local/attachments >/dev/null
+  readonly object_key="$(/usr/bin/python3 - "$listing_file" "$work/minio/data" <<'PY'
+import json
+import pathlib
+import sys
+from posixpath import normpath
+
+listing = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+data_root = pathlib.Path(sys.argv[2]) / "attachments"
+for line in listing.splitlines():
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    key = value.get("key")
+    if not isinstance(key, str) or not key or key.startswith("/") or normpath(key) != key or ".." in key.split("/"):
+        continue
+    candidate = data_root / pathlib.PurePosixPath(key)
+    if candidate.is_file() and not candidate.is_symlink():
+        print(key)
+        break
+PY
+)"
+  [[ -n "$object_key" ]] || { echo 'isolated Tracker MinIO object listing is empty' >&2; exit 68; }
+  readonly expected_object_sha="$(/usr/bin/sha256sum "$work/minio/data/attachments/$object_key" | /usr/bin/awk '{print $1}')"
+  readonly actual_object_sha="$(/usr/bin/docker run --rm --network "container:$minio_container" \
+    --env MC_HOST_local=http://restore-check:restore-check-password@127.0.0.1:9000 "$mc_image" \
+    cat "local/attachments/$object_key" | /usr/bin/sha256sum | /usr/bin/awk '{print $1}')"
+  [[ "$actual_object_sha" == "$expected_object_sha" ]] || {
+    echo 'isolated Tracker MinIO object checksum does not match the snapshot' >&2
+    exit 68
+  }
+  /usr/bin/rm -f "$listing_file"
 fi
 
 if ! cleanup; then
