@@ -28,6 +28,15 @@ Bewaar de age-identity en het Restic-wachtwoord daarnaast in 1Password. De
 acceptatietest gebruikt een vanuit 1Password opnieuw aangeleverde kopie. Laat
 waarden nooit via command-line-argumenten, terminaloutput, Git of Tracker lopen.
 
+De standaard Sanctuary-installatie maakt alleen de bestaande Umami-repository
+en policy actief. Voor Tracker moet de operator eerst de allowlist in de
+Sanctuary-variabelen uitbreiden met `tuinstra-prod-02/tracker`, het onafhankelijke
+Restic-wachtwoord onder
+`/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` laten
+provisioneren en daarna pas een gecontroleerde policy-reconcile uitvoeren. De
+Tracker-export blijft uitgeschakeld totdat alle PHP/nginx-digests en deze
+credential zijn geverifieerd.
+
 Voor de onafhankelijke credentialtest zet de 1Password-helper exact één tijdelijk JSON-bestand op
 `/home/mtuinstra/.local/share/tuinstra-backup-recovery.json` (`mtuinstra:0600`). Voer daarna uit:
 
