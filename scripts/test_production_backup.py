@@ -221,6 +221,9 @@ class BackupTests(unittest.TestCase):
         config_path.chmod(0o600)
         migrations = ["DoctrineMigrations\\Version20260813120000", "DoctrineMigrations\\Version20260912160000"]
         row_counts = {"organization_count": 1, "project_count": 2, "story_count": 3, "attachment_count": 1}
+        attachment_inventory = [{"status": "available", "object_key": "nested/report.txt",
+                                 "deletion_object_key": None, "declared_size": len(b"safe attachment\n"),
+                                 "declared_sha256": hashlib.sha256(b"safe attachment\n").hexdigest()}]
         calls = []
         service_ids = {service: (hex(index)[2:] * 64)[:64]
                        for index, service in enumerate(app["approved_images"], 1)}
@@ -262,6 +265,8 @@ class BackupTests(unittest.TestCase):
                 return mock.Mock(stdout=b"17.5\n")
             if "exec" in argv and "doctrine_migration_versions" in argv[-1]:
                 return mock.Mock(stdout=("\n".join(migrations) + "\n").encode())
+            if "exec" in argv and backup.TRACKER_ATTACHMENT_INVENTORY_SQL in argv[-1]:
+                return mock.Mock(stdout=(json.dumps(attachment_inventory) + "\n").encode())
             if "exec" in argv and "jsonb_build_object" in argv[-1]:
                 return mock.Mock(stdout=(json.dumps(row_counts) + "\n").encode())
             if "exec" in argv:
@@ -280,6 +285,7 @@ class BackupTests(unittest.TestCase):
             object_manifest = json.load(archive.extractfile("payload/files/object-manifest.json"))
         self.assertEqual(internal["database"]["content_marker"]["row_counts"], row_counts)
         self.assertEqual(internal["database"]["content_marker"]["migration_count"], len(migrations))
+        self.assertEqual(internal["database"]["attachment_inventory"], attachment_inventory)
         self.assertEqual(internal["object_store_bucket"], "tracker-attachments")
         self.assertEqual(object_manifest["objects"][0]["bytes"], len(b"safe attachment\n"))
         self.assertEqual(object_manifest["objects"][0]["sha256"], hashlib.sha256(b"safe attachment\n").hexdigest())
@@ -288,14 +294,12 @@ class BackupTests(unittest.TestCase):
         self.assertFalse(any("S3_BUCKET" in argument for call in calls for argument in call
                              if "exec" in call))
 
-    def test_tracker_object_manifest_fails_when_database_has_attachments_but_store_is_empty(self):
+    def test_tracker_empty_inventory_is_valid_when_only_withdrawn_records_remain(self):
         app = self.tracker_app()
-        payload = self.root / "payload"
-        payload.mkdir()
-        calls = []
+        inventory = [{"status": "withdrawn", "object_key": "retained/a",
+                      "deletion_object_key": None, "declared_size": 1, "declared_sha256": "a" * 64}]
 
         def fake_run(argv, **kwargs):
-            calls.append(argv)
             if argv[:2] == ["docker", "compose"] and "ps" in argv:
                 return mock.Mock(stdout=("d" * 64 + "\n").encode())
             if "exec" in argv:
@@ -304,9 +308,50 @@ class BackupTests(unittest.TestCase):
                 return mock.Mock(stdout=b"")
             raise AssertionError(argv)
 
-        with mock.patch.object(backup, "run", side_effect=fake_run), \
-             self.assertRaisesRegex(backup.BackupError, "no object-store entries"):
-            backup.tracker_object_manifest(app, payload, expected_attachment_count=1)
+        payload_one, payload_two = self.root / "payload-one", self.root / "payload-two"
+        payload_one.mkdir(); payload_two.mkdir()
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            result_one = backup.tracker_object_manifest(app, payload_one, inventory)
+            result_two = backup.tracker_object_manifest(app, payload_two, inventory)
+        self.assertEqual(json.loads((payload_one / "files/object-manifest.json").read_text()), {
+            "algorithm": "tracker-s3-object-v1", "bucket": "tracker-attachments", "objects": [],
+            "object_count": 0, "total_bytes": 0,
+        })
+        self.assertEqual(result_one["sha256"], result_two["sha256"])
+        self.assertEqual(result_one["bytes"], result_two["bytes"])
+
+    def test_tracker_attachment_inventory_accepts_available_object_with_matching_metadata(self):
+        content = b"safe attachment\n"
+        inventory = [{"status": "available", "object_key": "a/report.txt",
+                      "deletion_object_key": None, "declared_size": len(content),
+                      "declared_sha256": hashlib.sha256(content).hexdigest()}]
+        backup._reconcile_tracker_objects(inventory, [{"key": "a/report.txt", "bytes": len(content),
+                                                        "sha256": hashlib.sha256(content).hexdigest()}])
+
+    def test_tracker_attachment_inventory_rejects_missing_available_object(self):
+        inventory = [{"status": "available", "object_key": "a/report.txt",
+                      "deletion_object_key": None, "declared_size": 1, "declared_sha256": "a" * 64}]
+        with self.assertRaisesRegex(backup.BackupError, "has no object"):
+            backup._reconcile_tracker_objects(inventory, [])
+
+    def test_tracker_attachment_inventory_rejects_object_checksum_mismatch(self):
+        inventory = [{"status": "available", "object_key": "a/report.txt",
+                      "deletion_object_key": None, "declared_size": 1, "declared_sha256": "a" * 64}]
+        with self.assertRaisesRegex(backup.BackupError, "checksum or size mismatch"):
+            backup._reconcile_tracker_objects(inventory, [{"key": "a/report.txt", "bytes": 1, "sha256": "b" * 64}])
+
+    def test_tracker_attachment_inventory_rejects_orphan_object(self):
+        with self.assertRaisesRegex(backup.BackupError, "orphan"):
+            backup._reconcile_tracker_objects([], [{"key": "orphan.bin", "bytes": 1, "sha256": "a" * 64}])
+
+    def test_tracker_empty_helper_output_is_not_an_error_but_helper_failure_is(self):
+        self.assertEqual(backup._parse_tracker_object_listing(b""), [])
+        app = self.tracker_app()
+        payload = self.root / "payload"
+        payload.mkdir()
+        with mock.patch.object(backup, "run", side_effect=backup.BackupError("external command failed: docker")), \
+             self.assertRaisesRegex(backup.BackupError, "external command failed"):
+            backup.tracker_object_manifest(app, payload, [])
         self.assertFalse(list(payload.rglob("object-manifest.json")))
 
     def fake_export_run(self, config, encrypted_hook=None):
