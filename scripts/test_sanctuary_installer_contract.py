@@ -73,6 +73,44 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         self.assertIn('restore-umami', INSTALLER)
         self.assertIn('restore-umami', ROLE)
 
+    def test_tracker_activation_installs_separate_credential_repository_and_policy(self):
+        self.assertIn(
+            "/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password",
+            INSTALLER,
+        )
+        self.assertIn(
+            "/mnt/hdd1000-01/backups/production/tuinstra-prod-02/tracker",
+            INSTALLER,
+        )
+        self.assertIn(
+            "--host tuinstra-prod-02 --app tracker --policy-version production-v1",
+            INSTALLER,
+        )
+        self.assertIn(
+            "--plan-hash 4da29a1c175b1d5f234644da763e8509c7c02ff6c5e83f5f748346d49a5af725",
+            INSTALLER,
+        )
+        self.assertIn("--hour 3 --minute 0 --daily 7 --weekly 4 --monthly 12", INSTALLER)
+
+    def test_installer_does_not_start_tracker_or_install_general_sudo(self):
+        self.assertNotIn("docker compose", INSTALLER)
+        self.assertNotIn("--trigger manual", INSTALLER)
+        self.assertNotIn("tuinstra-backup ALL=(root)", INSTALLER)
+        self.assertNotIn("tuinstra-backup-admin restore-test *", INSTALLER)
+        self.assertIn("tuinstra-backup-admin run tracker", INSTALLER)
+        self.assertIn("tuinstra-backup-admin check tracker", INSTALLER)
+        self.assertIn("tuinstra-backup-admin restore-test tracker *", INSTALLER)
+
+    def test_retention_service_keeps_umami_and_adds_tracker(self):
+        self.assertIn(
+            "retain-active --host tuinstra-prod-01 --app umami",
+            INSTALLER,
+        )
+        self.assertIn(
+            "retain-active --host tuinstra-prod-02 --app tracker",
+            INSTALLER,
+        )
+
     def test_installer_verifies_reviewed_external_inputs_before_mutation(self):
         self.assertIn('install_input_manifest="$bundle_root/install-input/manifest.json"', INSTALLER)
         self.assertIn('python3 "$install_input_verifier" --root "$bundle_root" --manifest "$install_input_manifest"', INSTALLER)

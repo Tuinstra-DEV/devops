@@ -349,7 +349,23 @@ class BackupTests(unittest.TestCase):
             return normal(argv, **kwargs)
 
         with mock.patch.object(backup, "run", side_effect=mismatched), \
-             self.assertRaisesRegex(backup.BackupError, "approved image digest"):
+             self.assertRaisesRegex(backup.BackupError, r"source export failed \[stage=compose-contract\]"):
+            backup.create_export(config, "umami")
+        self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
+
+    def test_export_reports_compose_contract_stage_without_remote_reason(self):
+        config = self.producer()
+        with mock.patch.object(backup, "running_compose_images",
+                               side_effect=backup.BackupError("compose image configuration does not match")), \
+             self.assertRaisesRegex(backup.BackupError, r"source export failed \[stage=compose-contract\]"):
+            backup.create_export(config, "umami")
+        self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
+
+    def test_export_reports_disabled_application_contract_stage(self):
+        config = self.producer()
+        config["applications"][0]["enabled"] = False
+        with self.assertRaisesRegex(backup.BackupError,
+                                    r"source export failed \[stage=application-contract\]"):
             backup.create_export(config, "umami")
         self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
 
@@ -995,10 +1011,12 @@ class BackupTests(unittest.TestCase):
 
     def test_ssh_exit_codes_distinguish_remote_export_failure_from_unreachable_source(self):
         with mock.patch.object(backup.subprocess, "run", side_effect=__import__("subprocess").CalledProcessError(
-                1, ["ssh"])):
+                1, ["ssh"], stderr=b"backup operation failed: source export failed [stage=object-inventory]\n")):
             with self.assertRaisesRegex(backup.BackupError, "export") as failure:
                 backup.run(["ssh", "fixed-host", "export"])
         self.assertEqual(backup.failure_code(failure.exception), "source_export_failed")
+        self.assertEqual(backup.failure_stage(failure.exception), "object-inventory")
+        self.assertNotIn("PASSWORD", str(failure.exception))
         with mock.patch.object(backup.subprocess, "run", side_effect=__import__("subprocess").CalledProcessError(
                 255, ["ssh"])):
             with self.assertRaisesRegex(backup.BackupError, "unreachable") as failure:
@@ -1015,7 +1033,20 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(finished["status"], "failed")
         current = backup.catalog(config, "tuinstra-prod-01", "umami")
         self.assertEqual(current["latest_attempt"]["error_code"], "source_unreachable")
+        self.assertIsNone(current["latest_attempt"]["stage_code"])
         self.assertEqual(current["recovery_points"], [])
+
+    def test_source_export_failure_records_safe_stage_code_without_reason(self):
+        config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,
+                  "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}]}
+        started = backup.attempt_start(config, "tuinstra-prod-01", "umami", "manual")
+        failure = backup.BackupError("source export failed [stage=runtime-evidence]")
+        backup.attempt_finish(config, "tuinstra-prod-01", "umami", started["run_id"], "failed",
+                              backup.failure_code(failure), backup.failure_stage(failure))
+        current = backup.catalog(config, "tuinstra-prod-01", "umami")
+        self.assertEqual(current["latest_attempt"]["error_code"], "source_export_failed")
+        self.assertEqual(current["latest_attempt"]["stage_code"], "runtime-evidence")
+        self.assertNotIn("PASSWORD", json.dumps(current["latest_attempt"]))
 
     def test_attempt_cannot_report_success_without_exact_durable_run_proof(self):
         config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,

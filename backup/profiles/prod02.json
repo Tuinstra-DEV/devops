@@ -11,7 +11,7 @@
   "applications": [
     {
       "app_id": "tracker",
-      "enabled": false,
+      "enabled": true,
       "adapter": "tracker-compose-v1",
       "compose_project": "tracker",
       "compose_file": "/var/www/tracker/docker-compose.prod02.json",
@@ -25,12 +25,12 @@
       "quiesce_timeout_seconds": 120,
       "approved_images": {
         "postgres": "docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
-        "php": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
-        "php-mcp": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
-        "worker": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
-        "catalog-worker": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
-        "release-evidence-worker": "ghcr.io/tuinstra-dev/tracker:sha-required@sha256:sha-required",
-        "nginx": "ghcr.io/tuinstra-dev/tracker-nginx:sha-required@sha256:sha-required",
+        "php": "ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba",
+        "php-mcp": "ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba",
+        "worker": "ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba",
+        "catalog-worker": "ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba",
+        "release-evidence-worker": "ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba",
+        "nginx": "ghcr.io/tuinstra-dev/tracker@sha256:24768ca0e506acf1ae707f88d6ad6c5c0f66f472917f54f11f13abcfd83147cb",
         "minio": "quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
         "minio-init": "quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727",
         "clamav": "clamav/clamav@sha256:657128a6c8d901db3efe75faaa27ba3c8fc78b239dd1b5851310486d6531539b"

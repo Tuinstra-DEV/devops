@@ -6,11 +6,12 @@ forced-command SSH-key een logische export op de productiehost, haalt het
 versleutelde artifact op, controleert checksum en omvang, schrijft het naar een
 eigen versleutelde Restic-repository en bevestigt ontvangst pas na `restic check`.
 
-De eerste actieve adapter is `tuinstra-prod-01/umami`. De Tracker-adapter voor
-`tuinstra-prod-02/tracker` staat als afzonderlijk profiel klaar en blijft
-uitgeschakeld totdat de productie-imagepins, credentials en een echte
-herstelproef door de release-owner zijn bevestigd. Sanctuary is alleen
-bestemming; zijn eigen workloads zijn geen bron in deze keten.
+De eerste actieve adapter is `tuinstra-prod-01/umami`. Na de geverifieerde
+Tracker 1.4.0-cutover wordt ook `tuinstra-prod-02/tracker` actief met een eigen
+credential, repository en policy. De Sanctuary-installer activeert uitsluitend
+de backup-policy en systemd-timers; hij start of wijzigt geen Tracker-container
+of proxyroute. Sanctuary is alleen bestemming; zijn eigen workloads zijn geen
+bron in deze keten.
 
 ## Vaste indeling en geheimen
 
@@ -20,6 +21,7 @@ De volgende bestanden worden buiten Git aangeleverd:
 |---|---|---|---|
 | Sanctuary | `/etc/tuinstra-backup/age-identity.txt` | `root:root 0600` | Ontsleuteling en onafhankelijk herstel |
 | Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password` | `root:root 0600` | Losse Umami-repository |
+| Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` | `root:root 0600` | Losse Tracker-repository |
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys voor alleen de vaste backupcyclus |
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01-restore` | `root:root 0600` | Afzonderlijke identiteit voor de vaste productieherstel-RPC naar prod-01 |
 | Sanctuary | `/etc/tuinstra-backup/ssh/known_hosts` | `root:root 0644` | Handmatig geverifieerde hostkeys |
@@ -29,14 +31,13 @@ Bewaar de age-identity, het Restic-wachtwoord en alle drie SSH-identiteiten daar
 acceptatietest gebruikt een vanuit 1Password opnieuw aangeleverde kopie. Laat
 waarden nooit via command-line-argumenten, terminaloutput, Git of Tracker lopen.
 
-De standaard Sanctuary-installatie maakt alleen de bestaande Umami-repository
-en policy actief. Voor Tracker moet de operator eerst de allowlist in de
-Sanctuary-variabelen uitbreiden met `tuinstra-prod-02/tracker`, het onafhankelijke
-Restic-wachtwoord onder
-`/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` laten
-provisioneren en daarna pas een gecontroleerde policy-reconcile uitvoeren. De
-Tracker-export blijft uitgeschakeld totdat alle PHP/nginx-digests en deze
-credential zijn geverifieerd.
+De Sanctuary-installatie maakt de bestaande Umami-repository en policy
+idempotent opnieuw vast en activeert daarnaast de allowlisted
+`tuinstra-prod-02/tracker`-policy. Het onafhankelijke Restic-wachtwoord onder
+`/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` wordt
+eenmalig root-owned gegenereerd en nooit stilzwijgend vervangen. De eerste
+Tracker-export valideert de productie-Composeconfiguratie, alle runtime
+image-digests en de actieve release voordat hij een quiescence-window opent.
 
 Voor de onafhankelijke credentialtest zet de 1Password-helper exact één tijdelijk JSON-bestand op
 `/home/mtuinstra/.local/share/tuinstra-backup-recovery.json` (`mtuinstra:0600`). Voer daarna uit:
@@ -106,7 +107,8 @@ als eerste vertrouwensbron.
    `production_backup_public_key_root`. Gebruik `mtuinstra` met sudo; root-SSH
    blijft uitgeschakeld.
 3. Controleer `systemctl list-timers 'tuinstra-backup-*'`. Umami start dagelijks
-   om 02:00 Europe/Amsterdam met maximaal tien minuten willekeurige spreiding.
+   om 02:00 en Tracker om 03:00 Europe/Amsterdam, beide met maximaal tien
+   minuten willekeurige spreiding.
 
 De Ansible-rol `infra/ansible/sanctuary-backup.yml` beschrijft dezelfde toestand
 voor latere herhaalbare profieluitvoering. De eerste installatie gebruikt het
@@ -125,11 +127,17 @@ Een volledige, duurzame cyclus:
 
 ```bash
 sudo /usr/local/sbin/tuinstra-backup-admin run
+sudo /usr/local/sbin/tuinstra-backup-admin run tracker
 ```
 
 Alleen een resultaat met `snapshot_id`, `stored_at`, `integrity_checked_at` en
 `integrity_coverage=full-repository-data` telt als geslaagde externe back-up. `export` betekent
 alleen dat lokaal versleuteld bronmateriaal klaarstaat.
+
+Een mislukte bronexport wordt in de Sanctuary-catalogus als `source_export_failed` vastgelegd met
+een beperkte `stage_code`, bijvoorbeeld `application-contract`, `compose-contract`, `runtime-evidence`, `object-inventory`,
+`quiescence`, `database-export` of `config-metadata`. De stagecode bevat geen remote fouttekst,
+command-output of geheimen.
 
 Inspecteer secretvrije status:
 
@@ -137,8 +145,8 @@ Inspecteer secretvrije status:
 sudo /usr/local/sbin/tuinstra-backup-admin status
 ```
 
-Voer een volledige extra integriteitscontrole uit met
-`sudo /usr/local/sbin/tuinstra-backup-admin check`. Retentie draait apart als root, maakt eerst een
+Voer voor Tracker een volledige extra integriteitscontrole uit met
+`sudo /usr/local/sbin/tuinstra-backup-admin check tracker`. Retentie draait apart als root, maakt eerst een
 dry-runbewijs, weigert een plan zonder bewaard herstelpunt en past daarna de
 actieve policy toe. De standaard is 7 dagelijkse, 4 wekelijkse en 12 maandelijkse
 herstelpunten. Restic krijgt expliciet `--group-by ''`, zodat de unieke

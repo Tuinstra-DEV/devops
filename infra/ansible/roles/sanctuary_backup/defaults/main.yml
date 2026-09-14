@@ -4,4 +4,7 @@ sanctuary_backup_profile_source: "{{ playbook_dir }}/../../backup/profiles/sanct
 sanctuary_backup_apps:
   - host_slug: tuinstra-prod-01
     app_id: umami
-sanctuary_backup_default_policy_hash: 658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e
+  - host_slug: tuinstra-prod-02
+    app_id: tracker
+sanctuary_backup_umami_policy_hash: 658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e
+sanctuary_backup_tracker_policy_hash: 4da29a1c175b1d5f234644da763e8509c7c02ff6c5e83f5f748346d49a5af725
