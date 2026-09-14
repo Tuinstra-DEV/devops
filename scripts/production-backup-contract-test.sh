@@ -170,6 +170,9 @@ grep -q '"approved_images"' "$repo_root/backup/profiles/prod01.json"
 grep -q '"database": database_versions' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'run-active --host "$host" --app "$app" --trigger manual' \
   "$repo_root/backup/tuinstra-backup-admin"
+grep -q 'tuinstra-prod-02' "$repo_root/backup/tuinstra-backup-admin"
+grep -q 'backup admin failed: target must be umami or tracker' \
+  "$repo_root/backup/tuinstra-backup-admin"
 grep -q 'exec "$engine" --config "$config" escrow-recovery-test' \
   "$repo_root/backup/tuinstra-backup-admin"
 if grep -q -- '--plan-hash "$plan_hash"' "$repo_root/backup/tuinstra-backup-admin"; then
@@ -184,6 +187,14 @@ grep -q '658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e' \
 grep -q '"--keep-tag", "tuinstra:production-restore-safety"' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'CATALOG_LIMIT = 500' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'fallback_total_minutes.*75' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'restic-passwords/tuinstra-prod-02/tracker.password' \
+  "$repo_root/scripts/install-sanctuary-backups"
+grep -q -- '--plan-hash 4da29a1c175b1d5f234644da763e8509c7c02ff6c5e83f5f748346d49a5af725' \
+  "$repo_root/scripts/install-sanctuary-backups"
+grep -q -- '--hour 3 --minute 0 --daily 7 --weekly 4 --monthly 12' \
+  "$repo_root/scripts/install-sanctuary-backups"
+grep -q 'ensure_restic_password("tuinstra-prod-02", "tracker")' \
+  "$repo_root/scripts/bootstrap_backup_credentials.py"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root" <<'PY'
 import importlib.util
 import pathlib

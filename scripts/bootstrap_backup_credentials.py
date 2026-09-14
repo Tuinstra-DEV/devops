@@ -165,8 +165,14 @@ def require_distinct_ssh_identities(identities: list[Path]) -> None:
         raise BootstrapError("backup and production restore SSH identities must be distinct")
 
 
-def ensure_restic_password() -> Path:
-    destination = SECRET_ROOT / "restic-passwords" / "tuinstra-prod-01" / "umami.password"
+def ensure_restic_password(host_slug: str, app_id: str) -> Path:
+    allowed = {
+        ("tuinstra-prod-01", "umami"),
+        ("tuinstra-prod-02", "tracker"),
+    }
+    if (host_slug, app_id) not in allowed:
+        raise BootstrapError("Restic credential target is not allowlisted")
+    destination = SECRET_ROOT / "restic-passwords" / host_slug / f"{app_id}.password"
     try:
         descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -191,6 +197,7 @@ def main() -> int:
         for path, mode in ((SECRET_ROOT, 0o700), (SECRET_ROOT / "ssh", 0o700),
                            (SECRET_ROOT / "restic-passwords", 0o700),
                            (SECRET_ROOT / "restic-passwords" / "tuinstra-prod-01", 0o700),
+                           (SECRET_ROOT / "restic-passwords" / "tuinstra-prod-02", 0o700),
                            (PUBLIC_ROOT, 0o755)):
             path.mkdir(parents=True, exist_ok=True)
             os.chown(path, 0, 0)
@@ -202,7 +209,8 @@ def main() -> int:
             ensure_ssh_identity("prod01-restore"),
         ]
         require_distinct_ssh_identities(identities)
-        ensure_restic_password()
+        ensure_restic_password("tuinstra-prod-01", "umami")
+        ensure_restic_password("tuinstra-prod-02", "tracker")
         print(f"backup credential bootstrap complete; destination_free_gib={available // 1024**3}; public_dir={PUBLIC_ROOT}")
         return 0
     except (BootstrapError, OSError) as exc:

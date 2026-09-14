@@ -41,11 +41,28 @@ class CredentialBootstrapTests(unittest.TestCase):
             with mock.patch.object(bootstrap, "SECRET_ROOT", secret_root), \
                  mock.patch.object(bootstrap, "validate_secret", side_effect=validate), \
                  mock.patch.object(bootstrap.os, "chown"):
-                bootstrap.ensure_restic_password()
+                bootstrap.ensure_restic_password("tuinstra-prod-01", "umami")
                 first = destination.read_bytes()
-                bootstrap.ensure_restic_password()
+                bootstrap.ensure_restic_password("tuinstra-prod-01", "umami")
             self.assertEqual(destination.read_bytes(), first)
             self.assertEqual(len(first.strip()), 64)
+
+    def test_tracker_restic_password_is_a_distinct_allowlisted_credential(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            secret_root = Path(temporary)
+            destination = secret_root / "restic-passwords/tuinstra-prod-02/tracker.password"
+            destination.parent.mkdir(parents=True)
+            with mock.patch.object(bootstrap, "SECRET_ROOT", secret_root), \
+                 mock.patch.object(bootstrap, "validate_secret"), \
+                 mock.patch.object(bootstrap.os, "chown"):
+                bootstrap.ensure_restic_password("tuinstra-prod-02", "tracker")
+            self.assertTrue(destination.is_file())
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            self.assertEqual(len(destination.read_text(encoding="ascii").strip()), 64)
+
+    def test_restic_password_rejects_unallowlisted_target(self):
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "not allowlisted"):
+            bootstrap.ensure_restic_password("tuinstra-prod-02", "umami")
 
     def test_non_root_execution_is_rejected(self):
         with mock.patch.object(bootstrap.os, "geteuid", return_value=1000):
@@ -66,12 +83,16 @@ class CredentialBootstrapTests(unittest.TestCase):
              mock.patch.object(bootstrap, 'ensure_age_identity'), \
              mock.patch.object(bootstrap, 'ensure_ssh_identity', side_effect=identities.get) as ensure, \
              mock.patch.object(bootstrap, 'require_distinct_ssh_identities') as distinct, \
-             mock.patch.object(bootstrap, 'ensure_restic_password'):
+                 mock.patch.object(bootstrap, 'ensure_restic_password') as ensure_password:
             self.assertEqual(bootstrap.main(), 0)
 
         self.assertEqual(
             [call.args[0] for call in ensure.call_args_list],
             ['prod01', 'prod02', 'prod01-restore'],
+        )
+        self.assertEqual(
+            [call.args for call in ensure_password.call_args_list],
+            [('tuinstra-prod-01', 'umami'), ('tuinstra-prod-02', 'tracker')],
         )
         distinct.assert_called_once_with(list(identities.values()))
 
