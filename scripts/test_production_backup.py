@@ -285,7 +285,7 @@ class BackupTests(unittest.TestCase):
             object_manifest = json.load(archive.extractfile("payload/files/object-manifest.json"))
         self.assertEqual(internal["database"]["content_marker"]["row_counts"], row_counts)
         self.assertEqual(internal["database"]["content_marker"]["migration_count"], len(migrations))
-        self.assertEqual(internal["database"]["attachment_inventory"], attachment_inventory)
+        self.assertNotIn("attachment_inventory", internal["database"])
         self.assertEqual(internal["object_store_bucket"], "tracker-attachments")
         self.assertEqual(object_manifest["objects"][0]["bytes"], len(b"safe attachment\n"))
         self.assertEqual(object_manifest["objects"][0]["sha256"], hashlib.sha256(b"safe attachment\n").hexdigest())
