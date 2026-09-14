@@ -330,13 +330,15 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      - name: Deploy Git SHA through restricted endpoint
+      - name: Deploy application through fixed endpoint
         env:
           DEPLOY_HOST: ${{ vars.PROD_HOST }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           test -n "$DEPLOY_HOST"
-          printf 'deploy %s %s\n%s\n%s\n' \
-            "${{ inputs.service-name }}" "${{ github.sha }}" "$GITHUB_ACTOR" "$GITHUB_TOKEN" | \
-            ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-              deploy@"$DEPLOY_HOST"
+          [[ "${{ inputs.service-name }}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || {
+            echo "service-name must be a safe application identifier." >&2
+            exit 1
+          }
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy@"$DEPLOY_HOST" "deploy ${{ inputs.service-name }}"

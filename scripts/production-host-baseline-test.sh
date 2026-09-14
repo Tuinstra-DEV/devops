@@ -13,6 +13,13 @@ grep -q 'PermitRootLogin no' "$role/templates/ssh-hardening.conf.j2"
 grep -q 'PasswordAuthentication no' "$role/templates/ssh-hardening.conf.j2"
 grep -q 'every image must be pinned by sha256 digest' "$role/templates/tuinstra-compose-deploy.j2"
 grep -q 'application is not allowlisted' "$role/templates/tuinstra-compose-deploy.j2"
+workflow="$repo_root/.github/workflows/reusable-cd-nuxt-ssg.yml"
+grep -q 'name: Deploy application through fixed endpoint' "$workflow"
+grep -q 'deploy@"\$DEPLOY_HOST" "deploy \${{ inputs.service-name }}"' "$workflow"
+if grep -q "printf 'deploy %s %s" "$workflow"; then
+  echo 'reusable CD must not stream a legacy stdin protocol' >&2
+  exit 1
+fi
 grep -q 'no-new-privileges:true' "$role/templates/caddy-compose.yml.j2"
 grep -q 'respond 404' "$role/templates/Caddyfile.j2"
 
