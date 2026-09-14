@@ -84,6 +84,16 @@ TRACKER_CONTENT_MARKER_SQL = (
         f"'{table}_count',(SELECT count(*) FROM {table})" for table in TRACKER_MARKER_TABLES
     ) + ")::text"
 )
+TRACKER_ATTACHMENT_INVENTORY_SQL = (
+    "SELECT COALESCE(jsonb_agg(jsonb_build_object("
+    "'status',status,'object_key',object_key,'deletion_object_key',deletion_object_key,"
+    "'declared_size',declared_size,'declared_sha256',declared_sha256) ORDER BY id), '[]'::jsonb)::text "
+    "FROM attachment"
+)
+TRACKER_ATTACHMENT_STATUSES = {
+    "pending_upload", "scanning", "available", "failed", "quarantined", "withdrawn", "tombstoned",
+}
+TRACKER_ATTACHMENT_OBJECT_STATUS = "available"
 UMAMI_CONTENT_MARKER_SQL = (
     "SELECT jsonb_build_object("
     "'user_count',(SELECT count(*) FROM \"user\"),"
@@ -641,8 +651,84 @@ def _tracker_object_store_bucket(app: dict[str, Any]) -> str:
     return configured_bucket
 
 
+def _tracker_attachment_inventory(value: Any) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    if not isinstance(value, list) or len(value) > 4096:
+        raise BackupError("Tracker attachment inventory is invalid")
+    required: dict[str, dict[str, Any]] = {}
+    allowed: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+                "status", "object_key", "deletion_object_key", "declared_size", "declared_sha256"}:
+            raise BackupError("Tracker attachment inventory is invalid")
+        status = item.get("status")
+        if status not in TRACKER_ATTACHMENT_STATUSES:
+            raise BackupError("Tracker attachment inventory contains an unknown status")
+        for field in ("object_key", "deletion_object_key"):
+            key = item.get(field)
+            if key is not None:
+                _tracker_object_key(key)
+                allowed.add(key)
+        if status == TRACKER_ATTACHMENT_OBJECT_STATUS:
+            key = item.get("object_key")
+            size = item.get("declared_size")
+            digest = item.get("declared_sha256")
+            if (not isinstance(key, str) or not isinstance(size, int) or isinstance(size, bool) or size < 1
+                    or not isinstance(digest, str) or not SHA_RE.fullmatch(digest)):
+                raise BackupError("available Tracker attachment metadata is incomplete")
+            if key in required:
+                raise BackupError("Tracker attachment inventory contains duplicate object keys")
+            required[key] = {"bytes": size, "sha256": digest}
+    return required, allowed
+
+
+def _parse_tracker_object_listing(listing: bytes) -> list[dict[str, Any]]:
+    if len(listing) > 8 * 1024 * 1024:
+        raise BackupError("Tracker object listing exceeds its size quota")
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in listing.splitlines():
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise BackupError("Tracker object listing is invalid") from exc
+        if (item.get("status") not in {None, "success"} or item.get("type") not in {None, "file"}):
+            raise BackupError("Tracker object listing contains an error")
+        key = _tracker_object_key(item.get("key"))
+        size = item.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0 or key in seen:
+            raise BackupError("Tracker object listing is invalid")
+        seen.add(key)
+        entries.append({"key": key, "bytes": size})
+        if len(entries) > 4096:
+            raise BackupError("Tracker object manifest exceeds its object quota")
+    return entries
+
+
+def _reconcile_tracker_objects(attachment_inventory: Any, objects: list[dict[str, Any]]) -> None:
+    required, allowed = _tracker_attachment_inventory(attachment_inventory)
+    observed = {item["key"]: item for item in objects}
+    if set(observed) - allowed:
+        raise BackupError("Tracker object inventory contains an orphan object")
+    if set(required) - set(observed):
+        raise BackupError("available Tracker attachment has no object")
+    for key, expected in required.items():
+        actual = observed[key]
+        if actual["bytes"] != expected["bytes"] or actual["sha256"] != expected["sha256"]:
+            raise BackupError("Tracker attachment object checksum or size mismatch")
+
+
+def _canonical_tracker_object_manifest(bucket: str, objects: list[dict[str, Any]]) -> dict[str, Any]:
+    canonical_objects = sorted(objects, key=lambda item: item["key"])
+    return {"algorithm": TRACKER_OBJECT_MANIFEST_ALGORITHM, "bucket": bucket,
+            "objects": canonical_objects, "object_count": len(canonical_objects),
+            "total_bytes": sum(item["bytes"] for item in canonical_objects)}
+
+
 def tracker_object_manifest(app: dict[str, Any], payload: Path,
-                            expected_attachment_count: int = 0) -> dict[str, Any]:
+                            attachment_inventory: list[dict[str, Any]]) -> dict[str, Any]:
+    required, allowed = _tracker_attachment_inventory(attachment_inventory)
     configured_bucket = _tracker_object_store_bucket(app)
     approved = app.get("approved_images")
     client_image = approved.get("minio-init") if isinstance(approved, dict) else None
@@ -670,29 +756,11 @@ def tracker_object_manifest(app: dict[str, Any], payload: Path,
         listing = run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
                        "--env-file", env_name, client_image, "ls", "--recursive", "--json",
                        f"local/{bucket}"]).stdout
-        if len(listing) > 8 * 1024 * 1024:
-            raise BackupError("Tracker object listing exceeds its size quota")
-        entries: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for line in listing.splitlines():
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise BackupError("Tracker object listing is invalid") from exc
-            if (item.get("status") not in {None, "success"} or item.get("type") not in {None, "file"}):
-                raise BackupError("Tracker object listing contains an error")
-            key = _tracker_object_key(item.get("key"))
-            size = item.get("size")
-            if not isinstance(size, int) or isinstance(size, bool) or size < 0 or key in seen:
-                raise BackupError("Tracker object listing is invalid")
-            seen.add(key)
-            entries.append({"key": key, "bytes": size})
-            if len(entries) > 4096:
-                raise BackupError("Tracker object manifest exceeds its object quota")
-        if expected_attachment_count > 0 and not entries:
-            raise BackupError("Tracker attachments have no object-store entries")
+        entries = _parse_tracker_object_listing(listing)
+        if set(item["key"] for item in entries) - allowed:
+            raise BackupError("Tracker object inventory contains an orphan object")
+        if set(required) - set(item["key"] for item in entries):
+            raise BackupError("available Tracker attachment has no object")
         total_bytes = sum(item["bytes"] for item in entries)
         if total_bytes > 10 * 1024 * 1024 * 1024:
             raise BackupError("Tracker object manifest exceeds its size quota")
@@ -713,9 +781,8 @@ def tracker_object_manifest(app: dict[str, Any], payload: Path,
                 Path(temporary_name).unlink(missing_ok=True)
     finally:
         Path(env_name).unlink(missing_ok=True)
-    manifest = {"algorithm": TRACKER_OBJECT_MANIFEST_ALGORITHM, "bucket": bucket,
-                "objects": objects, "object_count": len(objects),
-                "total_bytes": sum(item["bytes"] for item in objects)}
+    _reconcile_tracker_objects(attachment_inventory, objects)
+    manifest = _canonical_tracker_object_manifest(bucket, objects)
     destination = payload / "files" / "object-manifest.json"
     atomic_json(destination, manifest, 0o600)
     return {"name": "files/object-manifest.json", "sha256": sha256(destination),
@@ -905,6 +972,16 @@ def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
                 or any(not isinstance(content_marker[key], int) or isinstance(content_marker[key], bool)
                        or content_marker[key] < 0 for key in expected_content_keys)):
             raise BackupError("Tracker content marker is invalid")
+        attachment_output = run([*compose, f'psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 '
+                                      f'--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" '
+                                      f'--command={json.dumps(TRACKER_ATTACHMENT_INVENTORY_SQL)}']).stdout
+        if not 1 <= len(attachment_output) <= 512 * 1024:
+            raise BackupError("Tracker attachment inventory is outside policy")
+        try:
+            attachment_inventory = json.loads(attachment_output)
+        except json.JSONDecodeError as exc:
+            raise BackupError("Tracker attachment inventory is invalid") from exc
+        _tracker_attachment_inventory(attachment_inventory)
         marker = {
             "algorithm": TRACKER_MIGRATION_MARKER_ALGORITHM,
             "sha256": hashlib.sha256(("\n".join(migrations) + "\n").encode()).hexdigest(),
@@ -913,7 +990,7 @@ def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
         }
         return {"engine": "postgresql", "server_version": server, "dump_version": dump,
                 "dump_format": "custom", "service": app["postgres_service"],
-                "content_marker": marker}
+                "content_marker": marker, "attachment_inventory": attachment_inventory}
     if not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", server):
         raise BackupError("running PostgreSQL server version is not approved")
     if not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", dump):
@@ -986,11 +1063,11 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             inputs: list[dict[str, Any]] = []
             before_minio = None
             if app.get("adapter") == TRACKER_ADAPTER:
-                expected_attachment_count = database_versions["content_marker"]["row_counts"]["attachment_count"]
+                attachment_inventory = database_versions["attachment_inventory"]
 
                 def capture_tracker_objects() -> None:
                     with export_stage("object-inventory"):
-                        inputs.append(tracker_object_manifest(app, payload, expected_attachment_count))
+                        inputs.append(tracker_object_manifest(app, payload, attachment_inventory))
 
                 before_minio = capture_tracker_objects
             with export_stage("quiescence"):
@@ -1853,6 +1930,8 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
         expected_database_keys = {
             "engine", "server_version", "dump_version", "dump_format", "service", "content_marker",
         }
+        if internal["adapter"] == TRACKER_ADAPTER:
+            expected_database_keys.add("attachment_inventory")
         marker = database.get("content_marker") if isinstance(database, dict) else None
         database_shape_valid = (isinstance(database, dict) and set(database) == expected_database_keys
                                 and database.get("engine") == "postgresql"
@@ -1872,8 +1951,10 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
                     or not isinstance(marker.get("row_counts"), dict)
                     or set(marker["row_counts"]) != {f"{table}_count" for table in TRACKER_MARKER_TABLES}
                     or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
-                           for count in marker["row_counts"].values())):
+                           for count in marker["row_counts"].values())
+                    or not isinstance(database.get("attachment_inventory"), list)):
                 raise BackupError("encrypted payload database version evidence is invalid")
+            _tracker_attachment_inventory(database["attachment_inventory"])
         elif (not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", database["server_version"])
               or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", database["dump_version"])
               or not isinstance(marker, dict)
