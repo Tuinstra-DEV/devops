@@ -1063,7 +1063,7 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             inputs: list[dict[str, Any]] = []
             before_minio = None
             if app.get("adapter") == TRACKER_ADAPTER:
-                attachment_inventory = database_versions["attachment_inventory"]
+                attachment_inventory = database_versions.pop("attachment_inventory")
 
                 def capture_tracker_objects() -> None:
                     with export_stage("object-inventory"):
@@ -1930,8 +1930,6 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
         expected_database_keys = {
             "engine", "server_version", "dump_version", "dump_format", "service", "content_marker",
         }
-        if internal["adapter"] == TRACKER_ADAPTER:
-            expected_database_keys.add("attachment_inventory")
         marker = database.get("content_marker") if isinstance(database, dict) else None
         database_shape_valid = (isinstance(database, dict) and set(database) == expected_database_keys
                                 and database.get("engine") == "postgresql"
@@ -1951,10 +1949,8 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
                     or not isinstance(marker.get("row_counts"), dict)
                     or set(marker["row_counts"]) != {f"{table}_count" for table in TRACKER_MARKER_TABLES}
                     or any(not isinstance(count, int) or isinstance(count, bool) or count < 0
-                           for count in marker["row_counts"].values())
-                    or not isinstance(database.get("attachment_inventory"), list)):
+                           for count in marker["row_counts"].values())):
                 raise BackupError("encrypted payload database version evidence is invalid")
-            _tracker_attachment_inventory(database["attachment_inventory"])
         elif (not re.fullmatch(r"^15\.[0-9]+(?:\.[0-9]+)?$", database["server_version"])
               or not re.fullmatch(r"^pg_dump \(PostgreSQL\) 15\.[0-9]+(?:\.[0-9]+)?$", database["dump_version"])
               or not isinstance(marker, dict)
