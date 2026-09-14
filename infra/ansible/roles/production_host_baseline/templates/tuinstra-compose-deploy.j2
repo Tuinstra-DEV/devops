@@ -52,6 +52,7 @@ fi
 
 readonly app_root="/var/www/$app"
 readonly compose_file="$app_root/compose.yml"
+readonly env_file="/etc/tuinstra/$app/.env"
 if [[ ! -f "$compose_file" || -L "$compose_file" ]]; then
   echo "root-owned compose definition is not installed" >&2
   exit 66
@@ -70,7 +71,20 @@ for path in "$app_root" "$compose_file"; do
   fi
 done
 
-compose=(/usr/bin/docker compose --project-name "$app" --project-directory "$app_root" --file "$compose_file")
+compose=(/usr/bin/docker compose)
+if [[ -e "$env_file" ]]; then
+  if [[ ! -f "$env_file" || -L "$env_file" || "$(/usr/bin/stat -c '%u' "$env_file")" != 0 ]]; then
+    echo "application env file must be a root-owned regular file" >&2
+    exit 77
+  fi
+  mode="$(/usr/bin/stat -c '%a' "$env_file")"
+  if (( (8#$mode & 0022) != 0 )); then
+    echo "application env file must not be group/world writable" >&2
+    exit 77
+  fi
+  compose+=(--env-file "$env_file")
+fi
+compose+=(--project-name "$app" --project-directory "$app_root" --file "$compose_file")
 "${compose[@]}" config --quiet
 mapfile -t images < <("${compose[@]}" config --images)
 if [[ ${#images[@]} -eq 0 ]]; then
