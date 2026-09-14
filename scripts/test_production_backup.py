@@ -132,6 +132,22 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(calls[-2][-2:], ["php", "worker"])
         self.assertEqual(calls[-1][-2:], ["php", "worker"])
 
+    def test_tracker_quiescence_rejects_running_orphan_service_before_stop(self):
+        app = self.tracker_app()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if "ps" in argv and "--services" in argv:
+                return mock.Mock(stdout=b"php\nclamav\n")
+            return mock.Mock(stdout=("c" * 64 + "\n").encode())
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            with self.assertRaisesRegex(backup.BackupError, "orphan"):
+                with backup.tracker_quiescence(app):
+                    pass
+        self.assertFalse(any("stop" in call for call in calls))
+
     def test_tracker_quiescence_restarts_original_set_after_partial_stop_failure(self):
         app = self.tracker_app()
         calls = []
