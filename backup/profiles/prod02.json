@@ -11,7 +11,7 @@
   "applications": [
     {
       "app_id": "tracker",
-      "enabled": false,
+      "enabled": true,
       "adapter": "tracker-compose-v1",
       "compose_project": "tracker",
       "compose_file": "/var/www/tracker/docker-compose.prod02.json",

@@ -361,6 +361,14 @@ class BackupTests(unittest.TestCase):
             backup.create_export(config, "umami")
         self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
 
+    def test_export_reports_disabled_application_contract_stage(self):
+        config = self.producer()
+        config["applications"][0]["enabled"] = False
+        with self.assertRaisesRegex(backup.BackupError,
+                                    r"source export failed \[stage=application-contract\]"):
+            backup.create_export(config, "umami")
+        self.assertFalse(list(Path(config["spool_dir"]).glob("*.age")))
+
     def test_export_stages_ciphertext_on_spool_filesystem_before_atomic_publication(self):
         config = self.producer()
         spool = Path(config["spool_dir"])

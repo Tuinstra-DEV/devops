@@ -947,8 +947,9 @@ def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
-    host = require_id(config["host_slug"], "host slug")
-    app = application(config, app_id)
+    with export_stage("application-contract"):
+        host = require_id(config["host_slug"], "host slug")
+        app = application(config, app_id)
     if app.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER}:
         raise BackupError("unsupported application adapter")
     spool = Path(config["spool_dir"])

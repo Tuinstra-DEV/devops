@@ -171,6 +171,8 @@ if grep -q 'sha-required' "$repo_root/backup/profiles/prod02.json"; then
   echo 'prod-02 Tracker backup profile must not contain placeholder image digests' >&2
   exit 1
 fi
+grep -q '"app_id": "tracker",[[:space:]]*$' "$repo_root/backup/profiles/prod02.json"
+grep -q '"enabled": true' "$repo_root/backup/profiles/prod02.json"
 grep -q 'ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba' \
   "$repo_root/backup/profiles/prod02.json"
 grep -q 'ghcr.io/tuinstra-dev/tracker@sha256:24768ca0e506acf1ae707f88d6ad6c5c0f66f472917f54f11f13abcfd83147cb' \

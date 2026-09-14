@@ -135,7 +135,7 @@ Alleen een resultaat met `snapshot_id`, `stored_at`, `integrity_checked_at` en
 alleen dat lokaal versleuteld bronmateriaal klaarstaat.
 
 Een mislukte bronexport wordt in de Sanctuary-catalogus als `source_export_failed` vastgelegd met
-een beperkte `stage_code`, bijvoorbeeld `compose-contract`, `runtime-evidence`, `object-inventory`,
+een beperkte `stage_code`, bijvoorbeeld `application-contract`, `compose-contract`, `runtime-evidence`, `object-inventory`,
 `quiescence`, `database-export` of `config-metadata`. De stagecode bevat geen remote fouttekst,
 command-output of geheimen.
 
