@@ -32,6 +32,7 @@ fi
 readonly app_root="/var/www/$app"
 readonly compose_file="$app_root/compose.yml"
 readonly env_file="/etc/tuinstra/$app/.env"
+readonly docker_config_dir="/etc/tuinstra/$app/docker-config"
 if [[ ! -f "$compose_file" || -L "$compose_file" ]]; then
   echo "root-owned compose definition is not installed" >&2
   exit 66
@@ -51,6 +52,30 @@ for path in "$app_root" "$compose_file"; do
 done
 
 compose=(/usr/bin/docker compose)
+if [[ -d "$docker_config_dir" ]]; then
+  if [[ -L "$docker_config_dir" || "$(/usr/bin/stat -c '%u' "$docker_config_dir")" != 0 ]]; then
+    echo "application Docker config directory must be root-owned" >&2
+    exit 77
+  fi
+  mode="$(/usr/bin/stat -c '%a' "$docker_config_dir")"
+  if (( (8#$mode & 0022) != 0 )); then
+    echo "application Docker config directory must not be group/world writable" >&2
+    exit 77
+  fi
+  if [[ -e "$docker_config_dir/config.json" ]]; then
+    if [[ ! -f "$docker_config_dir/config.json" || -L "$docker_config_dir/config.json" ||
+          "$(/usr/bin/stat -c '%u' "$docker_config_dir/config.json")" != 0 ]]; then
+      echo "application Docker config must be a root-owned regular file" >&2
+      exit 77
+    fi
+    mode="$(/usr/bin/stat -c '%a' "$docker_config_dir/config.json")"
+    if (( (8#$mode & 0077) != 0 )); then
+      echo "application Docker config must be private" >&2
+      exit 77
+    fi
+    compose=(/usr/bin/env "DOCKER_CONFIG=$docker_config_dir" /usr/bin/docker compose)
+  fi
+fi
 if [[ -e "$env_file" ]]; then
   if [[ ! -f "$env_file" || -L "$env_file" || "$(/usr/bin/stat -c '%u' "$env_file")" != 0 ]]; then
     echo "application env file must be a root-owned regular file" >&2

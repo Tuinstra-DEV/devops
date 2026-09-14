@@ -15,6 +15,8 @@ grep -q 'every image must be pinned by sha256 digest' "$role/templates/tuinstra-
 grep -q 'application is not allowlisted' "$role/templates/tuinstra-compose-deploy.j2"
 grep -q 'compose+=(--env-file "\$env_file")' "$role/templates/tuinstra-compose-deploy.j2"
 grep -q 'application env file must be a root-owned regular file' "$role/templates/tuinstra-compose-deploy.j2"
+grep -q 'DOCKER_CONFIG=\$docker_config_dir' "$role/templates/tuinstra-compose-deploy.j2"
+grep -q 'application Docker config must be private' "$role/templates/tuinstra-compose-deploy.j2"
 workflow="$repo_root/.github/workflows/reusable-cd-nuxt-ssg.yml"
 grep -q 'name: Deploy application through fixed endpoint' "$workflow"
 grep -q 'deploy@"\$DEPLOY_HOST" "deploy \${{ inputs.service-name }}"' "$workflow"
