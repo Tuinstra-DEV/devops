@@ -734,13 +734,17 @@ def tracker_quiescence(app: dict[str, Any], before_minio: Any = None):
         raise BackupError("Tracker quiescence timeout is invalid") from exc
     if not 1 <= timeout <= 900:
         raise BackupError("Tracker quiescence timeout is invalid")
+    database_service = app.get("postgres_service")
+    if (not isinstance(database_service, str)
+            or not ID_RE.fullmatch(database_service)):
+        raise BackupError("Tracker database service is invalid")
     compose = compose_command(app)
     # Compose's ``stop`` accepts a service list, so first capture the active set.
     # This avoids starting an intentionally stopped worker or one-shot dependency
     # after an otherwise successful export.
     running_services = run([*compose, "ps", "--status", "running", "--services"], timeout=timeout).stdout.decode().splitlines()
     running_services = [service.strip() for service in running_services if service.strip()]
-    if any(service not in services for service in running_services):
+    if any(service not in set(services) | {database_service} for service in running_services):
         raise BackupError("Tracker running orphan service detected")
     active: list[str] = []
     for service in services:

@@ -148,6 +148,24 @@ class BackupTests(unittest.TestCase):
                     pass
         self.assertFalse(any("stop" in call for call in calls))
 
+    def test_tracker_quiescence_keeps_postgres_running_for_database_export(self):
+        app = self.tracker_app()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if "ps" in argv and "--services" in argv:
+                return mock.Mock(stdout=b"php\npostgres\n")
+            if "ps" in argv and "--quiet" in argv:
+                return mock.Mock(stdout=("c" * 64 + "\n").encode() if argv[-1] == "php" else b"")
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            with backup.tracker_quiescence(app):
+                pass
+        stop_calls = [call for call in calls if "stop" in call]
+        self.assertEqual(stop_calls[-1][-1:], ["php"])
+
     def test_tracker_quiescence_restarts_original_set_after_partial_stop_failure(self):
         app = self.tracker_app()
         calls = []
