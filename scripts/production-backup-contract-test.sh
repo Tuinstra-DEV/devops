@@ -167,6 +167,14 @@ if grep -q 'tuinstra-backup ALL=(root)' "$repo_root/scripts/install-sanctuary-ba
 fi
 grep -q '"User=root\\nGroup=root\\nUMask=0077\\n"' "$repo_root/backup/tuinstra_backup.py"
 grep -q '"approved_images"' "$repo_root/backup/profiles/prod01.json"
+if grep -q 'sha-required' "$repo_root/backup/profiles/prod02.json"; then
+  echo 'prod-02 Tracker backup profile must not contain placeholder image digests' >&2
+  exit 1
+fi
+grep -q 'ghcr.io/tuinstra-dev/tracker@sha256:706ff506fc62a5bddfd1b94c176d91be424474454b8ff93ade34b13e5c8b50ba' \
+  "$repo_root/backup/profiles/prod02.json"
+grep -q 'ghcr.io/tuinstra-dev/tracker@sha256:24768ca0e506acf1ae707f88d6ad6c5c0f66f472917f54f11f13abcfd83147cb' \
+  "$repo_root/backup/profiles/prod02.json"
 grep -q '"database": database_versions' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'run-active --host "$host" --app "$app" --trigger manual' \
   "$repo_root/backup/tuinstra-backup-admin"

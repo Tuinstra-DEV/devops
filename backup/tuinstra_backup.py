@@ -50,6 +50,8 @@ TRIGGERS = {"scheduled", "console", "manual"}
 ATTEMPT_STATUSES = {"running", "failed", "succeeded", "uncertain"}
 ERROR_CODES = {None, "backup_failed", "capacity_exhausted", "source_unreachable", "transfer_integrity",
                "source_export_failed", "operation_busy", "policy_invalid", "interrupted"}
+EXPORT_STAGE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+EXPORT_FAILURE_RE = re.compile(r"source export failed \[stage=([a-z][a-z0-9-]{1,31})\]")
 RESTORE_MIN_FREE_BYTES = 512 * 1024 * 1024
 RESTORE_SPACE_MULTIPLIER = 4
 RESTORE_MAX_DURATION_SECONDS = 4 * 60 * 60
@@ -96,6 +98,21 @@ UMAMI_CONTENT_MARKER_SQL = (
 
 class BackupError(RuntimeError):
     pass
+
+
+@contextlib.contextmanager
+def export_stage(stage: str):
+    """Attach a bounded, non-sensitive phase code to source export failures."""
+    if not EXPORT_STAGE_RE.fullmatch(stage):
+        raise BackupError("invalid source export stage")
+    try:
+        yield
+    except BackupError as exc:
+        if EXPORT_FAILURE_RE.search(str(exc)):
+            raise
+        raise BackupError(f"source export failed [stage={stage}]") from exc
+    except Exception as exc:
+        raise BackupError(f"source export failed [stage={stage}]") from exc
 
 
 def now() -> str:
@@ -478,6 +495,10 @@ def run(argv: list[str], *, stdin: BinaryIO | None = None, stdout: BinaryIO | No
                               stderr=subprocess.PIPE, env=env, timeout=timeout, check=True)
     except subprocess.CalledProcessError as exc:
         if Path(argv[0]).name == "ssh":
+            stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else ""
+            match = EXPORT_FAILURE_RE.search(stderr)
+            if match:
+                raise BackupError(f"source export failed [stage={match.group(1)}]") from exc
             failure = "source unreachable" if exc.returncode == 255 else "source export failed"
             raise BackupError(failure) from exc
         raise BackupError(f"external command failed: {Path(argv[0]).name}") from exc
@@ -952,42 +973,48 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             root = Path(temporary)
             payload = root / "payload"
             payload.mkdir(mode=0o700)
-            compose = compose_command(app)
-            actual_images = running_compose_images(app)
-            database_versions = postgres_versions(app)
+            with export_stage("compose-contract"):
+                compose = compose_command(app)
+                actual_images = running_compose_images(app)
+            with export_stage("runtime-evidence"):
+                database_versions = postgres_versions(app)
             inputs: list[dict[str, Any]] = []
             before_minio = None
             if app.get("adapter") == TRACKER_ADAPTER:
                 expected_attachment_count = database_versions["content_marker"]["row_counts"]["attachment_count"]
 
                 def capture_tracker_objects() -> None:
-                    inputs.append(tracker_object_manifest(app, payload, expected_attachment_count))
+                    with export_stage("object-inventory"):
+                        inputs.append(tracker_object_manifest(app, payload, expected_attachment_count))
 
                 before_minio = capture_tracker_objects
-            quiesce = (tracker_quiescence(app, before_minio=before_minio)
-                       if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
-            with quiesce:
-                database_dump = payload / "database.dump"
-                dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
-                    'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
-                with database_dump.open("xb") as handle:
-                    run(dump_command, stdout=handle)
-                os.chmod(database_dump, 0o600)
-                if database_dump.stat().st_size == 0:
-                    raise BackupError("database export is empty")
-                inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
-                                  "bytes": database_dump.stat().st_size})
-                for item in app["included_files"]:
-                    logical = require_id(item["name"], "input name")
-                    copied = copy_regular(Path(item["path"]), payload / "files" / logical)
-                    copied["name"] = f"files/{logical}"
-                    inputs.append(copied)
-                for item in app.get("included_directories", []):
-                    logical = require_id(item["name"], "directory input name")
-                    snapshot = payload / "files" / f"{logical}.tar"
-                    snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
-                    inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
-                                   "bytes": snapshot.stat().st_size})
+            with export_stage("quiescence"):
+                quiesce = (tracker_quiescence(app, before_minio=before_minio)
+                           if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
+                with quiesce:
+                    with export_stage("database-export"):
+                        database_dump = payload / "database.dump"
+                        dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
+                            'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
+                        with database_dump.open("xb") as handle:
+                            run(dump_command, stdout=handle)
+                        os.chmod(database_dump, 0o600)
+                        if database_dump.stat().st_size == 0:
+                            raise BackupError("database export is empty")
+                        inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
+                                          "bytes": database_dump.stat().st_size})
+                    with export_stage("config-metadata"):
+                        for item in app["included_files"]:
+                            logical = require_id(item["name"], "input name")
+                            copied = copy_regular(Path(item["path"]), payload / "files" / logical)
+                            copied["name"] = f"files/{logical}"
+                            inputs.append(copied)
+                        for item in app.get("included_directories", []):
+                            logical = require_id(item["name"], "directory input name")
+                            snapshot = payload / "files" / f"{logical}.tar"
+                            snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
+                            inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
+                                           "bytes": snapshot.stat().st_size})
             internal = {
                 "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
                 "host_slug": host, "app_id": app_id, "adapter": app["adapter"],
@@ -1288,10 +1315,13 @@ def require_trigger(trigger: str) -> str:
 
 def validate_attempt(attempt: dict[str, Any]) -> None:
     keys = {"run_id", "trigger", "started_at", "finished_at", "status", "error_code"}
-    if set(attempt) != keys:
+    if set(attempt) != keys and set(attempt) != keys | {"stage_code"}:
         raise BackupError("backup attempt schema is invalid")
     require_artifact(attempt.get("run_id", ""))
     require_trigger(attempt.get("trigger", ""))
+    if (attempt.get("stage_code") is not None
+            and not EXPORT_STAGE_RE.fullmatch(attempt["stage_code"])):
+        raise BackupError("backup attempt stage code is invalid")
     if (attempt.get("status") not in ATTEMPT_STATUSES or attempt.get("error_code") not in ERROR_CODES
             or not isinstance(attempt.get("started_at"), str) or not attempt["started_at"].endswith("Z")):
         raise BackupError("backup attempt evidence is invalid")
@@ -1308,17 +1338,21 @@ def attempt_start(config: dict[str, Any], host_slug: str, app_id: str, trigger: 
     assert_allowlisted_target(config, host_slug, app_id)
     value = load_catalog(config, host_slug, app_id)
     attempt = {"run_id": str(uuid.uuid4()), "trigger": require_trigger(trigger), "started_at": now(),
-               "finished_at": None, "status": "running", "error_code": None}
+               "finished_at": None, "status": "running", "error_code": None, "stage_code": None}
     value["latest_attempt"] = attempt
     write_catalog(config, value)
     return attempt
 
 
 def attempt_finish(config: dict[str, Any], host_slug: str, app_id: str, run_id: str,
-                   status: str, error_code: str | None) -> dict[str, Any]:
+                   status: str, error_code: str | None, stage_code: str | None = None) -> dict[str, Any]:
     require_artifact(run_id)
     if status not in {"failed", "succeeded", "uncertain"} or error_code not in ERROR_CODES:
         raise BackupError("invalid backup attempt result")
+    if stage_code is not None and not EXPORT_STAGE_RE.fullmatch(stage_code):
+        raise BackupError("invalid backup attempt stage code")
+    if status == "succeeded" and stage_code is not None:
+        raise BackupError("successful backup attempt has a failure stage")
     if (status == "succeeded") != (error_code is None):
         raise BackupError("backup attempt status and error code disagree")
     value = load_catalog(config, host_slug, app_id)
@@ -1331,7 +1365,8 @@ def attempt_finish(config: dict[str, Any], host_slug: str, app_id: str, run_id: 
                    and point.get("app_id") == app_id and point.get("integrity_coverage") == "full-repository-data"]
         if len(durable) != 1:
             raise BackupError("successful backup attempt lacks exact durable snapshot evidence")
-    attempt.update({"finished_at": now(), "status": status, "error_code": error_code})
+    attempt.update({"finished_at": now(), "status": status, "error_code": error_code,
+                    "stage_code": stage_code})
     write_catalog(config, value)
     return attempt
 
@@ -1686,10 +1721,15 @@ def cycle(config: dict[str, Any], host_slug: str, app_id: str, policy_version: s
                 raise BackupError("export did not reach durable checked storage")
             result = matches[0]
         except Exception as exc:
-            attempt_finish(config, host_slug, app_id, run_id, "failed", failure_code(exc))
+            attempt_finish(config, host_slug, app_id, run_id, "failed", failure_code(exc), failure_stage(exc))
             raise
         attempt_finish(config, host_slug, app_id, run_id, "succeeded", None)
         return {**result, "run_id": run_id, "trigger": trigger}
+
+
+def failure_stage(exc: Exception) -> str | None:
+    match = EXPORT_FAILURE_RE.search(str(exc))
+    return match.group(1) if match else None
 
 
 def failure_code(exc: Exception) -> str:
