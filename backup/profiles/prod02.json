@@ -21,7 +21,7 @@
       "postgres_service": "postgres",
       "application_service": "php",
       "runtime_image_services": ["postgres", "php", "php-mcp", "worker", "catalog-worker", "release-evidence-worker", "nginx", "minio"],
-      "quiesce_services": ["php", "php-mcp", "worker", "catalog-worker", "release-evidence-worker", "nginx", "minio"],
+      "quiesce_services": ["php", "php-mcp", "worker", "catalog-worker", "release-evidence-worker", "nginx", "minio", "clamav"],
       "quiesce_timeout_seconds": 120,
       "approved_images": {
         "postgres": "docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
