@@ -7,6 +7,7 @@ fail() {
 }
 
 required_paths=(
+  ".github/workflows/reusable-cd-restricted-deploy.yml"
   ".github/workflows/reusable-browser-quality.yml"
   ".github/workflows/reusable-ci-docker.yml"
   ".github/workflows/reusable-release-image.yml"
@@ -20,6 +21,18 @@ required_paths=(
 for path in "${required_paths[@]}"; do
   [[ -f "$path" ]] || fail "missing $path"
 done
+
+vite_workflow=".github/workflows/reusable-cd-vite-spa.yml"
+restricted_workflow=".github/workflows/reusable-cd-restricted-deploy.yml"
+grep -Fq 'publish_only:' "$vite_workflow" || fail "Vite publish-only mode missing"
+grep -Fq 'if: ${{ !inputs.publish_only }}' "$vite_workflow" || fail "Vite legacy deploy is not skipped in publish-only mode"
+grep -Fq "value: \${{ jobs['build-scan-push'].outputs['image-digest'] }}" "$vite_workflow" || fail "Vite digest output missing"
+grep -Fq "\${{ !inputs.publish_only && format('{0}:latest', inputs.image-name) || '' }}" "$vite_workflow" || fail "Vite publish-only mode must leave latest untouched"
+grep -Fq 'DEPLOY_KNOWN_HOSTS:' "$restricted_workflow" || fail "pinned restricted host key secret missing"
+grep -Fq 'deploy@"$DEPLOY_HOST" "deploy $APPLICATION"' "$restricted_workflow" || fail "fixed deploy endpoint missing"
+if grep -Eq 'scp|bash -s|ssh-keyscan|mtuinstra|sudo|secrets: inherit' "$restricted_workflow"; then
+  fail "restricted deploy route includes a forbidden command or credential"
+fi
 
 ruby -e '
   require "yaml"

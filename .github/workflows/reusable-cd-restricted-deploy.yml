@@ -1,0 +1,60 @@
+name: Reusable CD Restricted Deploy
+
+on:
+  workflow_call:
+    inputs:
+      application-name:
+        description: Existing allowlisted DevOps application name.
+        required: true
+        type: string
+      environment:
+        description: GitHub Environment containing the pinned production host.
+        required: true
+        type: string
+    secrets:
+      DEPLOY_SSH_PRIVATE_KEY:
+        description: Dedicated deploy-user private key for the target production host.
+        required: true
+      DEPLOY_KNOWN_HOSTS:
+        description: Pinned SSH host key for the target production host.
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Configure pinned restricted SSH endpoint
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.PROD_HOST }}
+          APPLICATION: ${{ inputs.application-name }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          test -n "$DEPLOY_HOST"
+          [[ "$APPLICATION" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || {
+            echo "application-name must be a safe application identifier." >&2
+            exit 1
+          }
+          [[ "$KNOWN_HOSTS" == "$DEPLOY_HOST "* ]] || {
+            echo "Pinned host key does not match PROD_HOST." >&2
+            exit 1
+          }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Deploy application through fixed endpoint
+        env:
+          DEPLOY_HOST: ${{ vars.PROD_HOST }}
+          APPLICATION: ${{ inputs.application-name }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy@"$DEPLOY_HOST" "deploy $APPLICATION"

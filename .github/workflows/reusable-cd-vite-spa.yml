@@ -10,6 +10,11 @@ on:
         description: "Newline-separated Docker build args containing secrets (e.g. VITE_API_KEY=secret-value). These are merged with build-args and environment variables."
         required: false
     inputs:
+      publish_only:
+        description: Build, scan and publish an immutable image without contacting a deployment host.
+        required: false
+        default: false
+        type: boolean
       service-name:
         description: Docker Compose service name on target host
         required: true
@@ -49,11 +54,13 @@ on:
         type: string
       remote-path:
         description: Deploy path on target host containing compose file
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-user:
         description: SSH user for deploy host
-        required: true
+        required: false
+        default: ""
         type: string
       ssh-port:
         description: SSH port
@@ -85,6 +92,13 @@ on:
         required: false
         default: false
         type: boolean
+    outputs:
+      image-ref:
+        description: Published immutable image reference.
+        value: ${{ jobs['build-scan-push'].outputs['image-ref'] }}
+      image-digest:
+        description: Published SHA-256 manifest digest.
+        value: ${{ jobs['build-scan-push'].outputs['image-digest'] }}
 
 jobs:
   build-scan-push:
@@ -100,6 +114,7 @@ jobs:
         working-directory: ${{ inputs.workdir }}
     outputs:
       image-ref: ${{ steps.image.outputs.image_ref }}
+      image-digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -200,7 +215,7 @@ jobs:
           push: true
           tags: |
             ${{ inputs.image-name }}:${{ github.sha }}
-            ${{ inputs.image-name }}:latest
+            ${{ !inputs.publish_only && format('{0}:latest', inputs.image-name) || '' }}
           build-args: ${{ steps.resolve-args.outputs.args }}
 
       - name: Prepare immutable image reference
@@ -211,6 +226,7 @@ jobs:
           echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
 
   deploy:
+    if: ${{ !inputs.publish_only }}
     runs-on: ubuntu-latest
     needs: build-scan-push
     environment: ${{ inputs.environment }}
