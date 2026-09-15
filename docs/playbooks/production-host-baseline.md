@@ -25,10 +25,14 @@ beoordeelde domeinroutes.
 - Secrets staan in `/etc/tuinstra/<app>` met modus `0700`; duurzame data staat
   in `/var/lib/tuinstra/<app>`.
 
-De deploysleutel accepteert alleen `status <app>` en `deploy <app>`. De
-root-owned helper weigert onbekende apps, ontbrekende of schrijfbare
-Compose-definities en images zonder `@sha256:<digest>`. Verwijs vanuit een
-geprivilegieerde Compose-definitie nooit naar bestanden die `deploy` kan wijzigen.
+De deploysleutel accepteert `status <app>` en `deploy <app>`. Alleen op prod02
+accepteert hij daarnaast `deploy tracker <source-sha> <php-digest> <nginx-digest>`:
+alle identiteiten zijn exact gevalideerd en de bestaande beperkte sudo-route
+dispatcht uitsluitend naar de root-owned Tracker-bridge. Er komt geen nieuwe
+sudoers-regel of algemene shellroute bij. De generieke helper weigert onbekende
+apps, ontbrekende of schrijfbare Compose-definities en images zonder
+`@sha256:<digest>`. Verwijs vanuit een geprivilegieerde Compose-definitie nooit
+naar bestanden die `deploy` kan wijzigen.
 
 ## Voorbereiding
 

@@ -9,11 +9,27 @@ if [[ -z "$original_command" || "$original_command" == *$'\n'* || "$original_com
 fi
 
 read -r -a command_parts <<< "$original_command"
-if [[ ${#command_parts[@]} -ne 2 ]]; then
-  echo "usage: status|deploy <application>" >&2
-  exit 64
-fi
-
-exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \
-  "${command_parts[0]}" "${command_parts[1]}"
+case ${#command_parts[@]} in
+  2)
+    exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \
+      "${command_parts[0]}" "${command_parts[1]}"
+    ;;
+  5)
+    # Only Tracker on prod02 may carry validated release identity to its
+    # root-owned bridge. The generic endpoint still rejects all other forms.
+    if [[ "${command_parts[0]}" != deploy || "${command_parts[1]}" != tracker ||
+          ! "${command_parts[2]}" =~ ^[0-9a-f]{40}$ ||
+          ! "${command_parts[3]}" =~ ^sha256:[0-9a-f]{64}$ ||
+          ! "${command_parts[4]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "usage: deploy tracker SOURCE_SHA PHP_DIGEST NGINX_DIGEST" >&2
+      exit 64
+    fi
+    exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \
+      "${command_parts[@]}"
+    ;;
+  *)
+    echo "usage: status|deploy <application>" >&2
+    exit 64
+    ;;
+esac
 {% endraw %}

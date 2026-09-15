@@ -6,8 +6,8 @@ readonly allowed_apps=({% for app in production_app_names %}{{ app | quote }} {%
 readonly production_host={{ ansible_hostname | quote }}
 {% raw %}
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: tuinstra-compose-deploy status|deploy <application>" >&2
+if [[ $# -ne 2 && $# -ne 5 ]]; then
+  echo "usage: tuinstra-compose-deploy status|deploy <application> or deploy tracker SOURCE_SHA PHP_DIGEST NGINX_DIGEST" >&2
   exit 64
 fi
 
@@ -28,6 +28,33 @@ done
 if [[ "$allowed" != true ]]; then
   echo "application is not allowlisted" >&2
   exit 64
+fi
+
+if [[ $# -eq 5 ]]; then
+  if [[ "$action" != deploy || "$app" != tracker ||
+        "$production_host" != tuinstra-prod-02 ]]; then
+    echo "Tracker restricted bridge is available only on prod02" >&2
+    exit 64
+  fi
+  if [[ ! "$3" =~ ^[0-9a-f]{40}$ ||
+        ! "$4" =~ ^sha256:[0-9a-f]{64}$ ||
+        ! "$5" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "tracker release identity is invalid" >&2
+    exit 64
+  fi
+  readonly tracker_bridge=/usr/local/sbin/tuinstra-tracker-deploy
+  if [[ -L "$tracker_bridge" || ! -f "$tracker_bridge" ||
+        ! -x "$tracker_bridge" ||
+        "$(/usr/bin/stat -c '%u' "$tracker_bridge")" != 0 ]]; then
+    echo "root-owned Tracker bridge is unavailable" >&2
+    exit 77
+  fi
+  bridge_mode="$(/usr/bin/stat -c '%a' "$tracker_bridge")"
+  if (( (8#$bridge_mode & 0022) != 0 )); then
+    echo "Tracker bridge must not be group/world writable" >&2
+    exit 77
+  fi
+  exec "$tracker_bridge" "$@"
 fi
 
 if [[ "$action" == deploy ]]; then

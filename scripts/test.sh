@@ -50,6 +50,7 @@ fi
 echo "test passed"
 
 ./scripts/production-host-baseline-test.sh
+node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
 ./scripts/production-umami-test.sh
