@@ -47,7 +47,22 @@ assert_absent 'UMask=0077' runner/host-helper/ci_runner_host_helper.py
 grep -q 'systemctl start --no-block ci-runner-job.service' runner/host-helper/ci_runner_host_helper.py
 grep -q -- '- \[/usr/local/sbin/ci-runner-prepare-docker\]' runner/host-helper/ci_runner_host_helper.py
 assert_absent '\[systemctl, start, --no-block, ci-runner-job.service\]' runner/host-helper/ci_runner_host_helper.py
-grep -q "path: /mnt/ssd1000-01/ci-runner, owner: root, group: kvm, mode: '0710'" infra/ansible/roles/runner_host/tasks/main.yml
+grep -q '^runner_overlay_root: /var/lib/ci-runner/overlay$' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q '^runner_overlay_mount_source: /dev/mapper/ubuntu--vg-ubuntu--lv$' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q "runner_overlay_mount_source == '/dev/mapper/ubuntu--vg-ubuntu--lv'" infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'path: "{{ runner_overlay_root }}", owner: root, group: kvm, mode:' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'follow: false' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'runner_overlay_mount_source_actual.stdout | trim == runner_overlay_mount_source' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q "runner_overlay_mount_target_actual.stdout | trim == '/'" infra/ansible/roles/runner_host/tasks/main.yml
+assert_absent '/mnt/ssd1000-01/ci-runner' runner/host-helper/ci_runner_host_helper.py
+assert_absent '/mnt/ssd1000-01/ci-runner' runner/manager/ci_runner_manager.py
+grep -q '^RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"$' runner/manager/ci_runner_manager.py
+assert_absent '/mnt/ssd1000-01/ci-runner' runner/config/manager.toml
+assert_absent '/mnt/ssd1000-01/ci-runner' runner/systemd/ci-runner-host-helper@.service
+assert_absent '/mnt/ssd1000-01/ci-runner' infra/ansible/roles/runner_host/tasks/main.yml
+assert_absent '/mnt/ssd1000-01/ci-runner' infra/ansible/roles/runner_host/templates/manager.toml.j2
+
+
 grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
 grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra/ansible/roles/runner_host/tasks/main.yml

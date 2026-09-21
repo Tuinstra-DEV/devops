@@ -32,12 +32,14 @@
       - runner_kvm_device.stat.ischr
     fail_msg: /dev/kvm is required; enable virtualization before provisioning.
 
-- name: Require dedicated runner filesystems
+- name: Require the reviewed runner storage contract
   ansible.builtin.assert:
     that:
-      - "'/mnt/ssd1000-01' in (ansible_mounts | map(attribute='mount') | list)"
       - "'/mnt/hdd1000-01' in (ansible_mounts | map(attribute='mount') | list)"
-    fail_msg: Refusing to place overlays or audit logs on the host root filesystem.
+      - runner_overlay_root == '/var/lib/ci-runner/overlay'
+      - runner_overlay_mount_source == '/dev/mapper/ubuntu--vg-ubuntu--lv'
+      - (ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='device') | first) == runner_overlay_mount_source
+    fail_msg: Runner overlays must use the reviewed main NVMe root and audit logs must use the dedicated HDD.
 
 - name: Install virtualization and policy packages
   ansible.builtin.apt:
@@ -71,8 +73,47 @@
     - { path: /usr/local/libexec, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/ci-runner/images, owner: root, group: root, mode: '0755' }
     - { path: /var/lib/ci-runner-manager/state, owner: ci-runner-manager, group: ci-runner-manager, mode: '0700' }
-    - { path: /mnt/ssd1000-01/ci-runner, owner: root, group: kvm, mode: '0710' }
+    - { path: "{{ runner_overlay_root }}", owner: root, group: kvm, mode: '0710' }
     - { path: /mnt/hdd1000-01/ci-audit, owner: ci-runner-manager, group: ci-runner-manager, mode: '0750' }
+
+- name: Inspect the runner overlay root without following links
+  ansible.builtin.stat:
+    path: "{{ runner_overlay_root }}"
+    follow: false
+  register: runner_overlay_root_stat
+
+- name: Resolve the runner overlay filesystem source
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --target
+      - "{{ runner_overlay_root }}"
+  changed_when: false
+  register: runner_overlay_mount_source_actual
+
+- name: Resolve the runner overlay filesystem target
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - TARGET
+      - --target
+      - "{{ runner_overlay_root }}"
+  changed_when: false
+  register: runner_overlay_mount_target_actual
+
+- name: Require the overlay root to resolve directly to the reviewed main NVMe
+  ansible.builtin.assert:
+    that:
+      - runner_overlay_root_stat.stat.isdir
+      - not runner_overlay_root_stat.stat.islnk
+      - runner_overlay_mount_source_actual.stdout | trim == runner_overlay_mount_source
+      - runner_overlay_mount_target_actual.stdout | trim == '/'
+    fail_msg: Runner overlays must resolve directly to the reviewed main NVMe root; links, bind mounts, and separate filesystems are refused.
 
 - name: Inspect root-provisioned GitHub credential
   ansible.builtin.stat:
@@ -115,7 +156,7 @@
 
 - name: Inspect runner overlay directory before image activation
   ansible.builtin.find:
-    paths: /mnt/ssd1000-01/ci-runner
+    paths: "{{ runner_overlay_root }}"
     file_type: any
     hidden: true
     recurse: false
