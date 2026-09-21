@@ -16,7 +16,7 @@ github_api_url = "https://api.github.com"
 allowed_owner = "Tuinstra-DEV"
 repositories = [
   "Tuinstra-DEV/gate",
-  "Tuinstra-DEV/WODIQ",
+  "Tuinstra-DEV/wodiq-app",
   "Tuinstra-DEV/tracker",
   "Tuinstra-DEV/notify",
   "Tuinstra-DEV/console",
