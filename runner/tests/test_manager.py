@@ -7,6 +7,7 @@ from unittest import mock
 import json
 import io
 import subprocess
+import threading
 import urllib.error
 import email.message
 
@@ -337,6 +338,37 @@ class ManagerTests(unittest.TestCase):
             self.assertTrue(
                 manager.DispatchHistory(cfg["state_dir"]).contains("Tuinstra-DEV/gate:20", 1001)
             )
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(manager, "capacity_errors", return_value=[])
+    @mock.patch.object(manager, "helper")
+    def test_dispatch_launch_activates_durable_jit_claim_for_24_hours(
+            self, helper, _capacity, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            manager.StateStore(cfg["state_dir"])
+            history = manager.DispatchHistory(cfg["state_dir"])
+            history.quarantine("Tuinstra-DEV/gate:20", 999)
+            helper.side_effect = [mock.Mock(stdout=b"{}"), mock.Mock()]
+
+            manager.launch(
+                cfg,
+                "gh-20",
+                base64.b64encode(b"opaque"),
+                metadata={
+                    "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                    "run_id": 10, "job_id": 20,
+                },
+                dispatch_history_key="Tuinstra-DEV/gate:20",
+                dispatch_history_claimed=True,
+            )
+
+            self.assertEqual(
+                manager.StateStore(cfg["state_dir"]).leases()[0]["dispatch_attempts"], 1
+            )
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1001))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 87400))
 
     @mock.patch.object(manager.time, "time", return_value=1000)
     @mock.patch.object(manager, "capacity_errors", return_value=[])
@@ -1009,6 +1041,55 @@ class ManagerTests(unittest.TestCase):
                     "Tuinstra-DEV/gate:20", 1001
                 )
             )
+
+    @mock.patch.object(manager, "launch")
+    def test_concurrent_dispatchers_make_only_one_jit_post(self, launch):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entered_post = threading.Event()
+            release_post = threading.Event()
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+
+            def generate_jit(*_args):
+                entered_post.set()
+                self.assertTrue(release_post.wait(timeout=2))
+                return {
+                    "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                    "runner": {"id": 30},
+                }
+
+            client.generate_jit.side_effect = generate_jit
+            cfg = {
+                "state_dir": root / "state",
+                "lock_file": root / "manager.lock",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+            first_result = []
+            first_error = []
+
+            def first_dispatch():
+                try:
+                    first_result.append(manager.dispatch_once(cfg, client))
+                except Exception as exc:  # pragma: no cover - asserted below
+                    first_error.append(exc)
+
+            thread = threading.Thread(target=first_dispatch)
+            thread.start()
+            self.assertTrue(entered_post.wait(timeout=2))
+
+            self.assertFalse(manager.dispatch_once(cfg, client))
+            release_post.set()
+            thread.join(timeout=2)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(first_error, [])
+            self.assertEqual(first_result, [True])
+            client.generate_jit.assert_called_once()
+            launch.assert_called_once()
 
     def test_malformed_jit_cleanup_failure_is_durable(self):
         with tempfile.TemporaryDirectory() as directory:

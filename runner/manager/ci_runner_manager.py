@@ -31,6 +31,7 @@ HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
+DISPATCH_HISTORY_SECONDS = 86400
 DISPATCH_QUARANTINE_UNTIL = (1 << 63) - 1
 ASSIGNMENT_RUNS_PER_STATUS = 10
 HELPER_HEADER_MAX = 4096
@@ -367,7 +368,10 @@ class DispatchHistory:
             if item == key or entry["blocked_until"] > now
         }
         attempts = values.get(key, {}).get("attempts", 0) + 1
-        values[key] = {"blocked_until": now + 86400, "attempts": attempts}
+        values[key] = {
+            "blocked_until": now + DISPATCH_HISTORY_SECONDS,
+            "attempts": attempts,
+        }
         self.write(values)
         return attempts
 
@@ -390,6 +394,15 @@ class DispatchHistory:
             if item != key and entry["blocked_until"] > now
         }
         self.write(values)
+
+    def activate_claim(self, key: str, now: int) -> int:
+        values = self.load()
+        entry = values.get(key)
+        if entry is None or entry["blocked_until"] != DISPATCH_QUARANTINE_UNTIL:
+            raise RunnerError("dispatch target has no durable JIT claim")
+        entry["blocked_until"] = now + DISPATCH_HISTORY_SECONDS
+        self.write(values)
+        return entry["attempts"]
 
     def retry_after_cooldown(self, key: str, now: int, attempts_hint: int = 1) -> int:
         values = self.load()
@@ -828,7 +841,9 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         store.write(lease, state)
         if dispatch_history_key is not None:
             if dispatch_history_claimed:
-                state["dispatch_attempts"] = history.load()[dispatch_history_key]["attempts"]
+                state["dispatch_attempts"] = history.activate_claim(
+                    dispatch_history_key, now
+                )
             else:
                 state["dispatch_attempts"] = history.add(dispatch_history_key, now)
             store.write(lease, state)
@@ -1130,7 +1145,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
         return False
     now = int(time.time())
     history = DispatchHistory(Path(cfg["state_dir"]))
-    pending_dispatches = store.pending_dispatch_keys()
+    lifecycle_lock = Path(
+        cfg.get("lock_file", Path(cfg["state_dir"]) / ".dispatch.lock")
+    )
     label = str(cfg.get("runner_label", "trusted-heavy"))
     launched = 0
     for repo in validate_repositories(cfg):
@@ -1140,15 +1157,17 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
             if launched >= available_slots:
                 break
             key = f"{repo}:{job['job_id']}"
-            if key in pending_dispatches or history.contains(key, now):
-                continue
-            history.quarantine(key, now)
+            with with_lock(lifecycle_lock):
+                if key in store.pending_dispatch_keys() or history.contains(key, now):
+                    continue
+                history.quarantine(key, now)
             try:
                 response = client.generate_jit(
                     repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label
                 )
             except RateLimited:
-                history.remove(key, now)
+                with with_lock(lifecycle_lock):
+                    history.remove(key, now)
                 raise
             except RunnerError:
                 LOG.error(
