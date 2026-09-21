@@ -58,6 +58,34 @@ must not exist. The helper socket must be owned by `ci-runner-manager`, mode
 `0600`, and the broker must reject every other peer UID. Do not weaken this
 boundary to a group-writable socket or a wildcard sudo rule.
 
+### GitHub JIT redirect canary
+
+Deploy runner-manager transport changes only after the host has no active lease,
+`sanctuary-ci-*` domain, overlay, or seed. Run the Ansible role from the exact
+reviewed commit, then queue one `trusted-heavy` canary. A valid GitHub JIT 307 or
+308 may be followed once only when it remains on the configured HTTPS origin and
+resolves to the same repository endpoint or GitHub's numeric canonical
+repository endpoint. The manager rejects every other redirect without replaying
+the POST.
+
+Record the commit, deployment result, canary job and timestamps. Evidence must
+show exactly one `sanctuary-*` runner and VM, successful job assignment, and
+removal of the GitHub runner record, lease, overlay and seed. The only redirect
+log allowed is the status plus the fixed `target=same-origin` decision; never
+record `Location`, `Authorization`, the request body or `encoded_jit_config`.
+
+For DEV-42, the production gate is both PHP-consuming lanes of Tracker PR #256.
+They must retain their required check names, `trusted-heavy` routing and
+read-only package permissions. Do not accept a local mock as production
+evidence.
+
+Roll back when redirect or API errors repeat, no VM appears within two manager
+poll cycles, more than one runner record is created, or cleanup leaves any
+runner, lease, overlay or seed behind. Drain admission, create a normal revert
+commit for the runner-manager change, apply the same Ansible role from that
+reviewed revert, and re-run the host health checks. Do not amend, move a tag,
+force-push, restore an unreviewed binary, or delete state to hide an orphan.
+
 Launch two non-production canaries and verify: exact `trusted-heavy` routing;
 4 vCPU, 6,144 MiB RAM and 120 GiB disk per guest; rejection of a third launch;
 public GitHub reachability while host, private and production ranges are

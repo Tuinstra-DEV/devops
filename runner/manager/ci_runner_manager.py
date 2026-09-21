@@ -31,6 +31,8 @@ HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
+DISPATCH_HISTORY_SECONDS = 86400
+DISPATCH_QUARANTINE_UNTIL = (1 << 63) - 1
 ASSIGNMENT_RUNS_PER_STATUS = 10
 HELPER_HEADER_MAX = 4096
 HELPER_RESPONSE_MAX = 65536
@@ -41,6 +43,14 @@ HELPER_MUTATION_TIMEOUT_SECONDS = 330
 MAX_CONCURRENCY = 2
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
+JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
+REPOSITORY_JIT_ENDPOINT_RE = re.compile(
+    r"^/repos/([^/]+)/([^/]+)/actions/runners/generate-jitconfig$"
+)
+CANONICAL_JIT_ENDPOINT_RE = re.compile(
+    r"^/repositories/([1-9][0-9]{0,18})/actions/runners/generate-jitconfig$"
+)
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 class RunnerError(RuntimeError):
@@ -55,6 +65,21 @@ class RateLimited(RunnerError):
 
 class NotFound(RunnerError):
     pass
+
+
+class RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Expose redirects to the caller so POST policy is explicit and testable."""
+
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int,
+                         msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(RejectRedirectHandler())
+
+
+def open_url(request: urllib.request.Request, timeout: int = 20) -> Any:
+    return NO_REDIRECT_OPENER.open(request, timeout=timeout)
 
 
 def trigger_job_id(state: dict[str, Any]) -> int | None:
@@ -343,9 +368,41 @@ class DispatchHistory:
             if item == key or entry["blocked_until"] > now
         }
         attempts = values.get(key, {}).get("attempts", 0) + 1
-        values[key] = {"blocked_until": now + 86400, "attempts": attempts}
+        values[key] = {
+            "blocked_until": now + DISPATCH_HISTORY_SECONDS,
+            "attempts": attempts,
+        }
         self.write(values)
         return attempts
+
+    def quarantine(self, key: str, now: int) -> int:
+        values = {
+            item: entry for item, entry in self.load().items()
+            if item == key or entry["blocked_until"] > now
+        }
+        attempts = values.get(key, {}).get("attempts", 0) + 1
+        values[key] = {
+            "blocked_until": DISPATCH_QUARANTINE_UNTIL,
+            "attempts": attempts,
+        }
+        self.write(values)
+        return attempts
+
+    def remove(self, key: str, now: int) -> None:
+        values = {
+            item: entry for item, entry in self.load().items()
+            if item != key and entry["blocked_until"] > now
+        }
+        self.write(values)
+
+    def activate_claim(self, key: str, now: int) -> int:
+        values = self.load()
+        entry = values.get(key)
+        if entry is None or entry["blocked_until"] != DISPATCH_QUARANTINE_UNTIL:
+            raise RunnerError("dispatch target has no durable JIT claim")
+        entry["blocked_until"] = now + DISPATCH_HISTORY_SECONDS
+        self.write(values)
+        return entry["attempts"]
 
     def retry_after_cooldown(self, key: str, now: int, attempts_hint: int = 1) -> int:
         values = self.load()
@@ -366,32 +423,182 @@ class GitHubClient:
     def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
         if not token or "\n" in token:
             raise RunnerError("invalid GitHub credential")
+        parsed_api_url = urllib.parse.urlsplit(api_url.rstrip("/"))
+        try:
+            parsed_api_url.port
+        except ValueError as exc:
+            raise RunnerError("invalid GitHub API URL") from exc
+        if (
+                parsed_api_url.scheme.lower() != "https"
+                or not parsed_api_url.hostname
+                or parsed_api_url.username is not None
+                or parsed_api_url.password is not None
+                or parsed_api_url.query
+                or parsed_api_url.fragment
+        ):
+            raise RunnerError("invalid GitHub API URL")
         self._token = token
         self._api_url = api_url.rstrip("/")
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self._token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "sanctuary-ci-manager",
+        }
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
             self._api_url + path, method=method, data=data,
-            headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {self._token}",
-                     "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sanctuary-ci-manager"},
+            headers=headers,
         )
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with open_url(request, timeout=20) as response:
                 raw = response.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise NotFound("GitHub resource was already removed") from exc
-            remaining = exc.headers.get("X-RateLimit-Remaining")
-            if exc.code == 429 or (exc.code == 403 and (exc.headers.get("Retry-After") or remaining == "0")):
-                retry = exc.headers.get("Retry-After")
-                reset = exc.headers.get("X-RateLimit-Reset")
-                delay = int(retry) if retry and retry.isdigit() else max(5, int(reset) - int(time.time()) if reset and reset.isdigit() else 60)
-                raise RateLimited(delay) from exc
-            raise RunnerError(f"GitHub API returned HTTP {exc.code}") from exc
+            if exc.code in REDIRECT_STATUS_CODES:
+                try:
+                    redirected_request = self._validated_jit_redirect(request, exc)
+                finally:
+                    exc.close()
+                LOG.info(
+                    "following validated GitHub JIT redirect status=%s target=same-origin",
+                    exc.code,
+                )
+                try:
+                    with open_url(redirected_request, timeout=20) as response:
+                        raw = response.read()
+                        return json.loads(raw) if raw else None
+                except urllib.error.HTTPError as redirected_exc:
+                    if redirected_exc.code in REDIRECT_STATUS_CODES:
+                        try:
+                            raise RunnerError(
+                                "GitHub JIT redirect exceeded the one-hop limit"
+                            ) from redirected_exc
+                        finally:
+                            redirected_exc.close()
+                    self._raise_http_error(redirected_exc)
+                except urllib.error.URLError as redirected_exc:
+                    raise RunnerError("GitHub API request failed") from redirected_exc
+            self._raise_http_error(exc)
         except urllib.error.URLError as exc:
             raise RunnerError("GitHub API request failed") from exc
+
+    def _validated_jit_redirect(
+            self, request: urllib.request.Request,
+            error: urllib.error.HTTPError) -> urllib.request.Request:
+        if error.code not in (307, 308) or request.get_method() != "POST":
+            raise RunnerError("GitHub API redirect was rejected") from error
+
+        original = urllib.parse.urlsplit(request.full_url)
+        api_origin = urllib.parse.urlsplit(self._api_url)
+        if not original.path.endswith(JIT_CONFIG_ENDPOINT_SUFFIX):
+            raise RunnerError("GitHub API redirect was rejected") from error
+
+        get_all = getattr(error.headers, "get_all", None)
+        if callable(get_all):
+            locations = get_all("Location", [])
+        else:
+            location = error.headers.get("Location") if error.headers is not None else None
+            locations = [] if location is None else [location]
+        if (
+                len(locations) != 1
+                or not isinstance(locations[0], str)
+                or locations[0].strip() != locations[0]
+                or any(ord(character) < 32 for character in locations[0])
+        ):
+            raise RunnerError("GitHub JIT redirect location was rejected") from error
+
+        try:
+            redirected_url = urllib.parse.urljoin(request.full_url, locations[0])
+            target = urllib.parse.urlsplit(redirected_url)
+            original_origin = (
+                original.scheme.lower(), (original.hostname or "").lower(),
+                original.port or 443,
+            )
+            configured_origin = (
+                api_origin.scheme.lower(), (api_origin.hostname or "").lower(),
+                api_origin.port or 443,
+            )
+            target_origin = (
+                target.scheme.lower(), (target.hostname or "").lower(),
+                target.port or 443,
+            )
+        except ValueError:
+            raise RunnerError("GitHub JIT redirect location was rejected") from None
+
+        if (
+                original_origin != configured_origin
+                or original_origin != target_origin
+                or target.scheme.lower() != "https"
+                or target.username is not None
+                or target.password is not None
+                or target.query
+                or target.fragment
+                or not self._is_allowed_jit_redirect_path(original.path, target.path)
+        ):
+            raise RunnerError("GitHub JIT redirect location was rejected") from error
+
+        return urllib.request.Request(
+            redirected_url,
+            method=request.get_method(),
+            data=request.data,
+            headers=dict(request.header_items()),
+        )
+
+    def _is_allowed_jit_redirect_path(self, original_path: str, target_path: str) -> bool:
+        original_repo = REPOSITORY_JIT_ENDPOINT_RE.fullmatch(original_path)
+        if original_repo is None or target_path == original_path:
+            return False
+        target_repo = REPOSITORY_JIT_ENDPOINT_RE.fullmatch(target_path)
+        if target_repo is not None:
+            return (
+                target_repo.group(1).casefold() == original_repo.group(1).casefold()
+                and target_repo.group(2).casefold() == original_repo.group(2).casefold()
+            )
+        canonical = CANONICAL_JIT_ENDPOINT_RE.fullmatch(target_path)
+        if canonical is None:
+            return False
+        repository_id = int(canonical.group(1))
+        if repository_id > 2**63 - 1:
+            return False
+        metadata = self.request("GET", f"/repositories/{repository_id}")
+        expected_name = (
+            f"{urllib.parse.unquote(original_repo.group(1))}/"
+            f"{urllib.parse.unquote(original_repo.group(2))}"
+        ).casefold()
+        return (
+            isinstance(metadata, dict)
+            and metadata.get("id") == repository_id
+            and isinstance(metadata.get("full_name"), str)
+            and metadata["full_name"].casefold() == expected_name
+        )
+
+    @staticmethod
+    def _raise_http_error(error: urllib.error.HTTPError) -> None:
+        try:
+            if error.code == 404:
+                raise NotFound("GitHub resource was already removed") from error
+            headers = error.headers or {}
+            remaining = headers.get("X-RateLimit-Remaining")
+            if error.code == 429 or (
+                    error.code == 403
+                    and (headers.get("Retry-After") or remaining == "0")
+            ):
+                retry = headers.get("Retry-After")
+                reset = headers.get("X-RateLimit-Reset")
+                delay = int(retry) if retry and retry.isdigit() else max(
+                    5,
+                    int(reset) - int(time.time())
+                    if reset and reset.isdigit() else 60,
+                )
+                raise RateLimited(delay) from error
+            raise RunnerError(f"GitHub API returned HTTP {error.code}") from error
+        finally:
+            error.close()
 
     @staticmethod
     def repo_path(repo: str) -> str:
@@ -585,7 +792,8 @@ def with_lock(path: Path):
 
 def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
            metadata: dict[str, Any] | None = None,
-           dispatch_history_key: str | None = None) -> None:
+           dispatch_history_key: str | None = None,
+           dispatch_history_claimed: bool = False) -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
@@ -595,8 +803,11 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         if dispatch_history_key is not None:
             if dispatch_history_key in store.pending_dispatch_keys():
                 raise RunnerError("dispatch target has pending cleanup")
-            if history.contains(dispatch_history_key, now):
+            history_claimed = history.contains(dispatch_history_key, now)
+            if history_claimed and not dispatch_history_claimed:
                 raise RunnerError("dispatch target is still in retry history")
+            if dispatch_history_claimed and not history_claimed:
+                raise RunnerError("dispatch target has no durable JIT claim")
         states = store.leases()
         state_by_lease: dict[str, dict[str, Any]] = {}
         for item in states:
@@ -629,7 +840,12 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             store.write_cleanup_obligation(lease, state, now)
         store.write(lease, state)
         if dispatch_history_key is not None:
-            state["dispatch_attempts"] = history.add(dispatch_history_key, now)
+            if dispatch_history_claimed:
+                state["dispatch_attempts"] = history.activate_claim(
+                    dispatch_history_key, now
+                )
+            else:
+                state["dispatch_attempts"] = history.add(dispatch_history_key, now)
             store.write(lease, state)
         LOG.info("launch requested lease=%s", lease)
         try:
@@ -929,7 +1145,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
         return False
     now = int(time.time())
     history = DispatchHistory(Path(cfg["state_dir"]))
-    pending_dispatches = store.pending_dispatch_keys()
+    lifecycle_lock = Path(
+        cfg.get("lock_file", Path(cfg["state_dir"]) / ".dispatch.lock")
+    )
     label = str(cfg.get("runner_label", "trusted-heavy"))
     launched = 0
     for repo in validate_repositories(cfg):
@@ -939,9 +1157,27 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
             if launched >= available_slots:
                 break
             key = f"{repo}:{job['job_id']}"
-            if key in pending_dispatches or history.contains(key, now):
-                continue
-            response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
+            with with_lock(lifecycle_lock):
+                if key in store.pending_dispatch_keys() or history.contains(key, now):
+                    continue
+                history.quarantine(key, now)
+            try:
+                response = client.generate_jit(
+                    repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label
+                )
+            except RateLimited:
+                with with_lock(lifecycle_lock):
+                    history.remove(key, now)
+                raise
+            except RunnerError:
+                LOG.error(
+                    "JIT request outcome ambiguous; dispatch target quarantined "
+                    "repo=%s trigger_job_id=%s",
+                    repo, job["job_id"],
+                )
+                raise
+            if not isinstance(response, dict):
+                raise RunnerError("GitHub returned an invalid JIT response")
             encoded = response.get("encoded_jit_config")
             runner = response.get("runner", {})
             runner_id = runner.get("id") if isinstance(runner, dict) else None
@@ -977,7 +1213,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     "runner_name": runner_name,
                     "trigger_run_id": job["run_id"],
                     "trigger_job_id": job["job_id"],
-                }, dispatch_history_key=key)
+                }, dispatch_history_key=key, dispatch_history_claimed=True)
                 LOG.info(
                     "runner registered lease=%s repo=%s runner_id=%s trigger_run_id=%s "
                     "trigger_job_id=%s assignment=unverified",
