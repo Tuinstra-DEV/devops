@@ -541,6 +541,106 @@ class ManagerTests(unittest.TestCase):
             client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20")
 
     @mock.patch.object(manager, "open_url")
+    def test_get_follows_one_same_origin_301_and_preserves_query(self, open_url):
+        location = (
+            "https://api.github.com/repositories/1301969191/actions/runs"
+            "?status=queued&per_page=100"
+        )
+        open_url.side_effect = [
+            self.github_redirect(301, location),
+            self.github_response({
+                "id": 1301969191,
+                "full_name": "Tuinstra-DEV/tracker",
+            }),
+            self.github_response({"workflow_runs": []}),
+        ]
+
+        result = manager.GitHubClient("top-secret-token").request(
+            "GET", "/repos/Tuinstra-DEV/tracker/actions/runs"
+            "?status=queued&per_page=100",
+        )
+
+        self.assertEqual(result, {"workflow_runs": []})
+        self.assertEqual(open_url.call_count, 3)
+        metadata_request = open_url.call_args_list[1].args[0]
+        redirected_request = open_url.call_args_list[2].args[0]
+        self.assertEqual(
+            metadata_request.full_url,
+            "https://api.github.com/repositories/1301969191",
+        )
+        self.assertEqual(redirected_request.full_url, location)
+        self.assertEqual(redirected_request.get_method(), "GET")
+        self.assertIsNone(redirected_request.data)
+        self.assertEqual(
+            redirected_request.get_header("Authorization"), "Bearer top-secret-token"
+        )
+
+    @mock.patch.object(manager, "open_url")
+    def test_get_rejects_unsafe_or_ambiguous_redirects(self, open_url):
+        request_url = (
+            "https://api.github.com/repos/Tuinstra-DEV/tracker/actions/runs"
+            "?status=queued&per_page=100"
+        )
+        endpoint = "/repositories/1301969191/actions/runs?status=queued&per_page=100"
+        cases = {
+            "missing-location": [],
+            "multiple-locations": [
+                f"https://api.github.com{endpoint}",
+                f"https://api.github.com{endpoint}",
+            ],
+            "cross-origin": [f"https://uploads.github.com{endpoint}"],
+            "https-downgrade": [f"http://api.github.com{endpoint}"],
+            "changed-port": [f"https://api.github.com:444{endpoint}"],
+            "zero-port": [f"https://api.github.com:0{endpoint}"],
+            "userinfo": [f"https://attacker@api.github.com{endpoint}"],
+            "fragment": [f"https://api.github.com{endpoint}#private"],
+            "changed-query": [
+                "https://api.github.com/repositories/1301969191/actions/runs"
+                "?status=in_progress&per_page=100"
+            ],
+            "changed-endpoint": [
+                "https://api.github.com/repositories/1301969191/actions/artifacts"
+                "?status=queued&per_page=100"
+            ],
+            "self-loop": [request_url],
+        }
+        for name, locations in cases.items():
+            with self.subTest(name=name):
+                open_url.reset_mock()
+                open_url.side_effect = self.github_redirect(301, *locations)
+                with self.assertRaises(manager.RunnerError) as raised:
+                    manager.GitHubClient("top-secret-token").request(
+                        "GET", "/repos/Tuinstra-DEV/tracker/actions/runs"
+                        "?status=queued&per_page=100",
+                    )
+                self.assertEqual(open_url.call_count, 1)
+                message = str(raised.exception)
+                self.assertNotIn("top-secret-token", message)
+                self.assertNotIn("private", message)
+                self.assertNotIn("uploads.github.com", message)
+
+    @mock.patch.object(manager, "open_url")
+    def test_get_rejects_a_second_redirect(self, open_url):
+        first = "https://api.github.com/repositories/1301969191/actions/runs"
+        second = "https://api.github.com/repositories/1301969191/actions/runs?page=2"
+        open_url.side_effect = [
+            self.github_redirect(301, first),
+            self.github_response({
+                "id": 1301969191,
+                "full_name": "Tuinstra-DEV/tracker",
+            }),
+            self.github_redirect(301, second),
+        ]
+
+        with self.assertRaisesRegex(manager.RunnerError, "one-hop limit") as raised:
+            manager.GitHubClient("top-secret-token").request(
+                "GET", "/repos/Tuinstra-DEV/tracker/actions/runs"
+            )
+
+        self.assertEqual(open_url.call_count, 3)
+        self.assertNotIn("top-secret-token", str(raised.exception))
+
+    @mock.patch.object(manager, "open_url")
     def test_generate_jit_follows_one_same_origin_307_with_identical_post(self, open_url):
         location = (
             "https://api.github.com/repositories/123/actions/runners/generate-jitconfig"
@@ -614,6 +714,7 @@ class ManagerTests(unittest.TestCase):
             "cross-origin": (307, [f"https://uploads.github.com{endpoint}"]),
             "https-downgrade": (307, [f"http://api.github.com{endpoint}"]),
             "changed-port": (307, [f"https://api.github.com:444{endpoint}"]),
+            "zero-port": (307, [f"https://api.github.com:0{endpoint}"]),
             "userinfo": (307, [f"https://attacker@api.github.com{endpoint}"]),
             "query": (307, [f"https://api.github.com{endpoint}?token=private"]),
             "fragment": (307, [f"https://api.github.com{endpoint}#private"]),
@@ -698,6 +799,7 @@ class ManagerTests(unittest.TestCase):
             "http://api.github.com",
             "https://attacker@api.github.com",
             "https://api.github.com:invalid",
+            "https://api.github.com:0",
             "https://api.github.com?token=private",
             "https://api.github.com#private",
         )

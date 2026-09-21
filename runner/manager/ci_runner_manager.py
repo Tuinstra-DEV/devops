@@ -50,6 +50,10 @@ REPOSITORY_JIT_ENDPOINT_RE = re.compile(
 CANONICAL_JIT_ENDPOINT_RE = re.compile(
     r"^/repositories/([1-9][0-9]{0,18})/actions/runners/generate-jitconfig$"
 )
+NAMED_REPOSITORY_ENDPOINT_RE = re.compile(r"^/repos/([^/]+)/([^/]+)(/.*)?$")
+CANONICAL_REPOSITORY_ENDPOINT_RE = re.compile(
+    r"^/repositories/([1-9][0-9]{0,18})(/.*)?$"
+)
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
@@ -433,6 +437,7 @@ class GitHubClient:
                 or not parsed_api_url.hostname
                 or parsed_api_url.username is not None
                 or parsed_api_url.password is not None
+                or parsed_api_url.port == 0
                 or parsed_api_url.query
                 or parsed_api_url.fragment
         ):
@@ -461,12 +466,16 @@ class GitHubClient:
         except urllib.error.HTTPError as exc:
             if exc.code in REDIRECT_STATUS_CODES:
                 try:
-                    redirected_request = self._validated_jit_redirect(request, exc)
+                    if request.get_method() in ("GET", "HEAD"):
+                        redirected_request = self._validated_read_redirect(request, exc)
+                    else:
+                        redirected_request = self._validated_jit_redirect(request, exc)
                 finally:
                     exc.close()
                 LOG.info(
-                    "following validated GitHub JIT redirect status=%s target=same-origin",
-                    exc.code,
+                    "following validated GitHub redirect method=%s status=%s "
+                    "target=same-origin",
+                    request.get_method(), exc.code,
                 )
                 try:
                     with open_url(redirected_request, timeout=20) as response:
@@ -476,7 +485,7 @@ class GitHubClient:
                     if redirected_exc.code in REDIRECT_STATUS_CODES:
                         try:
                             raise RunnerError(
-                                "GitHub JIT redirect exceeded the one-hop limit"
+                                "GitHub API redirect exceeded the one-hop limit"
                             ) from redirected_exc
                         finally:
                             redirected_exc.close()
@@ -487,16 +496,59 @@ class GitHubClient:
         except urllib.error.URLError as exc:
             raise RunnerError("GitHub API request failed") from exc
 
+    def _validated_read_redirect(
+            self, request: urllib.request.Request,
+            error: urllib.error.HTTPError) -> urllib.request.Request:
+        rejection = "GitHub read redirect was rejected"
+        if request.get_method() not in ("GET", "HEAD"):
+            raise RunnerError(rejection) from error
+        redirected_url, original, target = self._validated_redirect_target(
+            request, error, allow_query=True, rejection=rejection,
+        )
+        if (
+                redirected_url == request.full_url
+                or target.query != original.query
+                or not self._is_allowed_read_redirect_path(
+                    original.path, target.path
+                )
+        ):
+            raise RunnerError(rejection) from error
+        return urllib.request.Request(
+            redirected_url,
+            method=request.get_method(),
+            headers=dict(request.header_items()),
+        )
+
     def _validated_jit_redirect(
             self, request: urllib.request.Request,
             error: urllib.error.HTTPError) -> urllib.request.Request:
         if error.code not in (307, 308) or request.get_method() != "POST":
             raise RunnerError("GitHub API redirect was rejected") from error
 
+        rejection = "GitHub JIT redirect location was rejected"
+        redirected_url, original, target = self._validated_redirect_target(
+            request, error, allow_query=False, rejection=rejection,
+        )
+
+        if (
+                not original.path.endswith(JIT_CONFIG_ENDPOINT_SUFFIX)
+                or not self._is_allowed_jit_redirect_path(original.path, target.path)
+        ):
+            raise RunnerError(rejection) from error
+
+        return urllib.request.Request(
+            redirected_url,
+            method=request.get_method(),
+            data=request.data,
+            headers=dict(request.header_items()),
+        )
+
+    def _validated_redirect_target(
+            self, request: urllib.request.Request,
+            error: urllib.error.HTTPError, *, allow_query: bool,
+            rejection: str) -> tuple[str, urllib.parse.SplitResult, urllib.parse.SplitResult]:
         original = urllib.parse.urlsplit(request.full_url)
         api_origin = urllib.parse.urlsplit(self._api_url)
-        if not original.path.endswith(JIT_CONFIG_ENDPOINT_SUFFIX):
-            raise RunnerError("GitHub API redirect was rejected") from error
 
         get_all = getattr(error.headers, "get_all", None)
         if callable(get_all):
@@ -510,25 +562,25 @@ class GitHubClient:
                 or locations[0].strip() != locations[0]
                 or any(ord(character) < 32 for character in locations[0])
         ):
-            raise RunnerError("GitHub JIT redirect location was rejected") from error
+            raise RunnerError(rejection) from error
 
         try:
             redirected_url = urllib.parse.urljoin(request.full_url, locations[0])
             target = urllib.parse.urlsplit(redirected_url)
             original_origin = (
                 original.scheme.lower(), (original.hostname or "").lower(),
-                original.port or 443,
+                original.port if original.port is not None else 443,
             )
             configured_origin = (
                 api_origin.scheme.lower(), (api_origin.hostname or "").lower(),
-                api_origin.port or 443,
+                api_origin.port if api_origin.port is not None else 443,
             )
             target_origin = (
                 target.scheme.lower(), (target.hostname or "").lower(),
-                target.port or 443,
+                target.port if target.port is not None else 443,
             )
         except ValueError:
-            raise RunnerError("GitHub JIT redirect location was rejected") from None
+            raise RunnerError(rejection) from None
 
         if (
                 original_origin != configured_origin
@@ -536,17 +588,35 @@ class GitHubClient:
                 or target.scheme.lower() != "https"
                 or target.username is not None
                 or target.password is not None
-                or target.query
                 or target.fragment
-                or not self._is_allowed_jit_redirect_path(original.path, target.path)
+                or (target.query and not allow_query)
         ):
-            raise RunnerError("GitHub JIT redirect location was rejected") from error
+            raise RunnerError(rejection) from error
+        return redirected_url, original, target
 
-        return urllib.request.Request(
-            redirected_url,
-            method=request.get_method(),
-            data=request.data,
-            headers=dict(request.header_items()),
+    def _is_allowed_read_redirect_path(
+            self, original_path: str, target_path: str) -> bool:
+        original_repo = NAMED_REPOSITORY_ENDPOINT_RE.fullmatch(original_path)
+        canonical = CANONICAL_REPOSITORY_ENDPOINT_RE.fullmatch(target_path)
+        if original_repo is None or canonical is None:
+            return False
+        original_suffix = original_repo.group(3) or ""
+        target_suffix = canonical.group(2) or ""
+        if target_suffix != original_suffix:
+            return False
+        repository_id = int(canonical.group(1))
+        if repository_id > 2**63 - 1:
+            return False
+        metadata = self.request("GET", f"/repositories/{repository_id}")
+        expected_name = (
+            f"{urllib.parse.unquote(original_repo.group(1))}/"
+            f"{urllib.parse.unquote(original_repo.group(2))}"
+        ).casefold()
+        return (
+            isinstance(metadata, dict)
+            and metadata.get("id") == repository_id
+            and isinstance(metadata.get("full_name"), str)
+            and metadata["full_name"].casefold() == expected_name
         )
 
     def _is_allowed_jit_redirect_path(self, original_path: str, target_path: str) -> bool:
