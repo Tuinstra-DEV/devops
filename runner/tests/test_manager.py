@@ -8,11 +8,33 @@ import json
 import io
 import subprocess
 import urllib.error
+import email.message
 
 import ci_runner_manager as manager
 
 
 class ManagerTests(unittest.TestCase):
+    @staticmethod
+    def github_redirect(code, *locations):
+        headers = email.message.Message()
+        for location in locations:
+            headers.add_header("Location", location)
+        return urllib.error.HTTPError(
+            "https://api.github.com/repos/Tuinstra-DEV/tracker/actions/runners/"
+            "generate-jitconfig",
+            code,
+            "redirect body must remain private",
+            headers,
+            io.BytesIO(b"encoded_jit_config=private"),
+        )
+
+    @staticmethod
+    def github_response(payload):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps(payload).encode("utf-8")
+        return response
+
     def helper_connection(self, response):
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
@@ -486,19 +508,187 @@ class ManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(manager.RunnerError, "ambiguous"):
             client.find_assigned_job("Tuinstra-DEV/gate", 30, "sanctuary-20")
 
-    @mock.patch.object(manager.urllib.request, "urlopen")
-    def test_rate_limit_is_fail_closed_and_does_not_expose_token(self, urlopen):
+    @mock.patch.object(manager, "open_url")
+    def test_generate_jit_follows_one_same_origin_307_with_identical_post(self, open_url):
+        location = (
+            "https://api.github.com/repositories/123/actions/runners/generate-jitconfig"
+        )
+        headers = email.message.Message()
+        headers.add_header("Location", location)
+        redirect = urllib.error.HTTPError(
+            "https://api.github.com/repos/Tuinstra-DEV/tracker/actions/runners/"
+            "generate-jitconfig",
+            307,
+            "Temporary Redirect",
+            headers,
+            io.BytesIO(),
+        )
+        repository = self.github_response({"id": 123, "full_name": "Tuinstra-DEV/tracker"})
+        response = self.github_response(
+            {"encoded_jit_config": "opaque", "runner": {"id": 31}}
+        )
+        open_url.side_effect = [redirect, repository, response]
+
+        result = manager.GitHubClient("top-secret-token").generate_jit(
+            "Tuinstra-DEV/tracker", 20, 1, "trusted-heavy"
+        )
+
+        self.assertEqual(result["runner"]["id"], 31)
+        self.assertEqual(open_url.call_count, 3)
+        first_request = open_url.call_args_list[0].args[0]
+        metadata_request = open_url.call_args_list[1].args[0]
+        redirected_request = open_url.call_args_list[2].args[0]
+        self.assertEqual(metadata_request.get_method(), "GET")
+        self.assertEqual(metadata_request.full_url, "https://api.github.com/repositories/123")
+        self.assertEqual(redirected_request.full_url, location)
+        self.assertEqual(redirected_request.get_method(), "POST")
+        self.assertEqual(redirected_request.data, first_request.data)
+        self.assertEqual(
+            redirected_request.get_header("Authorization"),
+            first_request.get_header("Authorization"),
+        )
+        self.assertEqual(redirected_request.get_header("Content-type"), "application/json")
+
+    @mock.patch.object(manager, "open_url")
+    def test_generate_jit_follows_one_same_origin_308(self, open_url):
+        location = (
+            "https://api.github.com/repositories/123/actions/runners/generate-jitconfig"
+        )
+        repository = self.github_response({"id": 123, "full_name": "Tuinstra-DEV/tracker"})
+        response = self.github_response(
+            {"encoded_jit_config": "opaque", "runner": {"id": 31}}
+        )
+        open_url.side_effect = [self.github_redirect(308, location), repository, response]
+
+        result = manager.GitHubClient("top-secret-token").generate_jit(
+            "Tuinstra-DEV/tracker", 20, 1, "trusted-heavy"
+        )
+
+        self.assertEqual(result["runner"]["id"], 31)
+        self.assertEqual(open_url.call_count, 3)
+
+    @mock.patch.object(manager, "open_url")
+    def test_generate_jit_rejects_unsafe_or_ambiguous_redirects(self, open_url):
+        endpoint = "/repositories/123/actions/runners/generate-jitconfig"
+        cases = {
+            "post-301": (301, [f"https://api.github.com{endpoint}"]),
+            "post-302": (302, [f"https://api.github.com{endpoint}"]),
+            "post-303": (303, [f"https://api.github.com{endpoint}"]),
+            "missing-location": (307, []),
+            "multiple-locations": (
+                307,
+                [f"https://api.github.com{endpoint}", f"https://api.github.com{endpoint}"],
+            ),
+            "cross-origin": (307, [f"https://uploads.github.com{endpoint}"]),
+            "https-downgrade": (307, [f"http://api.github.com{endpoint}"]),
+            "changed-port": (307, [f"https://api.github.com:444{endpoint}"]),
+            "userinfo": (307, [f"https://attacker@api.github.com{endpoint}"]),
+            "query": (307, [f"https://api.github.com{endpoint}?token=private"]),
+            "fragment": (307, [f"https://api.github.com{endpoint}#private"]),
+            "changed-endpoint": (307, ["https://api.github.com/private"]),
+            "malformed-ipv6": (307, ["https://[bad/actions/runners/generate-jitconfig"]),
+            "oversized-repository-id": (
+                307,
+                ["https://api.github.com/repositories/" + ("9" * 4301)
+                 + "/actions/runners/generate-jitconfig"],
+            ),
+            "changed-repository": (
+                307,
+                ["https://api.github.com/repos/Tuinstra-DEV/other/actions/runners/"
+                 "generate-jitconfig"],
+            ),
+            "self-loop": (
+                307,
+                ["https://api.github.com/repos/Tuinstra-DEV/tracker/actions/runners/"
+                 "generate-jitconfig"],
+            ),
+        }
+        for name, (status, locations) in cases.items():
+            with self.subTest(name=name):
+                open_url.reset_mock()
+                open_url.side_effect = self.github_redirect(status, *locations)
+                with self.assertRaises(manager.RunnerError) as raised:
+                    manager.GitHubClient("top-secret-token").generate_jit(
+                        "Tuinstra-DEV/tracker", 20, 1, "trusted-heavy"
+                    )
+                self.assertEqual(open_url.call_count, 1)
+                message = str(raised.exception)
+                self.assertNotIn("top-secret-token", message)
+                self.assertNotIn("private", message)
+                self.assertNotIn("uploads.github.com", message)
+
+    @mock.patch.object(manager, "open_url")
+    def test_generate_jit_binds_a_canonical_id_before_replaying_post(self, open_url):
+        location = (
+            "https://api.github.com/repositories/456/actions/runners/generate-jitconfig"
+        )
+        open_url.side_effect = [
+            self.github_redirect(307, location),
+            self.github_response({"id": 456, "full_name": "Tuinstra-DEV/other"}),
+        ]
+
+        with self.assertRaisesRegex(
+                manager.RunnerError, "redirect location was rejected") as raised:
+            manager.GitHubClient("top-secret-token").generate_jit(
+                "Tuinstra-DEV/tracker", 20, 1, "trusted-heavy"
+            )
+
+        self.assertEqual(open_url.call_count, 2)
+        self.assertEqual(open_url.call_args_list[1].args[0].get_method(), "GET")
+        self.assertNotIn("top-secret-token", str(raised.exception))
+        self.assertNotIn("Tuinstra-DEV/other", str(raised.exception))
+
+    @mock.patch.object(manager, "open_url")
+    def test_generate_jit_rejects_a_second_redirect_without_replaying_again(self, open_url):
+        first_location = (
+            "https://api.github.com/repositories/123/actions/runners/generate-jitconfig"
+        )
+        second_location = (
+            "https://api.github.com/repositories/456/actions/runners/generate-jitconfig"
+        )
+        open_url.side_effect = [
+            self.github_redirect(307, first_location),
+            self.github_response({"id": 123, "full_name": "Tuinstra-DEV/tracker"}),
+            self.github_redirect(308, second_location),
+        ]
+
+        with self.assertRaisesRegex(manager.RunnerError, "one-hop limit") as raised:
+            manager.GitHubClient("top-secret-token").generate_jit(
+                "Tuinstra-DEV/tracker", 20, 1, "trusted-heavy"
+            )
+
+        self.assertEqual(open_url.call_count, 3)
+        self.assertNotIn("top-secret-token", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
+
+    def test_github_client_requires_a_private_https_api_origin(self):
+        invalid_urls = (
+            "http://api.github.com",
+            "https://attacker@api.github.com",
+            "https://api.github.com:invalid",
+            "https://api.github.com?token=private",
+            "https://api.github.com#private",
+        )
+        for api_url in invalid_urls:
+            with self.subTest(api_url=api_url), self.assertRaisesRegex(
+                    manager.RunnerError, "invalid GitHub API URL") as raised:
+                manager.GitHubClient("top-secret-token", api_url)
+            self.assertNotIn("top-secret-token", str(raised.exception))
+            self.assertNotIn("private", str(raised.exception))
+
+    @mock.patch.object(manager, "open_url")
+    def test_rate_limit_is_fail_closed_and_does_not_expose_token(self, open_url):
         headers = {"Retry-After": "60"}
-        urlopen.side_effect = urllib.error.HTTPError("https://api.github.com", 429, "limited", headers, io.BytesIO())
+        open_url.side_effect = urllib.error.HTTPError("https://api.github.com", 429, "limited", headers, io.BytesIO())
         client = manager.GitHubClient("top-secret-token")
         with self.assertRaises(manager.RateLimited) as raised:
             client.request("GET", "/rate-limited")
         self.assertEqual(raised.exception.retry_after, 60)
         self.assertNotIn("top-secret-token", str(raised.exception))
 
-    @mock.patch.object(manager.urllib.request, "urlopen")
-    def test_api_error_is_sanitized(self, urlopen):
-        urlopen.side_effect = urllib.error.HTTPError("https://api.github.com", 500, "body may be sensitive", {}, io.BytesIO())
+    @mock.patch.object(manager, "open_url")
+    def test_api_error_is_sanitized(self, open_url):
+        open_url.side_effect = urllib.error.HTTPError("https://api.github.com", 500, "body may be sensitive", {}, io.BytesIO())
         with self.assertRaisesRegex(manager.RunnerError, "HTTP 500") as raised:
             manager.GitHubClient("top-secret-token").request("GET", "/failure")
         self.assertNotIn("top-secret-token", str(raised.exception))
