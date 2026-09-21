@@ -90,7 +90,7 @@ fork pull requests select this machine.
   exceed host logical CPUs, total memory must fit all projected guests plus the
   reserve, and `MemAvailable` after subtracting the new 6,144-MiB guest must
   retain the configured 4,096-MiB host reserve. Admission
-  also requires 140 GiB free on `/mnt/ssd1000-01/ci-runner` and one-minute load
+  also requires 140 GiB free on `/var/lib/ci-runner/overlay` and one-minute load
   no higher than 8. Ansible refuses hosts that cannot fit both guests plus the
   reserve. Manager and helper independently enforce the exact concurrency and
   VM resource contract, so a configuration mismatch fails closed.

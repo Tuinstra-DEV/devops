@@ -135,7 +135,7 @@ class HostHelperTests(unittest.TestCase):
             "--on-active", "7200s", "--timer-property", "AccuracySec=30s",
             "--property=NoNewPrivileges=yes", "--property=ProtectSystem=strict",
             "--property=ProtectHome=yes", "--property=PrivateTmp=yes",
-            "--property=ReadWritePaths=/mnt/ssd1000-01/ci-runner /run/lock",
+            "--property=ReadWritePaths=/var/lib/ci-runner/overlay /run/lock",
             "--property=RestrictAddressFamilies=AF_UNIX",
             "/usr/local/libexec/ci-runner-host-helper", "destroy", "lease",
         ]), run.call_args_list)

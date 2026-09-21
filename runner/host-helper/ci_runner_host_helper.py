@@ -23,7 +23,7 @@ from typing import Any
 
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PREFIX = "sanctuary-ci-"
-OVERLAY_ROOT = Path("/mnt/ssd1000-01/ci-runner")
+OVERLAY_ROOT = Path("/var/lib/ci-runner/overlay")
 IMAGE_ROOT = Path("/var/lib/ci-runner/images")
 BASE_IMAGE = IMAGE_ROOT / "ubuntu-24.04-runner.qcow2"
 IMAGE_RE = re.compile(r"^ubuntu-24\.04-runner-[a-f0-9]{64}\.qcow2$")

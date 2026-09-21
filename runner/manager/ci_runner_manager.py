@@ -43,6 +43,7 @@ HELPER_MUTATION_TIMEOUT_SECONDS = 330
 MAX_CONCURRENCY = 2
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
+RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
 REPOSITORY_JIT_ENDPOINT_RE = re.compile(
     r"^/repos/([^/]+)/([^/]+)/actions/runners/generate-jitconfig$"
@@ -110,6 +111,7 @@ def load_config(path: Path) -> dict[str, Any]:
         cfg = tomllib.load(handle)
     required = {
         "state_dir", "lock_file", "audit_log", "helper_socket",
+        "overlay_root",
         "max_concurrency", "runner_vcpus", "runner_memory_mib",
         "host_memory_reserve_mib", "min_free_disk_gib", "max_load_1m",
         "max_lease_seconds", "github_token_file", "repositories", "runner_label",
@@ -126,6 +128,8 @@ def load_config(path: Path) -> dict[str, Any]:
         value = cfg[key]
         if not isinstance(value, int) or isinstance(value, bool) or value != expected:
             raise RunnerError(f"{key} must be exactly {expected}")
+    if cfg["overlay_root"] != RUNNER_OVERLAY_ROOT:
+        raise RunnerError(f"overlay_root must be exactly {RUNNER_OVERLAY_ROOT}")
     reserve = cfg["host_memory_reserve_mib"]
     if not isinstance(reserve, int) or isinstance(reserve, bool) or not 1024 <= reserve <= 65536:
         raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")
@@ -197,7 +201,7 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> lis
     projected_available_mib = memory_available_mib() - memory_mib
     if projected_available_mib < reserve_mib:
         errors.append("host projected free memory is below the configured reserve")
-    disk = shutil.disk_usage(str(cfg.get("overlay_root", "/mnt/ssd1000-01/ci-runner")))
+    disk = shutil.disk_usage(str(cfg["overlay_root"]))
     if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
         errors.append("overlay filesystem free space is below admission threshold")
     if os.getloadavg()[0] > float(cfg["max_load_1m"]):

@@ -20,5 +20,5 @@ UMask=0077
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-ReadWritePaths=/mnt/ssd1000-01/ci-runner /run/lock
+ReadWritePaths=/var/lib/ci-runner/overlay /run/lock
 RestrictAddressFamilies=AF_UNIX

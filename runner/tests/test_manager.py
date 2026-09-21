@@ -60,6 +60,10 @@ class ManagerTests(unittest.TestCase):
             ("runner_vcpus = 4", "runner_vcpus = true"),
             ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
             ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
+            (
+                'overlay_root = "/var/lib/ci-runner/overlay"',
+                'overlay_root = "/mnt/ssd1000-01/ci-runner"',
+            ),
         )
         for expected, invalid in replacements:
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
