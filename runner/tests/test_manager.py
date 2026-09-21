@@ -796,6 +796,7 @@ class ManagerTests(unittest.TestCase):
                     "trigger_job_id": 20,
                 },
                 dispatch_history_key="Tuinstra-DEV/gate:20",
+                dispatch_history_claimed=True,
             )
             self.assertNotIn("actual_job_id", launch.call_args.kwargs["metadata"])
             audit = "\n".join(logs.output)
@@ -868,10 +869,12 @@ class ManagerTests(unittest.TestCase):
             (root / "run").mkdir()
 
             def ambiguous_launch(launch_cfg, lease, _jit, *, metadata=None,
-                                 dispatch_history_key=None):
+                                 dispatch_history_key=None,
+                                 dispatch_history_claimed=False):
                 state = {"lease": lease, "phase": "provisioning_failed", "launched_at": 1}
                 state.update(metadata or {})
                 self.assertEqual(dispatch_history_key, "Tuinstra-DEV/gate:20")
+                self.assertTrue(dispatch_history_claimed)
                 manager.StateStore(Path(launch_cfg["state_dir"])).write(lease, state)
                 raise manager.RunnerError("launch failed")
 
@@ -908,6 +911,104 @@ class ManagerTests(unittest.TestCase):
             cleanup = manager.StateStore(root / "state").cleanup_items()
             self.assertEqual({item["runner_id"] for item in cleanup}, {30})
             client.generate_jit.assert_called_once()
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    def test_ambiguous_jit_failure_quarantines_job_without_automatic_replay(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.side_effect = manager.RunnerError("GitHub API unavailable")
+            cfg = {
+                "state_dir": root / "state",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+
+            with self.assertRaisesRegex(manager.RunnerError, "GitHub API unavailable"):
+                manager.dispatch_once(cfg, client)
+
+            self.assertFalse(manager.dispatch_once(cfg, client))
+            client.generate_jit.assert_called_once()
+            self.assertTrue(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1001
+                )
+            )
+            self.assertTrue(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1000 + (365 * 24 * 60 * 60)
+                )
+            )
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    def test_jit_quarantine_is_durable_before_the_post(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            cfg = {
+                "state_dir": root / "state",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+
+            with mock.patch.object(
+                manager.DispatchHistory, "write", side_effect=OSError("disk full")
+            ), self.assertRaisesRegex(OSError, "disk full"):
+                manager.dispatch_once(cfg, client)
+
+            client.generate_jit.assert_not_called()
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    def test_malformed_jit_response_stays_quarantined_without_replay(self, _time):
+        for response in (None, [], {"encoded_jit_config": "eA==", "runner": {}}):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                client = mock.Mock()
+                client.candidate_jobs.return_value = [
+                    {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+                ]
+                client.generate_jit.return_value = response
+                cfg = {
+                    "state_dir": root / "state",
+                    "repositories": ["Tuinstra-DEV/gate"],
+                    "runner_label": "trusted-heavy",
+                }
+
+                with self.assertRaisesRegex(manager.RunnerError, "invalid JIT"):
+                    manager.dispatch_once(cfg, client)
+
+                self.assertFalse(manager.dispatch_once(cfg, client))
+                client.generate_jit.assert_called_once()
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    def test_rate_limit_releases_preflight_quarantine_for_bounded_retry(self, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.side_effect = manager.RateLimited(60)
+            cfg = {
+                "state_dir": root / "state",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+
+            with self.assertRaises(manager.RateLimited):
+                manager.dispatch_once(cfg, client)
+
+            self.assertFalse(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1001
+                )
+            )
 
     def test_malformed_jit_cleanup_failure_is_durable(self):
         with tempfile.TemporaryDirectory() as directory:

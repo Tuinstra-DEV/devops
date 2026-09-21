@@ -31,6 +31,7 @@ HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
+DISPATCH_QUARANTINE_UNTIL = (1 << 63) - 1
 ASSIGNMENT_RUNS_PER_STATUS = 10
 HELPER_HEADER_MAX = 4096
 HELPER_RESPONSE_MAX = 65536
@@ -369,6 +370,26 @@ class DispatchHistory:
         values[key] = {"blocked_until": now + 86400, "attempts": attempts}
         self.write(values)
         return attempts
+
+    def quarantine(self, key: str, now: int) -> int:
+        values = {
+            item: entry for item, entry in self.load().items()
+            if item == key or entry["blocked_until"] > now
+        }
+        attempts = values.get(key, {}).get("attempts", 0) + 1
+        values[key] = {
+            "blocked_until": DISPATCH_QUARANTINE_UNTIL,
+            "attempts": attempts,
+        }
+        self.write(values)
+        return attempts
+
+    def remove(self, key: str, now: int) -> None:
+        values = {
+            item: entry for item, entry in self.load().items()
+            if item != key and entry["blocked_until"] > now
+        }
+        self.write(values)
 
     def retry_after_cooldown(self, key: str, now: int, attempts_hint: int = 1) -> int:
         values = self.load()
@@ -758,7 +779,8 @@ def with_lock(path: Path):
 
 def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
            metadata: dict[str, Any] | None = None,
-           dispatch_history_key: str | None = None) -> None:
+           dispatch_history_key: str | None = None,
+           dispatch_history_claimed: bool = False) -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
@@ -768,8 +790,11 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         if dispatch_history_key is not None:
             if dispatch_history_key in store.pending_dispatch_keys():
                 raise RunnerError("dispatch target has pending cleanup")
-            if history.contains(dispatch_history_key, now):
+            history_claimed = history.contains(dispatch_history_key, now)
+            if history_claimed and not dispatch_history_claimed:
                 raise RunnerError("dispatch target is still in retry history")
+            if dispatch_history_claimed and not history_claimed:
+                raise RunnerError("dispatch target has no durable JIT claim")
         states = store.leases()
         state_by_lease: dict[str, dict[str, Any]] = {}
         for item in states:
@@ -802,7 +827,10 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             store.write_cleanup_obligation(lease, state, now)
         store.write(lease, state)
         if dispatch_history_key is not None:
-            state["dispatch_attempts"] = history.add(dispatch_history_key, now)
+            if dispatch_history_claimed:
+                state["dispatch_attempts"] = history.load()[dispatch_history_key]["attempts"]
+            else:
+                state["dispatch_attempts"] = history.add(dispatch_history_key, now)
             store.write(lease, state)
         LOG.info("launch requested lease=%s", lease)
         try:
@@ -1114,7 +1142,23 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
             key = f"{repo}:{job['job_id']}"
             if key in pending_dispatches or history.contains(key, now):
                 continue
-            response = client.generate_jit(repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label)
+            history.quarantine(key, now)
+            try:
+                response = client.generate_jit(
+                    repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label
+                )
+            except RateLimited:
+                history.remove(key, now)
+                raise
+            except RunnerError:
+                LOG.error(
+                    "JIT request outcome ambiguous; dispatch target quarantined "
+                    "repo=%s trigger_job_id=%s",
+                    repo, job["job_id"],
+                )
+                raise
+            if not isinstance(response, dict):
+                raise RunnerError("GitHub returned an invalid JIT response")
             encoded = response.get("encoded_jit_config")
             runner = response.get("runner", {})
             runner_id = runner.get("id") if isinstance(runner, dict) else None
@@ -1150,7 +1194,7 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     "runner_name": runner_name,
                     "trigger_run_id": job["run_id"],
                     "trigger_job_id": job["job_id"],
-                }, dispatch_history_key=key)
+                }, dispatch_history_key=key, dispatch_history_claimed=True)
                 LOG.info(
                     "runner registered lease=%s repo=%s runner_id=%s trigger_run_id=%s "
                     "trigger_job_id=%s assignment=unverified",

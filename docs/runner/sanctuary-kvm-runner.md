@@ -28,6 +28,10 @@ The locally requested runner name is persisted when the JIT response omits it;
 a conflicting non-empty reported name rejects the registration.
 Runner names are reused across retries and are never sufficient for attribution
 without the numeric runner ID.
+If a JIT POST has an ambiguous outcome, the manager quarantines that trigger job
+in dispatch history and never retries it automatically. An operator must first
+verify and remove any GitHub runner registration before clearing that one
+history entry or re-running the workflow.
 During teardown the bounded assignment search also inspects recent queued
 workflow runs because GitHub can return an overall run to `queued` between its
 serial ephemeral jobs while retaining completed-job runner metadata.
