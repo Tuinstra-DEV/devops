@@ -7,6 +7,9 @@
       - production_umami_image is match('^ghcr\\.io/umami-software/umami:3\\.3\\.1@sha256:[a-f0-9]{64}$')
       - production_umami_postgres_image is match('^docker\\.io/library/postgres:15-alpine@sha256:[a-f0-9]{64}$')
       - production_umami_edge_network == (production_caddy_edge_network | default('tuinstra-edge'))
+      - production_umami_retention_days | int == 90
+      - production_umami_retention_batch_size | int == 5000
+      - production_umami_retention_script == '/usr/local/sbin/tuinstra-umami-retention'
       - production_caddy_enable_https | bool
       - "'umami' in production_app_names"
     fail_msg: Refusing to install Umami outside the pinned prod-01 deployment contract.
@@ -122,6 +125,33 @@
     group: root
     mode: '0640'
 
+- name: Create the protected Umami retention status directory
+  ansible.builtin.file:
+    path: "{{ production_umami_retention_status_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install the Umami active-data retention program
+  ansible.builtin.template:
+    src: umami-retention.j2
+    dest: "{{ production_umami_retention_script }}"
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install the Umami retention systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - umami-retention.service
+    - umami-retention.timer
+
 - name: Validate the Umami Compose definition
   ansible.builtin.command:
     argv:
@@ -204,6 +234,14 @@
   when:
     - not ansible_check_mode
     - not production_umami_admin_bootstrap.stat.exists
+
+- name: Enable the daily Umami retention timer
+  ansible.builtin.systemd_service:
+    name: umami-retention.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
 
 - name: Install the Umami Caddy route after secure bootstrap
   ansible.builtin.template:

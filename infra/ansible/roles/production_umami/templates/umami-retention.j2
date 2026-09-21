@@ -1,0 +1,610 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+readonly retention_days={{ production_umami_retention_days }}
+readonly batch_size={{ production_umami_retention_batch_size }}
+readonly compose_root={{ production_umami_root | quote }}
+readonly compose_file={{ (production_umami_root + '/compose.yml') | quote }}
+readonly status_root={{ production_umami_retention_status_root | quote }}
+readonly runtime_root={{ production_umami_retention_runtime_root | quote }}
+
+mode=apply
+case "${1:-}" in
+  '') ;;
+  --check) mode=check ;;
+  *)
+    echo 'usage: tuinstra-umami-retention [--check]' >&2
+    exit 64
+    ;;
+esac
+
+/usr/bin/install -d -o root -g root -m 0700 "$runtime_root"
+exec 9>"$runtime_root/retention.lock"
+if ! /usr/bin/flock -n 9; then
+  echo 'umami-retention status=skipped reason=already-running'
+  exit 0
+fi
+
+dry_run=false
+if [[ "$mode" == check ]]; then
+  dry_run=true
+fi
+
+psql=(
+  /usr/bin/docker compose
+  --project-name umami
+  --project-directory "$compose_root"
+  --file "$compose_file"
+  exec -T db
+  psql -X --set=ON_ERROR_STOP=1 --quiet --tuples-only --no-align
+  --username {{ production_umami_database_user | quote }}
+  --dbname {{ production_umami_database_name | quote }}
+  --set="retention_days=$retention_days"
+  --set="batch_size=$batch_size"
+  --set="dry_run=$dry_run"
+)
+
+psql_stderr="$(/usr/bin/mktemp "$runtime_root/database-error.XXXXXX")"
+trap '/usr/bin/rm -f -- "$psql_stderr"' EXIT
+if ! result="$("${psql[@]}" 2>"$psql_stderr" <<'SQL'
+\set VERBOSITY terse
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
+SET idle_in_transaction_session_timeout = '60s';
+
+DO $lock$
+BEGIN
+  IF NOT pg_try_advisory_lock(hashtextextended('tuinstra-umami-retention-v1', 0)) THEN
+    RAISE EXCEPTION 'Umami retention lock unavailable';
+  END IF;
+END;
+$lock$;
+
+CREATE OR REPLACE FUNCTION pg_temp.verify_umami_331_schema()
+RETURNS void
+LANGUAGE plpgsql
+AS $verify$
+DECLARE
+  mismatch_count integer;
+  active_migrations text[];
+BEGIN
+  IF current_setting('server_version_num')::integer < 150000
+     OR current_setting('server_version_num')::integer >= 160000 THEN
+    RAISE EXCEPTION 'Umami retention schema verification failed';
+  END IF;
+
+  IF to_regclass('public._prisma_migrations') IS NULL THEN
+    RAISE EXCEPTION 'Umami retention schema verification failed';
+  END IF;
+
+  SELECT array_agg(migration_name ORDER BY migration_name)
+    INTO active_migrations
+    FROM public._prisma_migrations
+   WHERE finished_at IS NOT NULL
+     AND rolled_back_at IS NULL;
+
+  IF active_migrations IS DISTINCT FROM ARRAY[
+    '01_init',
+    '02_report_schema_session_data',
+    '03_metric_performance_index',
+    '04_team_redesign',
+    '05_add_visit_id',
+    '06_session_data',
+    '07_add_tag',
+    '08_add_utm_clid',
+    '09_update_hostname_region',
+    '10_add_distinct_id',
+    '11_add_segment',
+    '12_update_report_parameter',
+    '13_add_revenue',
+    '14_add_link_and_pixel',
+    '15_add_share',
+    '16_boards',
+    '17_remove_duplicate_key',
+    '18_add_performance',
+    '19_add_session_replay',
+    '20_add_heatmap',
+    '21_add_session_link',
+    '22_add_2fa',
+    '23_update_session_data',
+    '24_lowercase_username'
+  ]::text[] THEN
+    RAISE EXCEPTION 'Umami retention schema verification failed';
+  END IF;
+
+  WITH expected(table_name, column_name, data_type, is_nullable) AS (
+    VALUES
+      ('session_replay_saved', 'saved_replay_id', 'uuid', 'NO'),
+      ('session_replay_saved', 'created_at', 'timestamp with time zone', 'YES'),
+      ('session_replay', 'replay_id', 'uuid', 'NO'),
+      ('session_replay', 'session_id', 'uuid', 'NO'),
+      ('session_replay', 'created_at', 'timestamp with time zone', 'YES'),
+      ('heatmap_event', 'heatmap_event_id', 'uuid', 'NO'),
+      ('heatmap_event', 'session_id', 'uuid', 'NO'),
+      ('heatmap_event', 'created_at', 'timestamp with time zone', 'NO'),
+      ('revenue', 'revenue_id', 'uuid', 'NO'),
+      ('revenue', 'session_id', 'uuid', 'NO'),
+      ('revenue', 'event_id', 'uuid', 'NO'),
+      ('revenue', 'created_at', 'timestamp with time zone', 'YES'),
+      ('event_data', 'event_data_id', 'uuid', 'NO'),
+      ('event_data', 'website_event_id', 'uuid', 'NO'),
+      ('event_data', 'created_at', 'timestamp with time zone', 'YES'),
+      ('session_data', 'session_data_id', 'uuid', 'NO'),
+      ('session_data', 'session_id', 'uuid', 'NO'),
+      ('session_data', 'created_at', 'timestamp with time zone', 'YES'),
+      ('session_link', 'session_id', 'uuid', 'NO'),
+      ('session_link', 'created_at', 'timestamp with time zone', 'YES'),
+      ('website_event', 'event_id', 'uuid', 'NO'),
+      ('website_event', 'session_id', 'uuid', 'NO'),
+      ('website_event', 'created_at', 'timestamp with time zone', 'YES'),
+      ('session', 'session_id', 'uuid', 'NO'),
+      ('session', 'created_at', 'timestamp with time zone', 'YES')
+  )
+  SELECT count(*)
+    INTO mismatch_count
+    FROM expected
+    LEFT JOIN information_schema.columns actual
+      ON actual.table_schema = 'public'
+     AND actual.table_name = expected.table_name
+     AND actual.column_name = expected.column_name
+   WHERE actual.column_name IS NULL
+      OR actual.data_type <> expected.data_type
+      OR actual.is_nullable <> expected.is_nullable;
+
+  IF mismatch_count <> 0 THEN
+    RAISE EXCEPTION 'Umami retention schema verification failed';
+  END IF;
+END;
+$verify$;
+
+SELECT pg_temp.verify_umami_331_schema() \g /dev/null
+
+CREATE TEMP TABLE retention_context (
+  cutoff timestamptz NOT NULL
+) ON COMMIT PRESERVE ROWS;
+INSERT INTO retention_context(cutoff)
+VALUES (statement_timestamp() - make_interval(days => :retention_days));
+
+CREATE TEMP TABLE retention_counts (
+  table_name text PRIMARY KEY,
+  affected_count bigint NOT NULL DEFAULT 0
+) ON COMMIT PRESERVE ROWS;
+INSERT INTO retention_counts(table_name)
+VALUES
+  ('session_replay_saved'),
+  ('session_replay'),
+  ('heatmap_event'),
+  ('revenue'),
+  ('event_data'),
+  ('session_data'),
+  ('session_link'),
+  ('website_event'),
+  ('session');
+
+\if :dry_run
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*) FROM session_replay_saved, retention_context
+   WHERE created_at IS NULL OR created_at < cutoff
+) WHERE table_name = 'session_replay_saved';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*) FROM session_replay, retention_context
+   WHERE created_at IS NULL OR created_at < cutoff
+) WHERE table_name = 'session_replay';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*) FROM heatmap_event, retention_context
+   WHERE created_at IS NULL OR created_at < cutoff
+) WHERE table_name = 'heatmap_event';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*)
+    FROM revenue item, retention_context
+   WHERE item.created_at IS NULL
+      OR item.created_at < cutoff
+      OR NOT EXISTS (
+           SELECT 1 FROM website_event parent WHERE parent.event_id = item.event_id
+         )
+      OR EXISTS (
+           SELECT 1
+             FROM website_event parent
+            WHERE parent.event_id = item.event_id
+              AND (parent.created_at IS NULL OR parent.created_at < cutoff)
+         )
+) WHERE table_name = 'revenue';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*)
+    FROM event_data item, retention_context
+   WHERE item.created_at IS NULL
+      OR item.created_at < cutoff
+      OR NOT EXISTS (
+           SELECT 1 FROM website_event parent
+            WHERE parent.event_id = item.website_event_id
+         )
+      OR EXISTS (
+           SELECT 1
+             FROM website_event parent
+            WHERE parent.event_id = item.website_event_id
+              AND (parent.created_at IS NULL OR parent.created_at < cutoff)
+         )
+) WHERE table_name = 'event_data';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*)
+    FROM session_data item, retention_context
+   WHERE item.created_at IS NULL
+      OR item.created_at < cutoff
+      OR NOT EXISTS (
+           SELECT 1 FROM session parent WHERE parent.session_id = item.session_id
+         )
+) WHERE table_name = 'session_data';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*)
+    FROM session_link item, retention_context
+   WHERE item.created_at IS NULL
+      OR item.created_at < cutoff
+      OR NOT EXISTS (
+           SELECT 1 FROM session parent WHERE parent.session_id = item.session_id
+         )
+) WHERE table_name = 'session_link';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*) FROM website_event, retention_context
+   WHERE created_at IS NULL OR created_at < cutoff
+) WHERE table_name = 'website_event';
+
+UPDATE retention_counts SET affected_count = (
+  SELECT count(*)
+    FROM session item, retention_context
+   WHERE (item.created_at IS NULL OR item.created_at < cutoff)
+     AND NOT EXISTS (
+       SELECT 1 FROM website_event child
+        WHERE child.session_id = item.session_id
+          AND child.created_at IS NOT NULL
+          AND child.created_at >= cutoff
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM revenue child
+        JOIN website_event parent ON parent.event_id = child.event_id
+       WHERE child.session_id = item.session_id
+         AND child.created_at IS NOT NULL
+         AND child.created_at >= cutoff
+         AND parent.created_at IS NOT NULL
+         AND parent.created_at >= cutoff
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM session_data child
+        WHERE child.session_id = item.session_id
+          AND child.created_at IS NOT NULL
+          AND child.created_at >= cutoff
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM session_link child
+        WHERE child.session_id = item.session_id
+          AND child.created_at IS NOT NULL
+          AND child.created_at >= cutoff
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM session_replay child
+        WHERE child.session_id = item.session_id
+          AND child.created_at IS NOT NULL
+          AND child.created_at >= cutoff
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM heatmap_event child
+        WHERE child.session_id = item.session_id
+          AND child.created_at IS NOT NULL
+          AND child.created_at >= cutoff
+     )
+) WHERE table_name = 'session';
+\else
+CREATE OR REPLACE PROCEDURE pg_temp.apply_umami_retention()
+LANGUAGE plpgsql
+AS $cleanup$
+DECLARE
+  rows_deleted bigint;
+  event_data_deleted bigint;
+  revenue_deleted bigint;
+BEGIN
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM session_replay_saved item, retention_context
+       WHERE item.created_at IS NULL OR item.created_at < cutoff
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM session_replay_saved item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'session_replay_saved';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM session_replay item, retention_context
+       WHERE item.created_at IS NULL OR item.created_at < cutoff
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM session_replay item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'session_replay';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM heatmap_event item, retention_context
+       WHERE item.created_at IS NULL OR item.created_at < cutoff
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM heatmap_event item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'heatmap_event';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM revenue item, retention_context
+       WHERE item.created_at IS NULL
+          OR item.created_at < cutoff
+          OR NOT EXISTS (
+               SELECT 1 FROM website_event parent
+                WHERE parent.event_id = item.event_id
+             )
+          OR EXISTS (
+               SELECT 1
+                 FROM website_event parent
+                WHERE parent.event_id = item.event_id
+                  AND (parent.created_at IS NULL OR parent.created_at < cutoff)
+             )
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM revenue item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'revenue';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM event_data item, retention_context
+       WHERE item.created_at IS NULL
+          OR item.created_at < cutoff
+          OR NOT EXISTS (
+               SELECT 1 FROM website_event parent
+                WHERE parent.event_id = item.website_event_id
+             )
+          OR EXISTS (
+               SELECT 1
+                 FROM website_event parent
+                WHERE parent.event_id = item.website_event_id
+                  AND (parent.created_at IS NULL OR parent.created_at < cutoff)
+             )
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM event_data item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'event_data';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM session_data item, retention_context
+       WHERE item.created_at IS NULL
+          OR item.created_at < cutoff
+          OR NOT EXISTS (
+               SELECT 1 FROM session parent
+                WHERE parent.session_id = item.session_id
+             )
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM session_data item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'session_data';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM session_link item, retention_context
+       WHERE item.created_at IS NULL
+          OR item.created_at < cutoff
+          OR NOT EXISTS (
+               SELECT 1 FROM session parent
+                WHERE parent.session_id = item.session_id
+             )
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM session_link item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'session_link';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid, item.event_id
+        FROM website_event item, retention_context
+       WHERE item.created_at IS NULL OR item.created_at < cutoff
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), removed_event_data AS (
+      DELETE FROM event_data child USING doomed
+       WHERE child.website_event_id = doomed.event_id
+       RETURNING 1
+    ), removed_revenue AS (
+      DELETE FROM revenue child USING doomed
+       WHERE child.event_id = doomed.event_id
+       RETURNING 1
+    ), removed_events AS (
+      DELETE FROM website_event item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT
+      (SELECT count(*) FROM removed_events),
+      (SELECT count(*) FROM removed_event_data),
+      (SELECT count(*) FROM removed_revenue)
+      INTO rows_deleted, event_data_deleted, revenue_deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'website_event';
+    UPDATE retention_counts SET affected_count = affected_count + event_data_deleted
+     WHERE table_name = 'event_data';
+    UPDATE retention_counts SET affected_count = affected_count + revenue_deleted
+     WHERE table_name = 'revenue';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  LOOP
+    PERFORM pg_temp.verify_umami_331_schema();
+    WITH doomed AS MATERIALIZED (
+      SELECT item.ctid
+        FROM session item, retention_context
+       WHERE (item.created_at IS NULL OR item.created_at < cutoff)
+         AND NOT EXISTS (
+           SELECT 1 FROM website_event child WHERE child.session_id = item.session_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM revenue child WHERE child.session_id = item.session_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM session_data child WHERE child.session_id = item.session_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM session_link child WHERE child.session_id = item.session_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM session_replay child WHERE child.session_id = item.session_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM heatmap_event child WHERE child.session_id = item.session_id
+         )
+       LIMIT {{ production_umami_retention_batch_size }}
+       FOR UPDATE OF item SKIP LOCKED
+    ), deleted AS (
+      DELETE FROM session item USING doomed
+       WHERE item.ctid = doomed.ctid
+       RETURNING 1
+    )
+    SELECT count(*) INTO rows_deleted FROM deleted;
+    UPDATE retention_counts SET affected_count = affected_count + rows_deleted
+     WHERE table_name = 'session';
+    COMMIT;
+    EXIT WHEN rows_deleted = 0;
+  END LOOP;
+
+  PERFORM pg_temp.verify_umami_331_schema();
+END;
+$cleanup$;
+
+CALL pg_temp.apply_umami_retention();
+\endif
+
+SELECT jsonb_build_object(
+  'status', 'ok',
+  'mode', CASE WHEN :dry_run THEN 'check' ELSE 'apply' END,
+  'retention_days', :retention_days,
+  'cutoff', to_char(
+    (SELECT cutoff FROM retention_context) AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  ),
+  'completed_at', to_char(
+    clock_timestamp() AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+  ),
+  'total', (SELECT sum(affected_count) FROM retention_counts),
+  'counts', (
+    SELECT jsonb_object_agg(table_name, affected_count ORDER BY table_name)
+      FROM retention_counts
+  )
+)::text;
+
+\o /dev/null
+SELECT pg_advisory_unlock(hashtextextended('tuinstra-umami-retention-v1', 0));
+\o
+SQL
+)"; then
+  echo 'umami-retention status=failed reason=database-operation' >&2
+  exit 70
+fi
+/usr/bin/rm -f -- "$psql_stderr"
+trap - EXIT
+
+if [[ -z "$result" || "$result" != \{*\} ]]; then
+  echo 'umami-retention status=failed reason=invalid-aggregate-result' >&2
+  exit 70
+fi
+
+if [[ "$mode" == apply ]]; then
+  /usr/bin/install -d -o root -g root -m 0700 "$status_root"
+  status_tmp="$(/usr/bin/mktemp "$status_root/.last-success.XXXXXX")"
+  trap '/usr/bin/rm -f -- "$status_tmp"' EXIT
+  /usr/bin/printf '%s\n' "$result" >"$status_tmp"
+  /usr/bin/chmod 0600 "$status_tmp"
+  /usr/bin/mv -f -- "$status_tmp" "$status_root/last-success.json"
+  trap - EXIT
+fi
+
+/usr/bin/printf 'umami-retention %s\n' "$result"

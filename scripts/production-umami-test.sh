@@ -26,6 +26,11 @@ if grep -q '^      - port$' "$role/tasks/verify.yml"; then
   exit 1
 fi
 grep -q 'HostConfig.PortBindings' "$role/tasks/verify.yml"
+grep -q 'production_umami_retention_days: 90' "$role/defaults/main.yml"
+grep -q 'production_umami_retention_batch_size: 5000' "$role/defaults/main.yml"
+grep -q 'OnCalendar=\*-\*-\* 04:15:00 Europe/Amsterdam' "$role/templates/umami-retention.timer.j2"
+grep -q 'Persistent=true' "$role/templates/umami-retention.timer.j2"
+grep -q 'RandomizedDelaySec=15m' "$role/templates/umami-retention.timer.j2"
 
 if grep -R -E '(PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY)' \
   "$repo_root/infra/ansible/production-umami"* \
@@ -62,5 +67,6 @@ for playbook in \
 done
 "$ansible_playbook" "$repo_root/infra/ansible/production-umami-template-test.yml"
 PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test_umami_onepassword_handoff.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$repo_root/scripts/test_umami_retention_contract.py"
 
 echo "production Umami contract passed"

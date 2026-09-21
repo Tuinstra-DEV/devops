@@ -13,10 +13,44 @@ applicatie en database hebben geen hostpoorten.
 - Edge-netwerk: `tuinstra-edge`; alleen Umami en Caddy delen dit netwerk.
 - Database: service `db`, database en gebruiker `umami`.
 - Healthcheck: `/api/heartbeat`.
+- Actieve analyticsretentie: 90 dagen, dagelijks afgedwongen door
+  `umami-retention.timer`.
 
 De image-referenties staan met immutable OCI-digests in de defaults van de
 Ansible-rol. De Umami-digest hoort bij tag `3.3.1`; de PostgreSQL-digest bij
 `15-alpine` (PostgreSQL 15.19 op het moment van vastleggen).
+
+## Retentie van actieve analyticsdata
+
+De root-only job `/usr/local/sbin/tuinstra-umami-retention` verwijdert actieve
+analyticsdata die strikt ouder is dan 90 dagen. Records exact op de vaste cutoff
+blijven staan. Een `NULL`-datum is niet aantoonbaar binnen de termijn en wordt
+daarom verwijderd uit de gedateerde analyticstabellen. De job omvat saved
+replays, replay-chunks, heatmap-events, revenue, event- en session-data,
+session-links, website-events en daarna alleen oude sessions waarnaar geen van
+die tabellen nog verwijst. Account-, website-, team-, rapport-, segment-, board-,
+share-, link-, pixel- en applicatieconfiguratie worden nooit door deze job
+verwijderd.
+
+De cutoff wordt eenmaal per run vastgelegd. Deletes lopen in transacties van
+maximaal 5.000 records. De job controleert vóór de eerste delete en vóór iedere
+batch het exacte Umami 3.3.1-/PostgreSQL 15-schema en stopt bij afwijking. Een
+hostlock en een PostgreSQL advisory lock voorkomen overlappende runs. De timer
+start dagelijks om 04:15 `Europe/Amsterdam`, na het back-upvenster, met maximaal
+15 minuten willekeurige vertraging en `Persistent=true` voor een gemiste run.
+
+Een read-only controle valideert schema en aantallen zonder data te wijzigen:
+
+```bash
+sudo /usr/local/sbin/tuinstra-umami-retention --check
+```
+
+Een succesvolle echte run schrijft alleen cutoff, voltooiingstijd en aantallen
+naar het root-only bestand
+`/var/lib/tuinstra/umami/retention/last-success.json`. Dezelfde aggregate
+metadata staat in de systemd-journal; URL's, sessie-ID's en eventdata worden niet
+gelogd. Dit successbestand en de journal zijn inspectiebewijs, geen actieve
+monitoring of alarmering.
 
 ## Installeren en controleren
 
@@ -73,6 +107,23 @@ de Compose-configuratie, image-digests en bestanden onder
 De algemene export-, transport-, retentie- en herstelimplementatie valt buiten
 DEV-24 en wordt door de afzonderlijke back-upstory geleverd.
 
+De 90 dagen hierboven gelden voor de actieve Umami-database. Versleutelde
+back-ups hebben een afzonderlijke retentie en kunnen daardoor al verwijderde
+analyticsdata blijven bevatten totdat die back-ups volgens hun eigen beleid
+vervallen. Een restore van zo'n back-up kan oudere data opnieuw introduceren.
+Houd daarom maintenance actief, start nog geen publiek verkeer en voer direct na
+het terugzetten eerst de schema-check en daarna de echte purge uit:
+
+```bash
+sudo /usr/local/sbin/tuinstra-umami-retention --check
+sudo /usr/local/sbin/tuinstra-umami-retention
+sudo systemctl start umami-retention.timer
+```
+
+Controleer de aggregate successstatus voordat de maintenance-route wordt
+opgeheven. Bij schema-afwijking blijft maintenance actief totdat de retention job
+voor de herstelde Umami-versie is beoordeeld; omzeil de fail-closed controle niet.
+
 ## Herstel of terugrol
 
 Bij een mislukte eerste installatie blijft de Caddy-route afwezig zolang de
@@ -88,3 +139,8 @@ ssh mtuinstra@vps01.tuinstra.dev \
 Voor een applicatierollback wordt alleen de pinned Umami-image aangepast en de
 deploy opnieuw uitgevoerd. Een databaseversie met migraties wordt pas
 teruggedraaid nadat een geteste logische restore beschikbaar is.
+
+Bij een rollback van de retentieautomatisering kan de timer zonder dataverlies
+worden uitgezet met `sudo systemctl disable --now umami-retention.timer`. Dit
+herstelt reeds conform beleid verwijderde data niet; daarvoor is een beoordeelde
+restore nodig, gevolgd door een onmiddellijke purge vóór heropening van verkeer.
