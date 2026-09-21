@@ -99,6 +99,8 @@ class UmamiRetentionContractTest(unittest.TestCase):
         self.assertIn("OnCalendar=*-*-* 04:15:00 Europe/Amsterdam", TIMER)
         self.assertIn("Persistent=true", TIMER)
         self.assertIn("RandomizedDelaySec=15m", TIMER)
+        self.assertIn("Unit=umami-retention.service", TIMER)
+        self.assertNotIn("Unit=tuinstra-umami-retention.service", TIMER)
 
     def test_ansible_installs_and_verifies_root_only_runtime(self) -> None:
         self.assertIn("mode: '0700'", TASKS)
