@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Umami active analytics retention
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 Europe/Amsterdam
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+Unit=tuinstra-umami-retention.service
+
+[Install]
+WantedBy=timers.target

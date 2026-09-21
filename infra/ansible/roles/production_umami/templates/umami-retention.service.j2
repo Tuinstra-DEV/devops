@@ -1,0 +1,36 @@
+[Unit]
+Description=Enforce Umami active analytics retention
+After=docker.service tuinstra-backup-export.service
+Requires=docker.service
+ConditionPathExists={{ production_umami_root }}/compose.yml
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+RuntimeDirectory=tuinstra-umami-retention
+RuntimeDirectoryMode=0700
+Environment=HOME={{ production_umami_retention_runtime_root }}
+Environment=DOCKER_CONFIG={{ production_umami_retention_runtime_root }}/docker
+ExecStart={{ production_umami_retention_script }}
+TimeoutStartSec=60min
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths={{ production_umami_retention_status_root }} {{ production_umami_retention_runtime_root }} /run/docker.sock
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native

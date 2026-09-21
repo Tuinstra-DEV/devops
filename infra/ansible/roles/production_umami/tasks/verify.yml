@@ -24,6 +24,57 @@
   loop: "{{ production_umami_protected_files.results }}"
   no_log: true
 
+- name: Inspect installed Umami retention files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - { path: "{{ production_umami_retention_script }}", mode: '0700' }
+    - { path: "{{ production_umami_retention_status_root }}", mode: '0700' }
+    - { path: /etc/systemd/system/umami-retention.service, mode: '0644' }
+    - { path: /etc/systemd/system/umami-retention.timer, mode: '0644' }
+  register: production_umami_retention_files
+
+- name: Verify installed Umami retention file ownership and modes
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == item.item.mode
+    quiet: true
+  loop: "{{ production_umami_retention_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Verify the Umami retention systemd unit definitions
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-analyze
+      - verify
+      - /etc/systemd/system/umami-retention.service
+      - /etc/systemd/system/umami-retention.timer
+  changed_when: false
+
+- name: Verify the Umami retention timer is enabled and active
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, "{{ item }}", umami-retention.timer]
+  loop:
+    - is-enabled
+    - is-active
+  changed_when: false
+
+- name: Validate the Umami retention schema and report dry-run aggregates
+  ansible.builtin.command:
+    argv:
+      - "{{ production_umami_retention_script }}"
+      - --check
+  register: production_umami_retention_check
+  changed_when: false
+  failed_when: >-
+    production_umami_retention_check.rc != 0 or
+    production_umami_retention_check.stdout is not match('^umami-retention ') or
+    production_umami_retention_check.stdout is not search('"mode": "check"')
+
 - name: Read Umami Compose services
   ansible.builtin.command:
     argv:

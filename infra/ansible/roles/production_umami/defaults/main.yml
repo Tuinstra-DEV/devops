@@ -9,3 +9,8 @@ production_umami_secret_root: /etc/tuinstra/umami
 production_umami_data_root: /var/lib/tuinstra/umami
 production_umami_database_name: umami
 production_umami_database_user: umami
+production_umami_retention_days: 90
+production_umami_retention_batch_size: 5000
+production_umami_retention_status_root: "{{ production_umami_data_root }}/retention"
+production_umami_retention_runtime_root: /run/tuinstra-umami-retention
+production_umami_retention_script: /usr/local/sbin/tuinstra-umami-retention
