@@ -56,6 +56,12 @@ SECRET_SPECS = {
         "relative_path": "etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password",
         "validator": "restic",
     },
+    "restic_prod01_status": {
+        "field_id": "tuinstraBackupResticProd01Status",
+        "label": "/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password",
+        "relative_path": "etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password",
+        "validator": "restic",
+    },
     "ssh_prod01": {
         "field_id": "tuinstraBackupSshProd01",
         "label": "/etc/tuinstra-backup/ssh/prod01",
@@ -76,6 +82,13 @@ SECRET_SPECS = {
     },
 }
 LEGACY_SECRET_NAMES = frozenset({"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"})
+RESTORE_SECRET_NAMES = LEGACY_SECRET_NAMES | {"ssh_prod01_restore"}
+CURRENT_SECRET_NAMES = frozenset(SECRET_SPECS)
+SUPPORTED_SECRET_NAME_SETS = frozenset({
+    LEGACY_SECRET_NAMES,
+    RESTORE_SECRET_NAMES,
+    CURRENT_SECRET_NAMES,
+})
 SCHEMA_FIELD_ID = "tuinstraBackupEscrowSchema"
 SOURCE_FIELD_ID = "tuinstraBackupEscrowSource"
 NOTES_FIELD_ID = "notesPlain"
@@ -202,7 +215,7 @@ def _validate_secret(name: str, value: Any) -> str:
 
 
 def _validate_secret_set(values: dict[str, Any]) -> dict[str, str]:
-    if frozenset(values) not in {LEGACY_SECRET_NAMES, frozenset(SECRET_SPECS)}:
+    if frozenset(values) not in SUPPORTED_SECRET_NAME_SETS:
         raise EscrowError("Credential set does not match a supported schema")
     validated = {name: _validate_secret(name, values[name]) for name in SECRET_SPECS if name in values}
     if validated["ssh_prod01"] == validated["ssh_prod02"]:
@@ -228,7 +241,7 @@ def parse_bundle(stream) -> dict[str, str]:
     if document.get("schema_version") != SCHEMA_VERSION or document.get("source_host") != SOURCE_HOST:
         raise EscrowError("Escrow input identity does not match Sanctuary schema v1")
     values = document.get("secrets")
-    if not isinstance(values, dict) or frozenset(values) not in {LEGACY_SECRET_NAMES, frozenset(SECRET_SPECS)}:
+    if not isinstance(values, dict) or frozenset(values) not in SUPPORTED_SECRET_NAME_SETS:
         raise EscrowError("Escrow input does not contain the exact credential allowlist")
     return _validate_secret_set(values)
 
@@ -269,9 +282,11 @@ def validate_managed_item(item: dict[str, Any]) -> str:
     field_ids = [field.get("id") for field in item.get("fields", []) if isinstance(field, dict)]
     if any(field_ids.count(field_id) != 1 for field_id in protected_ids):
         raise EscrowError("Managed 1Password item has missing or duplicate protected fields")
-    restore_field_id = SECRET_SPECS["ssh_prod01_restore"]["field_id"]
-    if field_ids.count(restore_field_id) > 1:
-        raise EscrowError("Managed 1Password item has duplicate production restore identity")
+    optional_field_ids = {
+        SECRET_SPECS[name]["field_id"] for name in CURRENT_SECRET_NAMES - LEGACY_SECRET_NAMES
+    }
+    if any(field_ids.count(field_id) > 1 for field_id in optional_field_ids):
+        raise EscrowError("Managed 1Password item has duplicate upgrade credentials")
     if item.get("title") != ITEM_TITLE or _category_name(item) != ITEM_CATEGORY \
             or item.get("tags") != [ITEM_TAG] \
             or _field_value(item, SCHEMA_FIELD_ID) != "1" \
@@ -366,14 +381,21 @@ class OnePassword:
             raise EscrowError("1Password creation returned a conflicting item identity")
         return current
 
-    def add_restore_identity_once(self, current: dict[str, Any], value: str) -> dict[str, Any]:
+    def add_credentials_once(
+        self, current: dict[str, Any], additions: dict[str, str]
+    ) -> dict[str, Any]:
         item_id = validate_managed_item(current)
-        if _field_value(current, SECRET_SPECS["ssh_prod01_restore"]["field_id"]) is not None:
-            raise EscrowError("Managed escrow production restore identity already exists")
+        if not additions or not set(additions) <= CURRENT_SECRET_NAMES - LEGACY_SECRET_NAMES:
+            raise EscrowError("Managed escrow upgrade credential set is invalid")
+        if any(_field_value(current, SECRET_SPECS[name]["field_id"]) is not None
+               for name in additions):
+            raise EscrowError("Managed escrow upgrade credential already exists")
         candidate = json.loads(json.dumps(current))
         candidate.pop("id", None)
-        spec = SECRET_SPECS["ssh_prod01_restore"]
-        _set_field(candidate, spec["field_id"], "CONCEALED", spec["label"], value)
+        for name in SECRET_SPECS:
+            if name in additions:
+                spec = SECRET_SPECS[name]
+                _set_field(candidate, spec["field_id"], "CONCEALED", spec["label"], additions[name])
         edit_error = None
         try:
             self.commands.json(
@@ -409,10 +431,11 @@ class BackupEscrow:
         if current is None:
             current = self.onepassword.create_once(build_item(secrets))
         stored = item_secrets(current)
-        if set(stored) == LEGACY_SECRET_NAMES and set(secrets) == set(SECRET_SPECS):
-            if stored != {name: secrets[name] for name in LEGACY_SECRET_NAMES}:
+        if set(stored) < set(secrets):
+            if stored != {name: secrets[name] for name in stored}:
                 raise EscrowError("Managed escrow exists with different credentials; refusing overwrite")
-            current = self.onepassword.add_restore_identity_once(current, secrets["ssh_prod01_restore"])
+            additions = {name: secrets[name] for name in secrets if name not in stored}
+            current = self.onepassword.add_credentials_once(current, additions)
             stored = item_secrets(current)
         if stored != secrets:
             raise EscrowError("Managed escrow exists with different credentials; refusing overwrite")
@@ -512,10 +535,11 @@ def _validate_recovery_tree(directory: Path, *, require_complete: bool) -> None:
                 raise EscrowError("Recovery directory contains an unsafe file")
             actual_files.add(str(child.relative_to(directory)))
     expected = _expected_relative_paths()
-    legacy_expected = {
-        SECRET_SPECS[name]["relative_path"] for name in LEGACY_SECRET_NAMES
-    } | {RECOVERY_MARKER}
-    if actual_files - expected or (require_complete and actual_files != expected and actual_files != legacy_expected):
+    supported_expected = {
+        frozenset(SECRET_SPECS[name]["relative_path"] for name in names) | {RECOVERY_MARKER}
+        for names in SUPPORTED_SECRET_NAME_SETS
+    }
+    if actual_files - expected or (require_complete and frozenset(actual_files) not in supported_expected):
         raise EscrowError("Recovery directory contains unexpected or missing files")
     expected_directories: set[str] = set()
     for path in expected:

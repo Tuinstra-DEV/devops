@@ -37,7 +37,7 @@
       "adapter": "status-bundle-v1",
       "compose_project": "status",
       "compose_file": "/var/www/status/compose.yml",
-      "compose_env_file": "/etc/tuinstra/status.env",
+      "compose_env_file": "/etc/tuinstra/status/.env",
       "bundle_file": "/var/lib/status-backup/status-reliability.age",
       "receipt_file": "/var/lib/status-backup/status-reliability.json",
       "source_uid": 82

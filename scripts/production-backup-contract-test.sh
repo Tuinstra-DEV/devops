@@ -187,6 +187,22 @@ grep -q 'Status restore uses its isolated DEV-41 drill' \
   "$repo_root/backup/tuinstra-backup-admin"
 grep -q '"app_id": "status"' "$repo_root/backup/profiles/prod01.json"
 grep -q '"adapter": "status-bundle-v1"' "$repo_root/backup/profiles/prod01.json"
+grep -q "production_backup_age_recipient.stat.gid.*82" \
+  "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q "production_backup_age_recipient.stat.mode.*0640" \
+  "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q "owner: '82'" "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q "group: '82'" "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q 'root:GID-82 0640' "$repo_root/docs/playbooks/production-backups.md"
+grep -q 'STATUS_APPLICATION_REVISION=<40-tekens-release-SHA>' \
+  "$repo_root/docs/playbooks/production-backups.md"
+grep -q 'STATUS_BACKUP_GID = 82' "$repo_root/backup/tuinstra_backup.py"
+grep -q 'production_backup_age_recipient_file' \
+  "$repo_root/infra/ansible/roles/production_backup/defaults/main.yml"
+grep -q "argv: \[/usr/bin/getent, passwd, '82'\]" \
+  "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
+grep -q "argv: \[/usr/bin/getent, group, '82'\]" \
+  "$repo_root/infra/ansible/roles/production_backup/tasks/main.yml"
 grep -q 'exec "$engine" --config "$config" escrow-recovery-test' \
   "$repo_root/backup/tuinstra-backup-admin"
 if grep -q -- '--plan-hash "$plan_hash"' "$repo_root/backup/tuinstra-backup-admin"; then

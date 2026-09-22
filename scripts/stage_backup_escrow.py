@@ -19,13 +19,14 @@ MARKER = Path("/var/lib/tuinstra-backup/escrow-staged-v1")
 SOURCES = {
     "age_identity": SECRET_ROOT / "age-identity.txt",
     "restic_prod01_umami": SECRET_ROOT / "restic-passwords/tuinstra-prod-01/umami.password",
+    "restic_prod01_status": SECRET_ROOT / "restic-passwords/tuinstra-prod-01/status.password",
     "ssh_prod01": SECRET_ROOT / "ssh/prod01",
     "ssh_prod02": SECRET_ROOT / "ssh/prod02",
     "ssh_prod01_restore": SECRET_ROOT / "ssh/prod01-restore",
 }
 MAX_SECRET_BYTES = 16 * 1024
-CURRENT_MARKER = "schema-version=2\n"
-LEGACY_MARKER = "schema-version=1\n"
+CURRENT_MARKER = "schema-version=3\n"
+UPGRADABLE_MARKERS = frozenset({"schema-version=1\n", "schema-version=2\n"})
 
 
 class StageError(RuntimeError):
@@ -83,7 +84,7 @@ def stage(destination: Path, marker: Path, uid: int, gid: int,
                 or stat.S_IMODE(info.st_mode) != 0o600):
             raise StageError("escrow staging marker is unsafe")
         marker_value = marker.read_text(encoding="ascii")
-        if marker_value not in {LEGACY_MARKER, CURRENT_MARKER}:
+        if marker_value not in UPGRADABLE_MARKERS | {CURRENT_MARKER}:
             raise StageError("escrow staging marker is unsafe")
         if marker_value == CURRENT_MARKER:
             return "already-staged"

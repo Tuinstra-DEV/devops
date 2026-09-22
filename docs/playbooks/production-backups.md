@@ -26,7 +26,8 @@ De volgende bestanden worden buiten Git aangeleverd:
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys voor alleen de vaste backupcyclus |
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01-restore` | `root:root 0600` | Afzonderlijke identiteit voor de vaste productieherstel-RPC naar prod-01 |
 | Sanctuary | `/etc/tuinstra-backup/ssh/known_hosts` | `root:root 0644` | Handmatig geverifieerde hostkeys |
-| Productie | `/etc/tuinstra-backup/age-recipient.txt` | `root:root 0600` | Alleen de publieke, afgeleide age-recipient |
+| Productie prod-01 | `/etc/tuinstra-backup/age-recipient.txt` | `root:GID-82 0640` | Alleen de publieke, afgeleide age-recipient; leesbaar voor de geïsoleerde Status-backupcontainer met GID 82 |
+| Productie prod-02 | `/etc/tuinstra-backup/age-recipient.txt` | `root:root 0600` | Dezelfde publieke recipient voor de root-owned Tracker-export |
 
 Bewaar de age-identity, het Restic-wachtwoord en alle drie SSH-identiteiten daarnaast in 1Password. De
 acceptatietest gebruikt een vanuit 1Password opnieuw aangeleverde kopie. Laat
@@ -47,8 +48,9 @@ Voor de onafhankelijke credentialtest zet de 1Password-helper exact één tijdel
 sudo /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
 ```
 
-De vaste actie accepteert voor bestaande installaties het oude vier-veld-schema en voor nieuwe installaties
-het vijf-veld-schema met de afzonderlijke productieherstel-identiteit. Hij kopieert de waarden naar een root-private tijdelijke map,
+De vaste actie accepteert bestaande vier- en vijf-veld-schema's en het huidige
+zes-veld-schema met de afzonderlijke productieherstel-identiteit en het
+Status-Resticwachtwoord. Hij kopieert de waarden naar een root-private tijdelijke map,
 bewijst met beide teruggehaalde SSH-keys de beperkte `list`-toegang en voert de volledige geïsoleerde
 Umami-restore uit met de teruggehaalde age- en Restic-credentials. Pas nadat het herstelbewijs duurzaam is
 opgeslagen, verwijdert de actie de exacte user-readable stagingkopie. Bij een fout blijft deze stagingkopie
@@ -73,12 +75,14 @@ vaste timers. Private age-, Restic- en Ed25519-sleutels blijven root-owned mode
 
 De eerste installatie maakt één handoffbestand
 `/home/mtuinstra/.local/share/tuinstra-backup-escrow.json` als `mtuinstra:0600`.
-Een upgrade met een bestaande v1-marker maakt eenmalig een nieuwe vijf-veld-handoff en vervangt daarna
-de marker door v2. Voer dit bestand op de Mac rechtstreeks via stdin aan
+Een upgrade met een bestaande v1- of v2-marker maakt eenmalig een nieuwe
+zes-veld-handoff en vervangt daarna de marker door v3. Voer dit bestand op de
+Mac rechtstreeks via stdin aan
 `backup/onepassword-escrow.py escrow --op <absoluut-op-pad> --vault <vault-id>`.
-De helper maakt één beheerde Secure Note en vergelijkt de readback. Een bestaand beheerd item met vier
-velden wordt uitsluitend uitgebreid met `prod01-restore`; het volledige JSON-item gaat via stdin en
-de helper vergelijkt daarna alle vijf waarden. Verwijder het
+De helper maakt één beheerde Secure Note en vergelijkt de readback. Een bestaand
+beheerd item met vier of vijf velden wordt uitsluitend uitgebreid met de
+ontbrekende `prod01-restore`- en/of Status-Resticcredential; het volledige
+JSON-item gaat via stdin en de helper vergelijkt daarna alle zes waarden. Verwijder het
 handoffbestand op Sanctuary pas na die geslaagde readback. Een root-owned marker
 voorkomt dat een herhaalde installatie ongemerkt een nieuwe leesbare kopie maakt.
 
@@ -97,6 +101,11 @@ lees op iedere host `/etc/ssh/ssh_host_ed25519_key.pub` met sudo, vergelijk de
 fingerprint met de al vertrouwde lokale `known_hosts`-entry en bouw daarna pas
 `/etc/tuinstra-backup/ssh/known_hosts` op Sanctuary. Gebruik geen `ssh-keyscan`
 als eerste vertrouwensbron.
+
+Controleer op prod-01 vóór provisioning dat UID en GID 82 niet aan een
+hostaccount zijn toegewezen. De Status-handoffdirectory wordt exclusief
+`82:82 0700`; de container draait met dezelfde numerieke identiteit zonder een
+gedeelde host-webgroep.
 
 ## Installatie
 
@@ -147,6 +156,13 @@ exact overeenkomende ciphertextomvang en SHA-256 wordt verpakt. De innerlijke
 Status-bundle is al client-side versleuteld en bevat PostgreSQL, catalogus en de
 gevalideerde `current`/`previous`-projecties; Sanctuary bewaart dit bundle nogmaals
 in zijn applicatiespecifieke versleutelde Restic-repository.
+
+Activeer de Status-timer pas nadat de bijbehorende Status-release inclusief het
+`reliability`-profiel op prod-01 draait en `/etc/tuinstra/status/.env`
+`STATUS_APPLICATION_REVISION=<40-tekens-release-SHA>` bevat. Controleer eerst dat
+`docker compose --env-file /etc/tuinstra/status/.env -f /var/www/status/compose.yml
+--profile reliability config` slaagt. De oudere `STATUS_SOURCE_SHA` is geen
+vervanging voor deze fail-closed release-identiteit.
 
 Inspecteer secretvrije status:
 
