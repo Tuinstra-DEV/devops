@@ -39,7 +39,7 @@
       "restore_identity_file": "/etc/tuinstra-backup/ssh/prod01-restore",
       "restore_credential_name": "prod01-restore.key",
       "known_hosts_file": "/etc/tuinstra-backup/ssh/known_hosts",
-      "applications": ["umami"]
+      "applications": ["umami", "status"]
     },
     {
       "host_slug": "tuinstra-prod-02",

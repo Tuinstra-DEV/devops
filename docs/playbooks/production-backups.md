@@ -6,8 +6,8 @@ forced-command SSH-key een logische export op de productiehost, haalt het
 versleutelde artifact op, controleert checksum en omvang, schrijft het naar een
 eigen versleutelde Restic-repository en bevestigt ontvangst pas na `restic check`.
 
-De eerste actieve adapter is `tuinstra-prod-01/umami`. Na de geverifieerde
-Tracker 1.4.0-cutover wordt ook `tuinstra-prod-02/tracker` actief met een eigen
+De actieve adapters zijn `tuinstra-prod-01/umami`,
+`tuinstra-prod-01/status` en `tuinstra-prod-02/tracker`, elk met een eigen
 credential, repository en policy. De Sanctuary-installer activeert uitsluitend
 de backup-policy en systemd-timers; hij start of wijzigt geen Tracker-container
 of proxyroute. Sanctuary is alleen bestemming; zijn eigen workloads zijn geen
@@ -21,6 +21,7 @@ De volgende bestanden worden buiten Git aangeleverd:
 |---|---|---|---|
 | Sanctuary | `/etc/tuinstra-backup/age-identity.txt` | `root:root 0600` | Ontsleuteling en onafhankelijk herstel |
 | Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password` | `root:root 0600` | Losse Umami-repository |
+| Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password` | `root:root 0600` | Losse Status-repository |
 | Sanctuary | `/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password` | `root:root 0600` | Losse Tracker-repository |
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01` en `prod02` | `root:root 0600` | Hostgebonden pull-keys voor alleen de vaste backupcyclus |
 | Sanctuary | `/etc/tuinstra-backup/ssh/prod01-restore` | `root:root 0600` | Afzonderlijke identiteit voor de vaste productieherstel-RPC naar prod-01 |
@@ -107,7 +108,7 @@ als eerste vertrouwensbron.
    `production_backup_public_key_root`. Gebruik `mtuinstra` met sudo; root-SSH
    blijft uitgeschakeld.
 3. Controleer `systemctl list-timers 'tuinstra-backup-*'`. Umami start dagelijks
-   om 02:00 en Tracker om 03:00 Europe/Amsterdam, beide met maximaal tien
+   om 02:00, Tracker om 03:00 en Status om 04:00 Europe/Amsterdam, elk met maximaal tien
    minuten willekeurige spreiding.
 
 De Ansible-rol `infra/ansible/sanctuary-backup.yml` beschrijft dezelfde toestand
@@ -127,6 +128,7 @@ Een volledige, duurzame cyclus:
 
 ```bash
 sudo /usr/local/sbin/tuinstra-backup-admin run
+sudo /usr/local/sbin/tuinstra-backup-admin run status
 sudo /usr/local/sbin/tuinstra-backup-admin run tracker
 ```
 
@@ -138,6 +140,13 @@ Een mislukte bronexport wordt in de Sanctuary-catalogus als `source_export_faile
 een beperkte `stage_code`, bijvoorbeeld `application-contract`, `compose-contract`, `runtime-evidence`, `object-inventory`,
 `quiescence`, `database-export` of `config-metadata`. De stagecode bevat geen remote fouttekst,
 command-output of geheimen.
+
+De Status-adapter start vóór elke export de vaste Compose-service `backup` uit
+het profiel `reliability`. Alleen een maximaal vijftien minuten oude receipt met
+exact overeenkomende ciphertextomvang en SHA-256 wordt verpakt. De innerlijke
+Status-bundle is al client-side versleuteld en bevat PostgreSQL, catalogus en de
+gevalideerde `current`/`previous`-projecties; Sanctuary bewaart dit bundle nogmaals
+in zijn applicatiespecifieke versleutelde Restic-repository.
 
 Inspecteer secretvrije status:
 

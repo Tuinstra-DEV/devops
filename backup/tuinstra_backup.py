@@ -76,6 +76,12 @@ SSH_PRIVATE_BEGIN = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 SSH_PRIVATE_END = "-----END OPENSSH " + "PRIVATE KEY-----"
 UMAMI_CONTENT_MARKER_ALGORITHM = "umami-admin-two-factor-v1"
 TRACKER_ADAPTER = "tracker-compose-v1"
+STATUS_ADAPTER = "status-bundle-v1"
+STATUS_RECEIPT_KEYS = {
+    "contract", "created_at", "source_host", "database_identity", "bundle_sha256",
+    "bundle_bytes", "application_revision", "projection_current",
+}
+STATUS_RECEIPT_MAX_AGE_SECONDS = 15 * 60
 TRACKER_MIGRATION_MARKER_ALGORITHM = "tracker-doctrine-migrations-v1"
 TRACKER_OBJECT_MANIFEST_ALGORITHM = "tracker-s3-object-v1"
 TRACKER_MARKER_TABLES = ("organization", "project", "story", "attachment")
@@ -182,7 +188,7 @@ def validate_public_manifest(value: dict[str, Any], maximum_bytes: int) -> dict[
     require_artifact(value["artifact_id"])
     require_id(value["host_slug"], "host slug")
     require_id(value["app_id"], "application id")
-    if value["adapter"] not in {"postgres-compose-v1", TRACKER_ADAPTER} \
+    if value["adapter"] not in {"postgres-compose-v1", TRACKER_ADAPTER, STATUS_ADAPTER} \
             or not SHA_RE.fullmatch(value["payload_sha256"]):
         raise BackupError("artifact manifest content is invalid")
     if not isinstance(value["payload_bytes"], int) or not 0 < value["payload_bytes"] <= maximum_bytes:
@@ -539,6 +545,85 @@ def copy_regular(source: Path, target: Path) -> dict[str, Any]:
     return {"name": target.as_posix(), "sha256": sha256(target), "bytes": target.stat().st_size}
 
 
+def status_bundle_inputs(app: dict[str, Any], payload: Path,
+                         as_of: dt.datetime | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate and copy a freshly generated encrypted Status recovery bundle."""
+    bundle = Path(app.get("bundle_file", ""))
+    receipt_path = Path(app.get("receipt_file", ""))
+    source_uid = app.get("source_uid")
+    if not isinstance(source_uid, int) or isinstance(source_uid, bool) or source_uid < 0:
+        raise BackupError("Status backup source UID is invalid")
+    for source in (bundle, receipt_path):
+        reject_symlink_components(source)
+    open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        bundle_fd = os.open(bundle, open_flags)
+        try:
+            receipt_fd = os.open(receipt_path, open_flags)
+        except Exception:
+            os.close(bundle_fd)
+            raise
+    except OSError as exc:
+        raise BackupError("Status backup source is unavailable") from exc
+    with os.fdopen(bundle_fd, "rb") as bundle_handle, os.fdopen(receipt_fd, "rb") as receipt_handle:
+        for info in (os.fstat(bundle_handle.fileno()), os.fstat(receipt_handle.fileno())):
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != source_uid
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise BackupError("Status backup source has unsafe ownership or permissions")
+        receipt_bytes = receipt_handle.read(65537)
+        if len(receipt_bytes) > 65536:
+            raise BackupError("Status backup receipt is invalid")
+        try:
+            receipt = json.loads(receipt_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackupError("Status backup receipt is invalid") from exc
+        if not isinstance(receipt, dict) or set(receipt) != STATUS_RECEIPT_KEYS:
+            raise BackupError("Status backup receipt schema is invalid")
+        if (receipt.get("contract") != "status.reliability-backup/v1"
+                or receipt.get("source_host") != "tuinstra-prod-01"
+                or receipt.get("database_identity") != "backup-writer"
+                or not SHA_RE.fullmatch(receipt.get("bundle_sha256", ""))
+                or not isinstance(receipt.get("bundle_bytes"), int)
+                or isinstance(receipt["bundle_bytes"], bool) or receipt["bundle_bytes"] < 1
+                or not re.fullmatch(r"[a-fA-F0-9]{40}", receipt.get("application_revision", ""))
+                or not re.fullmatch(r"releases/[A-Za-z0-9._-]+/(?:live|expired)",
+                                    receipt.get("projection_current", ""))):
+            raise BackupError("Status backup receipt content is invalid")
+        try:
+            created_at = dt.datetime.fromisoformat(receipt["created_at"].replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise BackupError("Status backup receipt timestamp is invalid") from exc
+        if created_at.tzinfo is None or receipt["created_at"] != created_at.astimezone(dt.timezone.utc) \
+                .replace(microsecond=0).isoformat().replace("+00:00", "Z"):
+            raise BackupError("Status backup receipt timestamp is invalid")
+        current = as_of or dt.datetime.now(dt.timezone.utc)
+        age = current - created_at
+        if age < dt.timedelta(0) or age > dt.timedelta(seconds=STATUS_RECEIPT_MAX_AGE_SECONDS):
+            raise BackupError("Status backup receipt is stale")
+        files_directory = payload / "files"
+        reject_symlink_components(files_directory.parent)
+        files_directory.mkdir(parents=True, exist_ok=True)
+        bundle_target = files_directory / "status-bundle"
+        with bundle_target.open("xb") as target_handle:
+            shutil.copyfileobj(bundle_handle, target_handle)
+        os.chmod(bundle_target, 0o600)
+        receipt_target = files_directory / "status-receipt"
+        with receipt_target.open("xb") as target_handle:
+            target_handle.write(receipt_bytes)
+        os.chmod(receipt_target, 0o600)
+
+        copied_inputs = [
+            {"name": "files/status-bundle", "sha256": sha256(bundle_target),
+             "bytes": bundle_target.stat().st_size},
+            {"name": "files/status-receipt", "sha256": sha256(receipt_target),
+             "bytes": receipt_target.stat().st_size},
+        ]
+        if (copied_inputs[0]["bytes"] != receipt["bundle_bytes"]
+                or copied_inputs[0]["sha256"] != receipt["bundle_sha256"]):
+            raise BackupError("Status backup bundle does not match its receipt")
+        return copied_inputs, receipt
+
+
 def snapshot_directory(source: Path, target: Path, maximum_bytes: int) -> None:
     reject_symlink_components(source)
     reject_symlink_components(target.parent)
@@ -859,13 +944,15 @@ def image_digests(images: list[str]) -> set[str]:
 
 def compose_command(app: dict[str, Any]) -> list[str]:
     command = ["docker", "compose", "--project-name", app["compose_project"]]
-    if app.get("adapter") == TRACKER_ADAPTER:
+    if app.get("adapter") in {TRACKER_ADAPTER, STATUS_ADAPTER}:
         env_file = app.get("compose_env_file")
-        images_file = app.get("compose_images_file")
-        if (not isinstance(env_file, str) or not env_file or not isinstance(images_file, str)
-                or not images_file):
-            raise BackupError("Tracker Compose environment and image files are required")
+        if not isinstance(env_file, str) or not env_file:
+            raise BackupError("Compose environment file is required")
         command.extend(["--env-file", env_file])
+    if app.get("adapter") == TRACKER_ADAPTER:
+        images_file = app.get("compose_images_file")
+        if not isinstance(images_file, str) or not images_file:
+            raise BackupError("Tracker Compose image file is required")
     command.extend(["--file", app["compose_file"]])
     if app.get("adapter") == TRACKER_ADAPTER:
         command.extend(["--file", app["compose_images_file"]])
@@ -1031,7 +1118,7 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     with export_stage("application-contract"):
         host = require_id(config["host_slug"], "host slug")
         app = application(config, app_id)
-    if app.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER}:
+    if app.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER, STATUS_ADAPTER}:
         raise BackupError("unsupported application adapter")
     spool = Path(config["spool_dir"])
     receipts = Path(config["receipt_dir"])
@@ -1055,58 +1142,73 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             root = Path(temporary)
             payload = root / "payload"
             payload.mkdir(mode=0o700)
-            with export_stage("compose-contract"):
-                compose = compose_command(app)
-                actual_images = running_compose_images(app)
-            with export_stage("runtime-evidence"):
-                database_versions = postgres_versions(app)
-            inputs: list[dict[str, Any]] = []
-            before_minio = None
-            if app.get("adapter") == TRACKER_ADAPTER:
-                attachment_inventory = database_versions.pop("attachment_inventory")
+            if app.get("adapter") == STATUS_ADAPTER:
+                with export_stage("compose-contract"):
+                    compose = compose_command(app)
+                    run([*compose, "--profile", "reliability", "run", "--rm", "backup"])
+                with export_stage("runtime-evidence"):
+                    inputs, status_receipt = status_bundle_inputs(app, payload)
+                internal = {
+                    "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
+                    "host_slug": host, "app_id": app_id, "adapter": STATUS_ADAPTER,
+                    "created_at": now(), "database_service": "database",
+                    "images": [f"status-recovery-bundle@sha256:{status_receipt['bundle_sha256']}"],
+                    "inputs": inputs,
+                }
+                atomic_json(payload / "backup-manifest.json", internal, 0o600)
+            else:
+                with export_stage("compose-contract"):
+                    compose = compose_command(app)
+                    actual_images = running_compose_images(app)
+                with export_stage("runtime-evidence"):
+                    database_versions = postgres_versions(app)
+                inputs = []
+                before_minio = None
+                if app.get("adapter") == TRACKER_ADAPTER:
+                    attachment_inventory = database_versions.pop("attachment_inventory")
 
-                def capture_tracker_objects() -> None:
-                    with export_stage("object-inventory"):
-                        inputs.append(tracker_object_manifest(app, payload, attachment_inventory))
+                    def capture_tracker_objects() -> None:
+                        with export_stage("object-inventory"):
+                            inputs.append(tracker_object_manifest(app, payload, attachment_inventory))
 
-                before_minio = capture_tracker_objects
-            with export_stage("quiescence"):
-                quiesce = (tracker_quiescence(app, before_minio=before_minio)
-                           if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
-                with quiesce:
-                    with export_stage("database-export"):
-                        database_dump = payload / "database.dump"
-                        dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
-                            'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
-                        with database_dump.open("xb") as handle:
-                            run(dump_command, stdout=handle)
-                        os.chmod(database_dump, 0o600)
-                        if database_dump.stat().st_size == 0:
-                            raise BackupError("database export is empty")
-                        inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
-                                          "bytes": database_dump.stat().st_size})
-                    with export_stage("config-metadata"):
-                        for item in app["included_files"]:
-                            logical = require_id(item["name"], "input name")
-                            copied = copy_regular(Path(item["path"]), payload / "files" / logical)
-                            copied["name"] = f"files/{logical}"
-                            inputs.append(copied)
-                        for item in app.get("included_directories", []):
-                            logical = require_id(item["name"], "directory input name")
-                            snapshot = payload / "files" / f"{logical}.tar"
-                            snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
-                            inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
-                                           "bytes": snapshot.stat().st_size})
-            internal = {
-                "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
-                "host_slug": host, "app_id": app_id, "adapter": app["adapter"],
-                "created_at": now(), "database_service": app["postgres_service"],
-                "images": sorted(actual_images.values()), "image_services": actual_images,
-                "database": database_versions, "inputs": inputs,
-            }
-            if app.get("adapter") == TRACKER_ADAPTER:
-                internal["object_store_bucket"] = app["object_store_bucket"]
-            atomic_json(payload / "backup-manifest.json", internal, 0o600)
+                    before_minio = capture_tracker_objects
+                with export_stage("quiescence"):
+                    quiesce = (tracker_quiescence(app, before_minio=before_minio)
+                               if app.get("adapter") == TRACKER_ADAPTER else contextlib.nullcontext())
+                    with quiesce:
+                        with export_stage("database-export"):
+                            database_dump = payload / "database.dump"
+                            dump_command = compose + ["exec", "-T", app["postgres_service"], "sh", "-eu", "-c",
+                                'exec pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"']
+                            with database_dump.open("xb") as handle:
+                                run(dump_command, stdout=handle)
+                            os.chmod(database_dump, 0o600)
+                            if database_dump.stat().st_size == 0:
+                                raise BackupError("database export is empty")
+                            inputs.insert(0, {"name": "database.dump", "sha256": sha256(database_dump),
+                                              "bytes": database_dump.stat().st_size})
+                        with export_stage("config-metadata"):
+                            for item in app["included_files"]:
+                                logical = require_id(item["name"], "input name")
+                                copied = copy_regular(Path(item["path"]), payload / "files" / logical)
+                                copied["name"] = f"files/{logical}"
+                                inputs.append(copied)
+                            for item in app.get("included_directories", []):
+                                logical = require_id(item["name"], "directory input name")
+                                snapshot = payload / "files" / f"{logical}.tar"
+                                snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
+                                inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
+                                               "bytes": snapshot.stat().st_size})
+                internal = {
+                    "schema_version": SCHEMA_VERSION, "artifact_id": artifact_id,
+                    "host_slug": host, "app_id": app_id, "adapter": app["adapter"],
+                    "created_at": now(), "database_service": app["postgres_service"],
+                    "images": sorted(actual_images.values()), "image_services": actual_images,
+                    "database": database_versions, "inputs": inputs,
+                }
+                if app.get("adapter") == TRACKER_ADAPTER:
+                    internal["object_store_bucket"] = app["object_store_bucket"]
+                atomic_json(payload / "backup-manifest.json", internal, 0o600)
             archive = root / "payload.tar"
             with tarfile.open(archive, "w") as tar:
                 tar.add(payload, arcname="payload", recursive=True)
@@ -1900,7 +2002,8 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
     manifest_path = validated_input_path(payload_root, "backup-manifest.json")
     internal = json.loads(manifest_path.read_text(encoding="utf-8"))
     keys = set(internal) if isinstance(internal, dict) else set()
-    allowed_keys = (INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS,
+    allowed_keys = (INTERNAL_MANIFEST_BASE_KEYS,
+                    INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_VERSION_KEYS,
                     INTERNAL_MANIFEST_BASE_KEYS | INTERNAL_MANIFEST_TRACKER_KEYS)
     if keys not in allowed_keys:
         raise BackupError("encrypted payload manifest schema is invalid")
@@ -1909,7 +2012,7 @@ def validate_payload(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
             raise BackupError("encrypted payload identity mismatch")
     if (not isinstance(internal.get("created_at"), str) or not internal["created_at"].endswith("Z")
             or not isinstance(internal.get("database_service"), str)
-            or internal.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER}):
+            or internal.get("adapter") not in {"postgres-compose-v1", TRACKER_ADAPTER, STATUS_ADAPTER}):
         raise BackupError("encrypted payload manifest content is invalid")
     require_id(internal["database_service"], "database service")
     validate_materialized_images(internal.get("images"))
