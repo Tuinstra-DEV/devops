@@ -133,6 +133,7 @@
       User=root
       UMask=0077
       ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app umami
+      ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app status
       ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-02 --app tracker
       PrivateTmp=true
       NoNewPrivileges=true
@@ -174,6 +175,7 @@
     - /etc/tuinstra-backup/ssh/known_hosts
     - /etc/tuinstra-backup/age-identity.txt
     - /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password
+    - /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password
     - /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password
   register: sanctuary_backup_credentials
   no_log: true
@@ -201,6 +203,7 @@
     - { path: /etc/tuinstra-backup/ssh/known_hosts, owner: root, group: root, mode: '0644' }
     - { path: /etc/tuinstra-backup/age-identity.txt, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password, owner: root, group: root, mode: '0600' }
+    - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password, owner: root, group: root, mode: '0600' }
     - { path: /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password, owner: root, group: root, mode: '0600' }
 
 - name: Remove obsolete delegated ingest sudo policy
@@ -215,14 +218,18 @@
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run umami
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run status
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run tracker
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check umami
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check status
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check tracker
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention umami
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention status
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention tracker
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog umami
+      mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog status
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog tracker
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test umami *
       mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test tracker *
@@ -299,6 +306,34 @@
       - '12'
   register: sanctuary_backup_tracker_policy_apply
   changed_when: "'\"status\":\"applied\"' in sanctuary_backup_tracker_policy_apply.stdout"
+
+- name: Apply immutable Status backup policy
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
+      - --config
+      - /etc/tuinstra-backup/worker.json
+      - policy-reconcile
+      - --host
+      - tuinstra-prod-01
+      - --app
+      - status
+      - --policy-version
+      - production-v1
+      - --plan-hash
+      - "{{ sanctuary_backup_status_policy_hash }}"
+      - --hour
+      - '4'
+      - --minute
+      - '0'
+      - --daily
+      - '7'
+      - --weekly
+      - '4'
+      - --monthly
+      - '12'
+  register: sanctuary_backup_status_policy_apply
+  changed_when: "'\"status\":\"applied\"' in sanctuary_backup_status_policy_apply.stdout"
 
 - name: Enable backup timers
   ansible.builtin.systemd_service:

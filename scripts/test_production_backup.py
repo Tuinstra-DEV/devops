@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import importlib.util
+import datetime as dt
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -99,6 +100,88 @@ class BackupTests(unittest.TestCase):
             "included_files": [],
             "included_directories": [{"name": "attachments", "path": str(attachments), "max_bytes": 1024}],
         }
+
+    def status_app(self):
+        compose = self.root / "status-compose.yml"
+        compose.write_text("services: {}\n")
+        environment = self.root / "status.env"
+        environment.write_text("STATUS_APPLICATION_REVISION=" + "a" * 40 + "\n")
+        environment.chmod(0o600)
+        bundle = self.root / "status-reliability.age"
+        bundle.write_bytes(b"age-encrypted-status-recovery-bundle")
+        bundle.chmod(0o600)
+        receipt = self.root / "status-reliability.json"
+        receipt.write_text(json.dumps({
+            "contract": "status.reliability-backup/v1",
+            "created_at": backup.now(),
+            "source_host": "tuinstra-prod-01",
+            "database_identity": "backup-writer",
+            "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+            "bundle_bytes": bundle.stat().st_size,
+            "application_revision": "a" * 40,
+            "projection_current": "releases/projection-1/live",
+        }) + "\n")
+        receipt.chmod(0o600)
+        return {
+            "app_id": "status", "enabled": True, "adapter": "status-bundle-v1",
+            "compose_project": "status", "compose_file": str(compose),
+            "compose_env_file": str(environment), "bundle_file": str(bundle),
+            "receipt_file": str(receipt), "source_uid": os.getuid(),
+        }
+
+    def test_status_bundle_requires_fresh_matching_receipt(self):
+        app = self.status_app()
+        payload = self.root / "payload"
+        payload.mkdir()
+        inputs, receipt = backup.status_bundle_inputs(app, payload)
+        self.assertEqual([item["name"] for item in inputs],
+                         ["files/status-bundle", "files/status-receipt"])
+        self.assertEqual(receipt["application_revision"], "a" * 40)
+
+        bundle = Path(app["bundle_file"])
+        bundle.write_bytes(bundle.read_bytes() + b"tampered")
+        with self.assertRaisesRegex(backup.BackupError, "does not match"):
+            backup.status_bundle_inputs(app, self.root / "tampered")
+
+    def test_status_bundle_rejects_stale_or_broadly_readable_source(self):
+        app = self.status_app()
+        receipt_path = Path(app["receipt_file"])
+        receipt = json.loads(receipt_path.read_text())
+        receipt["created_at"] = "2026-09-22T10:00:00Z"
+        receipt_path.write_text(json.dumps(receipt) + "\n")
+        with self.assertRaisesRegex(backup.BackupError, "stale"):
+            backup.status_bundle_inputs(
+                app, self.root / "stale",
+                dt.datetime(2026, 9, 22, 10, 16, tzinfo=dt.timezone.utc),
+            )
+
+        receipt["created_at"] = "2026-09-22T10:15:00Z"
+        receipt_path.write_text(json.dumps(receipt) + "\n")
+        Path(app["bundle_file"]).chmod(0o640)
+        with self.assertRaisesRegex(backup.BackupError, "unsafe ownership or permissions"):
+            backup.status_bundle_inputs(
+                app, self.root / "permissions",
+                dt.datetime(2026, 9, 22, 10, 16, tzinfo=dt.timezone.utc),
+            )
+
+    def test_status_export_wraps_only_the_validated_recovery_bundle(self):
+        config = self.producer()
+        config["applications"] = [self.status_app()]
+
+        def fake_run(argv, **kwargs):
+            if argv[0] == "age":
+                shutil.copyfile(argv[-1], argv[argv.index("--output") + 1])
+            return mock.Mock(stdout=b"")
+
+        with mock.patch.object(backup, "run", side_effect=fake_run):
+            public = backup.create_export(config, "status")
+        self.assertEqual(public["adapter"], "status-bundle-v1")
+        self.assertEqual(public["app_id"], "status")
+        wrapped = Path(config["spool_dir"]) / f"{public['artifact_id']}.age"
+        with tarfile.open(wrapped) as archive:
+            names = {member.name for member in archive.getmembers()}
+        self.assertIn("payload/files/status-bundle", names)
+        self.assertIn("payload/files/status-receipt", names)
 
     def test_tracker_attachment_snapshot_is_manifestable_and_rejects_links(self):
         app = self.tracker_app()

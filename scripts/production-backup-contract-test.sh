@@ -181,8 +181,12 @@ grep -q '"database": database_versions' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'run-active --host "$host" --app "$app" --trigger manual' \
   "$repo_root/backup/tuinstra-backup-admin"
 grep -q 'tuinstra-prod-02' "$repo_root/backup/tuinstra-backup-admin"
-grep -q 'backup admin failed: target must be umami or tracker' \
+grep -q 'backup admin failed: target must be umami, status or tracker' \
   "$repo_root/backup/tuinstra-backup-admin"
+grep -q 'Status restore uses its isolated DEV-41 drill' \
+  "$repo_root/backup/tuinstra-backup-admin"
+grep -q '"app_id": "status"' "$repo_root/backup/profiles/prod01.json"
+grep -q '"adapter": "status-bundle-v1"' "$repo_root/backup/profiles/prod01.json"
 grep -q 'exec "$engine" --config "$config" escrow-recovery-test' \
   "$repo_root/backup/tuinstra-backup-admin"
 if grep -q -- '--plan-hash "$plan_hash"' "$repo_root/backup/tuinstra-backup-admin"; then
@@ -193,6 +197,8 @@ grep -q '"materialized_root": "/var/lib/tuinstra-backup/materialized"' \
   "$repo_root/backup/profiles/sanctuary.json"
 grep -q 'spool_quota_bytes.*10737418240' "$repo_root/backup/profiles/prod01.json"
 grep -q '658abb88b4e65d37c45bd97bcaa9f523911321ee1131d4367d544a2292b05e8e' \
+  "$repo_root/infra/ansible/roles/sanctuary_backup/defaults/main.yml"
+grep -q 'f3fa9e7a9cee5db9639761c10ad112d867d6c0161c7023b1cd055f5e95563e8d' \
   "$repo_root/infra/ansible/roles/sanctuary_backup/defaults/main.yml"
 grep -q '"--keep-tag", "tuinstra:production-restore-safety"' "$repo_root/backup/tuinstra_backup.py"
 grep -q 'CATALOG_LIMIT = 500' "$repo_root/backup/tuinstra_backup.py"

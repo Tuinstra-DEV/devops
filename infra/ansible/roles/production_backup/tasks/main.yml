@@ -52,6 +52,15 @@
     - { path: /run/tuinstra-backup, owner: root, group: root, mode: '0700' }
     - { path: /var/lib/tuinstra-backup-pull/.ssh, owner: tuinstra-backup-pull, group: tuinstra-backup-pull, mode: '0700' }
 
+- name: Create private Status backup handoff directory
+  ansible.builtin.file:
+    path: /var/lib/status-backup
+    state: directory
+    owner: root
+    group: www-data
+    mode: '0770'
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
 - name: Create fixed production restore directories
   ansible.builtin.file:
     path: "{{ item.path }}"

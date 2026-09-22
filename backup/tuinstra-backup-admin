@@ -11,10 +11,10 @@ fi
 
 resolve_target() {
   case "$1" in
-    umami) host=tuinstra-prod-01 ;;
+    umami|status) host=tuinstra-prod-01 ;;
     tracker) host=tuinstra-prod-02 ;;
     *)
-      echo "backup admin failed: target must be umami or tracker" >&2
+      echo "backup admin failed: target must be umami, status or tracker" >&2
       exit 2
       ;;
   esac
@@ -56,6 +56,10 @@ case "${1:-}" in
     else
       exit 2
     fi
+    [[ "$app" != status ]] || {
+      echo "backup admin failed: Status restore uses its isolated DEV-41 drill" >&2
+      exit 2
+    }
     [[ "$snapshot" == latest || "$snapshot" =~ ^[0-9a-f]{8,64}$ ]] || {
       echo "backup admin failed: invalid snapshot id" >&2
       exit 2
@@ -67,7 +71,7 @@ case "${1:-}" in
     exec "$engine" --config "$config" escrow-recovery-test
     ;;
   *)
-    echo "usage: sudo tuinstra-backup-admin {status|catalog [umami|tracker]|run [umami|tracker]|check [umami|tracker]|retention [umami|tracker]|restore-test [umami|tracker] SNAPSHOT|escrow-recovery-test}" >&2
+    echo "usage: sudo tuinstra-backup-admin {status|catalog [umami|status|tracker]|run [umami|status|tracker]|check [umami|status|tracker]|retention [umami|status|tracker]|restore-test [umami|tracker] SNAPSHOT|escrow-recovery-test}" >&2
     exit 2
     ;;
 esac
