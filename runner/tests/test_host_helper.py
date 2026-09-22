@@ -80,6 +80,33 @@ class HostHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "slots are occupied"):
             helper.launch("new", b"aml0")
 
+    @mock.patch.object(helper.os, "sched_getaffinity", return_value={1, 2, 3, 9, 10, 11}, create=True)
+    @mock.patch.object(helper, "run")
+    def test_cpu_pool_selection_requires_pinned_wow_and_unique_runner_domains(self, run, affinity):
+        run.return_value = mock.Mock(stdout="123|true|1,9,2,10,3,11\n")
+        self.assertEqual(helper.select_cpu_set([]), "4,12,5,13")
+        run.side_effect = [
+            mock.Mock(stdout="123|true|1,9,2,10,3,11\n"),
+            mock.Mock(stdout="<domain><vcpu cpuset='4,12,5,13'>4</vcpu></domain>"),
+        ]
+        self.assertEqual(helper.select_cpu_set(["sanctuary-ci-one"]), "6,14,7,15")
+        self.assertEqual(helper.normalized_cpu_set("4-5,12-13"),
+                         helper.normalized_cpu_set("4,12,5,13"))
+        run.side_effect = [mock.Mock(stdout="123|true|\n")]
+        with self.assertRaisesRegex(RuntimeError, "WoW CPU allocation"):
+            helper.select_cpu_set([])
+        run.side_effect = [mock.Mock(stdout="123|true|1,9,2,10,3,11\n")]
+        affinity.return_value = {0, 1, 2, 3, 9, 10, 11}
+        with self.assertRaisesRegex(RuntimeError, "WoW CPU allocation"):
+            helper.select_cpu_set([])
+        affinity.return_value = {1, 2, 3, 9, 10, 11}
+        run.side_effect = [
+            mock.Mock(stdout="123|true|1,9,2,10,3,11\n"),
+            mock.Mock(stdout="<domain><vcpu>4</vcpu></domain>"),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "not CPU pinned"):
+            helper.select_cpu_set(["sanctuary-ci-legacy"])
+
     @mock.patch.object(helper.Path, "is_file", return_value=True)
     @mock.patch.object(helper.Path, "resolve")
     def test_base_image_must_resolve_to_digest_versioned_file(self, resolve, _is_file):
@@ -92,8 +119,9 @@ class HostHelperTests(unittest.TestCase):
 
     @mock.patch.object(helper.os, "geteuid", return_value=0)
     @mock.patch.object(helper, "resolved_base_image")
+    @mock.patch.object(helper, "select_cpu_set", return_value="4,12,5,13")
     @mock.patch.object(helper, "run")
-    def test_launch_schedules_independent_host_expiry_timer(self, run, image, _euid):
+    def test_launch_schedules_independent_host_expiry_timer(self, run, _cpu_set, image, _euid):
         with tempfile.TemporaryDirectory() as directory:
             stdin = mock.Mock()
             stdin.buffer.read.return_value = b"aml0"
@@ -117,7 +145,8 @@ class HostHelperTests(unittest.TestCase):
             if call.args[0][0] == "virt-install"
         )
         self.assertEqual(
-            virt_install[virt_install.index("--vcpus") + 1], str(helper.VCPUS)
+            virt_install[virt_install.index("--vcpus") + 1],
+            "4,cpuset=4,12,5,13"
         )
         self.assertEqual(
             virt_install[virt_install.index("--memory") + 1], str(helper.MEMORY_MIB)

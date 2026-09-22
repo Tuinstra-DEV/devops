@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from typing import Any
 
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -32,6 +33,8 @@ LIBVIRT_URI = "qemu:///system"
 MAX_CONCURRENCY = 2
 VCPUS = 4
 MEMORY_MIB = 6144
+RUNNER_CPU_SETS = ("4,12,5,13", "6,14,7,15")
+WOW_CPU_SET = "1,9,2,10,3,11"
 DISK_GIB = "120G"
 MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
@@ -46,7 +49,7 @@ MAX_RESPONSE_BYTES = 65536
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 ERROR_CODES = frozenset({"invalid_request", "unauthorized", "operation_failed", "busy"})
 DIAGNOSTIC_COMMANDS = frozenset({
-    "cloud-localds", "qemu-img", "systemctl", "systemd-run", "virsh", "virt-install",
+    "cloud-localds", "docker", "qemu-img", "systemctl", "systemd-run", "virsh", "virt-install",
 })
 UNKNOWN_REQUEST_ID = "0" * 32
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -200,6 +203,55 @@ ethernets:
 """
 
 
+def normalized_cpu_set(value: str) -> frozenset[int]:
+    cpus: set[int] = set()
+    for token in value.split(","):
+        if not re.fullmatch(r"[0-9]+(?:-[0-9]+)?", token):
+            raise RuntimeError("invalid CPU allocation")
+        bounds = [int(part) for part in token.split("-")]
+        first, last = (bounds[0], bounds[-1])
+        if first > last or last > 15:
+            raise RuntimeError("invalid CPU allocation")
+        selected = set(range(first, last + 1))
+        if cpus & selected:
+            raise RuntimeError("duplicate CPU allocation")
+        cpus.update(selected)
+    if not cpus:
+        raise RuntimeError("invalid CPU allocation")
+    return frozenset(cpus)
+
+
+def select_cpu_set(runner_domains: list[str]) -> str:
+    """Fail closed on unpinned or unfamiliar domains before choosing a free pool."""
+    wow = run(["docker", "inspect", "--format",
+               "{{.State.Pid}}|{{.State.Running}}|{{.HostConfig.CpusetCpus}}",
+               "tuinstra-realm-world"]).stdout.strip()
+    pid_text, separator, remainder = wow.partition("|")
+    state, _, allocation = remainder.partition("|")
+    if not separator or not pid_text.isdecimal() or int(pid_text) <= 0 \
+            or state != "true" or not allocation \
+            or normalized_cpu_set(allocation) != normalized_cpu_set(WOW_CPU_SET) \
+            or os.sched_getaffinity(int(pid_text)) != normalized_cpu_set(WOW_CPU_SET):
+        raise RuntimeError("WoW CPU allocation is not active")
+    used: set[frozenset[int]] = set()
+    pools = {normalized_cpu_set(value) for value in RUNNER_CPU_SETS}
+    for domain in runner_domains:
+        root = ET.fromstring(run(["virsh", "--connect", LIBVIRT_URI,
+                                  "dumpxml", domain]).stdout)
+        vcpu = root.find("vcpu")
+        allocation = vcpu.get("cpuset") if vcpu is not None else None
+        if not allocation:
+            raise RuntimeError("existing runner domain is not CPU pinned")
+        selected = normalized_cpu_set(allocation)
+        if selected not in pools or selected in used:
+            raise RuntimeError("existing runner CPU allocation is invalid")
+        used.add(selected)
+    for value in RUNNER_CPU_SETS:
+        if normalized_cpu_set(value) not in used:
+            return value
+    raise RuntimeError("runner CPU pool is exhausted")
+
+
 def launch(lease: str, encoded_jit: bytes | None = None, *,
            vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB) -> None:
     if os.geteuid() != 0:
@@ -218,6 +270,7 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
         raise RuntimeError("all sanctuary CI domain slots are occupied")
     if name(lease) in runner_domains:
         raise RuntimeError("sanctuary CI domain already exists")
+    cpu_set = select_cpu_set(runner_domains)
     directory = lease_dir(lease)
     if directory.exists():
         raise FileExistsError("lease directory already exists")
@@ -247,7 +300,8 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
             ])
         set_qemu_access(seed, qemu_uid, qemu_gid, 0o600)
         run(["virt-install", "--connect", LIBVIRT_URI,
-             "--name", name(lease), "--memory", str(memory_mib), "--vcpus", str(vcpus),
+             "--name", name(lease), "--memory", str(memory_mib),
+             "--vcpus", f"{vcpus},cpuset={cpu_set}",
              "--cpu", "host-passthrough", "--import", "--noautoconsole", "--os-variant", "ubuntu24.04",
              "--disk", f"path={overlay},format=qcow2,bus=virtio,cache=none,discard=unmap",
              "--disk", f"path={seed},device=cdrom,readonly=on",

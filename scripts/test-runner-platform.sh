@@ -10,8 +10,8 @@ assert_absent() {
   fi
 }
 
-python3 -c 'import ast,pathlib; [ast.parse(p.read_text()) for root in ("runner/manager", "runner/host-helper", "runner/tests") for p in pathlib.Path(root).glob("*.py")]'
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="runner/manager:runner/host-helper" python3 -B -m unittest discover -s runner/tests -v
+python3 -c 'import ast,pathlib; [ast.parse(p.read_text()) for root in ("runner/manager", "runner/host-helper", "runner/monitoring", "runner/tests") for p in pathlib.Path(root).glob("*.py")]'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="runner/manager:runner/host-helper:runner/monitoring" python3 -B -m unittest discover -s runner/tests -v
 bash -n infra/packer/scripts/install-runner.sh infra/packer/scripts/seal-image.sh \
   infra/packer/scripts/verify-image-contract.sh runner/guest/run-jit-runner.sh
 

@@ -230,6 +230,14 @@
     - Restart runner host helper socket
     - Restart runner manager
 
+- name: Install read-only CPU pool sampler
+  ansible.builtin.copy:
+    src: "{{ runner_manager_source_root }}/runner/monitoring/cpu_pools.py"
+    dest: /usr/local/bin/ci-cpu-pools
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install runner manager configuration
   ansible.builtin.template:
     src: manager.toml.j2

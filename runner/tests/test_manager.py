@@ -60,6 +60,8 @@ class ManagerTests(unittest.TestCase):
             ("runner_vcpus = 4", "runner_vcpus = true"),
             ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
             ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
+            ('runner_cpu_sets = ["4,12,5,13", "6,14,7,15"]',
+             'runner_cpu_sets = ["0,8,4,12", "6,14,7,15"]'),
             (
                 'overlay_root = "/var/lib/ci-runner/overlay"',
                 'overlay_root = "/mnt/ssd1000-01/ci-runner"',
@@ -190,6 +192,18 @@ class ManagerTests(unittest.TestCase):
             os.chmod(path, 0o600)
             with self.assertRaises(manager.RunnerError):
                 manager.read_jit_config(path)
+
+    @mock.patch.object(manager.os, "getloadavg", return_value=(99.0, 99.0, 99.0))
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=32000)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_global_load_alone_does_not_block_available_runner_pool(
+            self, disk, _available, _total, _cpu, _load):
+        disk.return_value = mock.Mock(free=200 * 1024**3)
+        cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 140,
+               "overlay_root": "/x", "runner_cpu_sets": ["4,12,5,13", "6,14,7,15"]}
+        self.assertEqual(manager.capacity_errors(cfg, 1), [])
 
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
     @mock.patch.object(manager.os, "cpu_count", return_value=4)

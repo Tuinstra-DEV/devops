@@ -44,6 +44,7 @@ MAX_CONCURRENCY = 2
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
 RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
+RUNNER_CPU_SETS = ("4,12,5,13", "6,14,7,15")
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
 REPOSITORY_JIT_ENDPOINT_RE = re.compile(
     r"^/repos/([^/]+)/([^/]+)/actions/runners/generate-jitconfig$"
@@ -117,7 +118,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "state_dir", "lock_file", "audit_log", "helper_socket",
         "overlay_root",
         "max_concurrency", "runner_vcpus", "runner_memory_mib",
-        "host_memory_reserve_mib", "min_free_disk_gib", "max_load_1m",
+        "host_memory_reserve_mib", "min_free_disk_gib", "runner_cpu_sets",
         "max_lease_seconds", "github_token_file", "repositories", "runner_label",
     }
     missing = required.difference(cfg)
@@ -137,6 +138,21 @@ def load_config(path: Path) -> dict[str, Any]:
     reserve = cfg["host_memory_reserve_mib"]
     if not isinstance(reserve, int) or isinstance(reserve, bool) or not 1024 <= reserve <= 65536:
         raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")
+    cpu_sets = cfg["runner_cpu_sets"]
+    if not isinstance(cpu_sets, list) or len(cpu_sets) != MAX_CONCURRENCY:
+        raise RunnerError("runner_cpu_sets must declare exactly two pools")
+    parsed = []
+    for cpu_set in cpu_sets:
+        if not isinstance(cpu_set, str) or not re.fullmatch(r"[0-9]+(?:,[0-9]+)*", cpu_set):
+            raise RunnerError("runner_cpu_sets contains an invalid CPU list")
+        cpus = {int(cpu) for cpu in cpu_set.split(",")}
+        if len(cpus) != RUNNER_VCPUS:
+            raise RunnerError("each runner CPU set must contain four unique CPUs")
+        parsed.append(cpus)
+    if parsed[0] & parsed[1]:
+        raise RunnerError("runner CPU sets must be disjoint")
+    if tuple(cpu_sets) != RUNNER_CPU_SETS:
+        raise RunnerError("runner_cpu_sets must match the reviewed Sanctuary allocation")
     return cfg
 
 
@@ -195,6 +211,9 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> lis
             or not 1 <= projected_runner_count <= concurrency:
         raise RunnerError("projected runner count is outside the configured concurrency limit")
     projected_vcpus = projected_runner_count * vcpus
+    cpu_sets = cfg.get("runner_cpu_sets")
+    if cpu_sets is not None and projected_runner_count > len(cpu_sets):
+        errors.append("runner CPU pool is exhausted")
     if (os.cpu_count() or 0) < projected_vcpus:
         errors.append(
             f"host has fewer than {projected_vcpus} logical CPUs required for projected runners"
@@ -208,8 +227,6 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> lis
     disk = shutil.disk_usage(str(cfg["overlay_root"]))
     if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
         errors.append("overlay filesystem free space is below admission threshold")
-    if os.getloadavg()[0] > float(cfg["max_load_1m"]):
-        errors.append("host one-minute load is above admission threshold")
     return errors
 
 
@@ -903,6 +920,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             raise RunnerError("runner lifecycle state requires reconciliation")
         concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
+            LOG.info("admission denied reason=runner_cpu_pool_exhausted active=%s", len(state_by_lease))
             raise CapacityUnavailable(
                 f"maximum concurrency is {concurrency}; all runner slots are occupied"
             )
@@ -910,7 +928,11 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             raise RunnerError("lease already exists")
         failures = capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
+            LOG.info("admission denied active=%s reasons=%s", len(state_by_lease),
+                     "; ".join(failures))
             raise CapacityUnavailable("; ".join(failures))
+        LOG.info("admission allowed active=%s runner_cpu_pool_available=true",
+                 len(state_by_lease))
         state = {"lease": lease, "phase": "provisioning", "launched_at": now}
         if metadata:
             state.update(metadata)
@@ -927,6 +949,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             else:
                 state["dispatch_attempts"] = history.add(dispatch_history_key, now)
             store.write(lease, state)
+        launch_started = time.monotonic()
         LOG.info("launch requested lease=%s", lease)
         try:
             helper(cfg, "launch", lease, stdin=jit)
@@ -941,7 +964,8 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         store.write(lease, state)
         if dispatch_history_key is not None:
             store.remove_cleanup(state)
-        LOG.info("launch completed lease=%s", lease)
+        LOG.info("launch completed lease=%s elapsed_ms=%s", lease,
+                 round((time.monotonic() - launch_started) * 1000))
 
 
 def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any]) -> None:
