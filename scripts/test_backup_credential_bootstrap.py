@@ -60,6 +60,19 @@ class CredentialBootstrapTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
             self.assertEqual(len(destination.read_text(encoding="ascii").strip()), 64)
 
+    def test_status_restic_password_is_a_distinct_allowlisted_credential(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            secret_root = Path(temporary)
+            destination = secret_root / "restic-passwords/tuinstra-prod-01/status.password"
+            destination.parent.mkdir(parents=True)
+            with mock.patch.object(bootstrap, "SECRET_ROOT", secret_root), \
+                 mock.patch.object(bootstrap, "validate_secret"), \
+                 mock.patch.object(bootstrap.os, "chown"):
+                bootstrap.ensure_restic_password("tuinstra-prod-01", "status")
+            self.assertTrue(destination.is_file())
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            self.assertEqual(len(destination.read_text(encoding="ascii").strip()), 64)
+
     def test_restic_password_rejects_unallowlisted_target(self):
         with self.assertRaisesRegex(bootstrap.BootstrapError, "not allowlisted"):
             bootstrap.ensure_restic_password("tuinstra-prod-02", "umami")
@@ -92,7 +105,7 @@ class CredentialBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(
             [call.args for call in ensure_password.call_args_list],
-            [('tuinstra-prod-01', 'umami'), ('tuinstra-prod-02', 'tracker')],
+            [('tuinstra-prod-01', 'umami'), ('tuinstra-prod-01', 'status'), ('tuinstra-prod-02', 'tracker')],
         )
         distinct.assert_called_once_with(list(identities.values()))
 

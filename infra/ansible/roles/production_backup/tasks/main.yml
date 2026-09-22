@@ -6,6 +6,7 @@
       - production_backup_profile_source | length > 0
       - production_backup_public_key_root | length > 0
       - production_backup_pull_public_key_file | length > 0
+      - production_backup_age_recipient_file | length > 0
       - production_backup_host_slug != 'tuinstra-prod-01' or production_restore_public_key_file | length > 0
     fail_msg: Production backup requires an allowlisted host, profile and dedicated pull key.
 
@@ -25,6 +26,30 @@
     home: /var/lib/tuinstra-backup-pull
     shell: /bin/sh
     password_lock: true
+
+- name: Check that Status container UID 82 is free on the production host
+  ansible.builtin.command:
+    argv: [/usr/bin/getent, passwd, '82']
+  register: production_backup_uid_82
+  changed_when: false
+  failed_when: production_backup_uid_82.rc not in [0, 2]
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Check that Status container GID 82 is free on the production host
+  ansible.builtin.command:
+    argv: [/usr/bin/getent, group, '82']
+  register: production_backup_gid_82
+  changed_when: false
+  failed_when: production_backup_gid_82.rc not in [0, 2]
+  when: production_backup_host_slug == 'tuinstra-prod-01'
+
+- name: Require exclusive numeric Status backup identity
+  ansible.builtin.assert:
+    that:
+      - production_backup_uid_82.rc == 2
+      - production_backup_gid_82.rc == 2
+    fail_msg: UID or GID 82 is already assigned on prod-01; stop before creating the Status handoff.
+  when: production_backup_host_slug == 'tuinstra-prod-01'
 
 - name: Create dedicated production restore account
   ansible.builtin.user:
@@ -56,9 +81,9 @@
   ansible.builtin.file:
     path: /var/lib/status-backup
     state: directory
-    owner: root
-    group: www-data
-    mode: '0770'
+    owner: '82'
+    group: '82'
+    mode: '0700'
   when: production_backup_host_slug == 'tuinstra-prod-01'
 
 - name: Create fixed production restore directories
@@ -176,7 +201,15 @@
     mode: '0644'
   notify: Reload systemd
 
-- name: Verify recipient exists without reading it
+- name: Install the public Sanctuary age recipient
+  ansible.builtin.copy:
+    src: "{{ production_backup_age_recipient_file }}"
+    dest: /etc/tuinstra-backup/age-recipient.txt
+    owner: root
+    group: "{{ '82' if production_backup_host_slug == 'tuinstra-prod-01' else 'root' }}"
+    mode: "{{ '0640' if production_backup_host_slug == 'tuinstra-prod-01' else '0600' }}"
+
+- name: Verify installed recipient metadata without reading it
   ansible.builtin.stat:
     path: /etc/tuinstra-backup/age-recipient.txt
   register: production_backup_age_recipient
@@ -187,5 +220,6 @@
       - production_backup_age_recipient.stat.exists | default(false)
       - production_backup_age_recipient.stat.isreg | default(false)
       - production_backup_age_recipient.stat.pw_name | default('') == 'root'
-      - production_backup_age_recipient.stat.mode | default('') == '0600'
-    fail_msg: Provision the Sanctuary age public recipient as root:0600 before enabling exports.
+      - production_backup_age_recipient.stat.gid | default(-1) == (82 if production_backup_host_slug == 'tuinstra-prod-01' else 0)
+      - production_backup_age_recipient.stat.mode | default('') == ('0640' if production_backup_host_slug == 'tuinstra-prod-01' else '0600')
+    fail_msg: Installed Sanctuary age public recipient metadata is unsafe.

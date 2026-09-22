@@ -168,6 +168,7 @@ def require_distinct_ssh_identities(identities: list[Path]) -> None:
 def ensure_restic_password(host_slug: str, app_id: str) -> Path:
     allowed = {
         ("tuinstra-prod-01", "umami"),
+        ("tuinstra-prod-01", "status"),
         ("tuinstra-prod-02", "tracker"),
     }
     if (host_slug, app_id) not in allowed:
@@ -210,6 +211,7 @@ def main() -> int:
         ]
         require_distinct_ssh_identities(identities)
         ensure_restic_password("tuinstra-prod-01", "umami")
+        ensure_restic_password("tuinstra-prod-01", "status")
         ensure_restic_password("tuinstra-prod-02", "tracker")
         print(f"backup credential bootstrap complete; destination_free_gib={available // 1024**3}; public_dir={PUBLIC_ROOT}")
         return 0

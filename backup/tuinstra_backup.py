@@ -38,6 +38,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 RECEIPT_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 POLICY_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
 ROOT_UID = 0
+STATUS_BACKUP_GID = 82
 PUBLIC_MANIFEST_RESERVE = 64 * 1024
 PUBLIC_MANIFEST_KEYS = {"schema_version", "artifact_id", "host_slug", "app_id", "adapter",
                         "created_at", "payload_sha256", "payload_bytes"}
@@ -1124,8 +1125,16 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
     receipts = Path(config["receipt_dir"])
     work_root = Path(config["work_dir"])
     recipient = Path(config["age_recipient_file"])
-    if (recipient.is_symlink() or not recipient.is_file() or recipient.stat().st_uid != ROOT_UID
-            or stat.S_IMODE(recipient.stat().st_mode) != 0o600):
+    recipient_info = recipient.stat() if recipient.exists() else None
+    recipient_mode = (stat.S_IMODE(recipient_info.st_mode)
+                      if recipient_info is not None else None)
+    prod01_recipient = (recipient_mode == 0o640
+                        and recipient_info is not None
+                        and recipient_info.st_gid == STATUS_BACKUP_GID)
+    root_private_recipient = recipient_mode == 0o600
+    if (recipient.is_symlink() or not recipient.is_file() or recipient_info is None
+            or recipient_info.st_uid != ROOT_UID
+            or (prod01_recipient if host == "tuinstra-prod-01" else root_private_recipient) is not True):
         raise BackupError("age recipient file is unavailable")
     ensure_directory(spool, 0o750)
     ensure_directory(receipts, 0o750)
@@ -2422,11 +2431,14 @@ def validate_recovery_bundle(source: Path) -> tuple[dict[str, str], tuple[int, i
         os.close(descriptor)
     value = json.loads(encoded.decode("utf-8"))
     legacy_keys = {"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"}
-    keys = legacy_keys | {"ssh_prod01_restore"}
+    restore_keys = legacy_keys | {"ssh_prod01_restore"}
+    current_keys = restore_keys | {"restic_prod01_status"}
     if (not isinstance(value, dict) or set(value) != {"schema_version", "source_host", "secrets"}
             or value.get("schema_version") != SCHEMA_VERSION or value.get("source_host") != "sanctuary"
             or not isinstance(value.get("secrets"), dict)
-            or frozenset(value["secrets"]) not in {frozenset(legacy_keys), frozenset(keys)}
+            or frozenset(value["secrets"]) not in {
+                frozenset(legacy_keys), frozenset(restore_keys), frozenset(current_keys)
+            }
             or any(not isinstance(secret, str) or not 16 <= len(secret) <= 16384
                    for secret in value["secrets"].values())):
         raise BackupError("independent recovery bundle schema is invalid")
@@ -2443,6 +2455,9 @@ def validate_recovery_bundle(source: Path) -> tuple[dict[str, str], tuple[int, i
             or not secrets["ssh_prod02"].startswith(SSH_PRIVATE_BEGIN)
             or not secrets["ssh_prod01"].rstrip().endswith(SSH_PRIVATE_END)
             or not secrets["ssh_prod02"].rstrip().endswith(SSH_PRIVATE_END)
+            or not re.fullmatch(r"[a-f0-9]{64}\n", secrets["restic_prod01_umami"])
+            or ("restic_prod01_status" in secrets
+                and not re.fullmatch(r"[a-f0-9]{64}\n", secrets["restic_prod01_status"]))
             or ("ssh_prod01_restore" in secrets and (
                 not secrets["ssh_prod01_restore"].startswith(SSH_PRIVATE_BEGIN)
                 or not secrets["ssh_prod01_restore"].rstrip().endswith(SSH_PRIVATE_END)))):
@@ -2485,6 +2500,8 @@ def escrow_recovery_test(config: dict[str, Any], source: Path = RECOVERY_BUNDLE)
         age_identity = root / "age-identity.txt"
         write_recovered_secret(age_identity, secrets["age_identity"])
         write_recovered_secret(password / "umami.password", secrets["restic_prod01_umami"])
+        if "restic_prod01_status" in secrets:
+            write_recovered_secret(password / "status.password", secrets["restic_prod01_status"])
         write_recovered_secret(identities / "prod01", secrets["ssh_prod01"])
         write_recovered_secret(identities / "prod02", secrets["ssh_prod02"])
         if "ssh_prod01_restore" in secrets:

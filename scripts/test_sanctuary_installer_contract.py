@@ -92,6 +92,34 @@ class SanctuaryInstallerContractTests(unittest.TestCase):
         )
         self.assertIn("--hour 3 --minute 0 --daily 7 --weekly 4 --monthly 12", INSTALLER)
 
+    def test_status_activation_installs_repository_credential_and_04_00_policy(self):
+        self.assertIn(
+            "/etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password",
+            INSTALLER,
+        )
+        self.assertIn(
+            "/mnt/hdd1000-01/backups/production/tuinstra-prod-01/status",
+            INSTALLER,
+        )
+        self.assertIn("tuinstra-backup-admin run status", INSTALLER)
+        self.assertIn("tuinstra-backup-admin check status", INSTALLER)
+        self.assertIn("tuinstra-backup-admin catalog status", INSTALLER)
+        self.assertIn("tuinstra-backup-admin retention status", INSTALLER)
+        self.assertIn("retain-active --host tuinstra-prod-01 --app status", INSTALLER)
+        self.assertIn(
+            "--host tuinstra-prod-01 --app status --policy-version production-v1",
+            INSTALLER,
+        )
+        self.assertIn(
+            "--plan-hash f3fa9e7a9cee5db9639761c10ad112d867d6c0161c7023b1cd055f5e95563e8d",
+            INSTALLER,
+        )
+        self.assertIn("--hour 4 --minute 0 --daily 7 --weekly 4 --monthly 12", INSTALLER)
+        self.assertIn("tuinstra-backup-cycle-tuinstra-prod-01--status.timer", INSTALLER)
+
+    def test_status_has_no_restore_test_permission_without_an_adapter(self):
+        self.assertNotIn("tuinstra-backup-admin restore-test status", INSTALLER)
+
     def test_installer_does_not_start_tracker_or_install_general_sudo(self):
         self.assertNotIn("docker compose", INSTALLER)
         self.assertNotIn("--trigger manual", INSTALLER)

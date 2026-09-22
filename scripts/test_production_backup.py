@@ -27,6 +27,7 @@ class BackupTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         backup.ROOT_UID = os.getuid()
+        backup.STATUS_BACKUP_GID = os.getgid()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -48,7 +49,7 @@ class BackupTests(unittest.TestCase):
         work.mkdir()
         recipient = self.root / "recipient"
         recipient.write_text("age1test\n")
-        recipient.chmod(0o600)
+        recipient.chmod(0o640)
         compose = self.root / "compose.yml"
         compose.write_text("services: {}\n")
         secret = self.root / "secret.env"
@@ -500,6 +501,19 @@ class BackupTests(unittest.TestCase):
         })
         self.assertRegex(internal["database"]["content_marker"]["sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(internal["image_services"], config["applications"][0]["approved_images"])
+
+    def test_prod01_export_requires_group_readable_recipient_for_status_identity(self):
+        config = self.producer()
+        recipient = Path(config["age_recipient_file"])
+        recipient.chmod(0o600)
+
+        with self.assertRaisesRegex(backup.BackupError, "age recipient file is unavailable"):
+            backup.create_export(config, "umami")
+
+        recipient.chmod(0o640)
+        backup.STATUS_BACKUP_GID = os.getgid() + 1
+        with self.assertRaisesRegex(backup.BackupError, "age recipient file is unavailable"):
+            backup.create_export(config, "umami")
 
     def test_export_rejects_running_image_that_does_not_match_approved_digest(self):
         config = self.producer()
@@ -1479,8 +1493,10 @@ class BackupTests(unittest.TestCase):
             "schema_version": 1, "source_host": "sanctuary", "secrets": {
                 "age_identity": "# created: 2026-09-12T00:00:00Z\n# public key: age1example\n"
                                 + "AGE-SECRET-KEY-1" + "A" * 58 + "\n",
-                "restic_prod01_umami": "restic-password-from-vault",
+                "restic_prod01_umami": "a" * 64 + "\n",
+                "restic_prod01_status": "b" * 64 + "\n",
                 "ssh_prod01": private_key, "ssh_prod02": private_key,
+                "ssh_prod01_restore": private_key,
             },
         }))
         source.chmod(0o600)
@@ -1501,10 +1517,17 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(maximum_bytes, 1024 * 1024)
             seen.append((host["host_slug"], identity.read_text()))
 
-        evidence = {"snapshot_id": "a" * 64}
+        def restore_with_recovered_credentials(recovered_config, *_args):
+            password_root = Path(recovered_config["password_root"])
+            self.assertEqual((password_root / "tuinstra-prod-01/umami.password").read_text(),
+                             "a" * 64 + "\n")
+            self.assertEqual((password_root / "tuinstra-prod-01/status.password").read_text(),
+                             "b" * 64 + "\n")
+            return {"snapshot_id": "a" * 64}
+
         with mock.patch.object(backup.pwd, "getpwnam", return_value=mock.Mock(pw_uid=os.getuid())), \
              mock.patch.object(backup, "verify_recovered_transport", side_effect=verify), \
-             mock.patch.object(backup, "restore_test", return_value=evidence) as restore:
+             mock.patch.object(backup, "restore_test", side_effect=restore_with_recovered_credentials) as restore:
             old_root_uid = backup.ROOT_UID
             backup.ROOT_UID = os.geteuid()
             try:

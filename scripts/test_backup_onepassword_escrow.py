@@ -25,6 +25,7 @@ ITEM_ID = "abcdefghijklmnopqrstuvwxzy"
 VAULT_ID = "zyxwvutsrqponmlkjihgfedcba"
 AGE = "# created: 2026-09-12T00:00:00Z\n# public key: age1example\nAGE-SECRET-KEY-1" + "A" * 32 + "\n"
 RESTIC = "a" * 64 + "\n"
+RESTIC_STATUS = "b" * 64 + "\n"
 SSH_ONE_BODY = base64.b64encode(b"openssh-key-v1\0" + b"one" * 32).decode()
 SSH_TWO_BODY = base64.b64encode(b"openssh-key-v1\0" + b"two" * 32).decode()
 SSH_RESTORE_BODY = base64.b64encode(b"openssh-key-v1\0" + b"restore" * 32).decode()
@@ -34,11 +35,18 @@ SSH_RESTORE = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_RESTORE_BODY}\n-----EN
 SECRETS = {
     "age_identity": AGE,
     "restic_prod01_umami": RESTIC,
+    "restic_prod01_status": RESTIC_STATUS,
     "ssh_prod01": SSH_ONE,
     "ssh_prod02": SSH_TWO,
     "ssh_prod01_restore": SSH_RESTORE,
 }
-LEGACY_SECRETS = {name: value for name, value in SECRETS.items() if name != "ssh_prod01_restore"}
+LEGACY_SECRETS = {
+    name: value for name, value in SECRETS.items()
+    if name not in {"ssh_prod01_restore", "restic_prod01_status"}
+}
+RESTORE_SECRETS = {
+    name: value for name, value in SECRETS.items() if name != "restic_prod01_status"
+}
 
 
 def bundle(overrides=None):
@@ -130,7 +138,7 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
 
         self.assertEqual(result, {
             "itemId": ITEM_ID, "created": True, "escrowed": True,
-            "verified": True, "secretCount": 5,
+            "verified": True, "secretCount": 6,
         })
         arguments = "\n".join(" ".join(args) for args, _input in runner.calls)
         for secret in SECRETS.values():
@@ -141,29 +149,50 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
         self.assertEqual(escrow.item_secrets(created_item), SECRETS)
         self.assertFalse(any(args[1:3] == ["item", "edit"] for args, _ in runner.calls))
 
-    def test_existing_four_field_item_is_upgraded_with_restore_key_via_stdin_and_read_back(self):
-        existing = escrow.build_item(LEGACY_SECRETS)
-        existing["id"] = ITEM_ID
-        runner = FakeRunner(existing=existing)
+    def test_prior_items_are_upgraded_to_six_fields_via_stdin_and_read_back(self):
+        for prior in (LEGACY_SECRETS, RESTORE_SECRETS):
+            with self.subTest(prior_fields=len(prior)):
+                existing = escrow.build_item(prior)
+                existing["id"] = ITEM_ID
+                runner = FakeRunner(existing=existing)
 
-        result = self.make_service(runner).escrow(SECRETS)
+                result = self.make_service(runner).escrow(SECRETS)
 
-        self.assertFalse(result["created"])
-        self.assertTrue(result["verified"])
-        self.assertEqual(result["secretCount"], 5)
-        edits = [(args, input_text) for args, input_text in runner.calls if args[1:3] == ["item", "edit"]]
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0][0], [
-            "/opt/op", "item", "edit", ITEM_ID, "--vault", VAULT_ID, "--format", "json",
-        ])
-        for secret in SECRETS.values():
-            self.assertNotIn(secret.strip(), " ".join(edits[0][0]))
-        self.assertEqual(escrow.item_secrets(runner.item), SECRETS)
+                self.assertFalse(result["created"])
+                self.assertTrue(result["verified"])
+                self.assertEqual(result["secretCount"], 6)
+                edits = [
+                    (args, input_text) for args, input_text in runner.calls
+                    if args[1:3] == ["item", "edit"]
+                ]
+                self.assertEqual(len(edits), 1)
+                self.assertEqual(edits[0][0], [
+                    "/opt/op", "item", "edit", ITEM_ID, "--vault", VAULT_ID, "--format", "json",
+                ])
+                for secret in SECRETS.values():
+                    self.assertNotIn(secret.strip(), " ".join(edits[0][0]))
+                self.assertEqual(escrow.item_secrets(runner.item), SECRETS)
 
-    def test_legacy_four_field_bundle_remains_recoverable(self):
-        document = {"schema_version": 1, "source_host": "sanctuary", "secrets": LEGACY_SECRETS}
-        parsed = escrow.parse_bundle(_BytesInput(json.dumps(document).encode()))
-        self.assertEqual(parsed, LEGACY_SECRETS)
+    def test_prior_four_and_five_field_bundles_remain_recoverable(self):
+        for prior in (LEGACY_SECRETS, RESTORE_SECRETS):
+            with self.subTest(prior_fields=len(prior)):
+                document = {"schema_version": 1, "source_host": "sanctuary", "secrets": prior}
+                parsed = escrow.parse_bundle(_BytesInput(json.dumps(document).encode()))
+                self.assertEqual(parsed, prior)
+                existing = escrow.build_item(prior)
+                existing["id"] = ITEM_ID
+                item_id, recovered = self.make_service(FakeRunner(existing=existing)).recover()
+                self.assertEqual(item_id, ITEM_ID)
+                self.assertEqual(recovered, prior)
+                with tempfile.TemporaryDirectory() as parent:
+                    directory = escrow.materialize(recovered, parent)
+                    for name, spec in escrow.SECRET_SPECS.items():
+                        self.assertEqual(
+                            (directory / spec["relative_path"]).exists(),
+                            name in prior,
+                        )
+                    escrow.cleanup(str(directory))
+                    self.assertFalse(directory.exists())
 
     def test_restore_identity_must_be_distinct_from_pull_identities(self):
         duplicate = bundle({"ssh_prod01_restore": SSH_ONE})
@@ -195,6 +224,18 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
     def test_existing_different_credentials_are_never_overwritten(self):
         different = dict(SECRETS)
         different["restic_prod01_umami"] = "b" * 64 + "\n"
+        existing = escrow.build_item(different)
+        existing["id"] = ITEM_ID
+        runner = FakeRunner(existing=existing)
+
+        with self.assertRaisesRegex(escrow.EscrowError, "refusing overwrite"):
+            self.make_service(runner).escrow(SECRETS)
+        self.assertFalse(any(args[1:3] in (["item", "create"], ["item", "edit"])
+                             for args, _ in runner.calls))
+
+    def test_upgrade_never_overwrites_a_different_prior_credential(self):
+        different = dict(RESTORE_SECRETS)
+        different["restic_prod01_umami"] = "c" * 64 + "\n"
         existing = escrow.build_item(different)
         existing["id"] = ITEM_ID
         runner = FakeRunner(existing=existing)
