@@ -62,6 +62,10 @@ class RunnerError(RuntimeError):
     pass
 
 
+class CapacityUnavailable(RunnerError):
+    """A definitive admission rejection before runner host state is mutated."""
+
+
 class RateLimited(RunnerError):
     def __init__(self, retry_after: int) -> None:
         super().__init__("GitHub API rate limit reached")
@@ -899,12 +903,14 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             raise RunnerError("runner lifecycle state requires reconciliation")
         concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
-            raise RunnerError(f"maximum concurrency is {concurrency}; all runner slots are occupied")
+            raise CapacityUnavailable(
+                f"maximum concurrency is {concurrency}; all runner slots are occupied"
+            )
         if lease in state_by_lease or lease in inventory:
             raise RunnerError("lease already exists")
         failures = capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
-            raise RunnerError("; ".join(failures))
+            raise CapacityUnavailable("; ".join(failures))
         state = {"lease": lease, "phase": "provisioning", "launched_at": now}
         if metadata:
             state.update(metadata)
@@ -1294,21 +1300,52 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                     lease, repo, runner_id, job["run_id"], job["job_id"],
                 )
                 launched += 1
-            except Exception:
+            except Exception as launch_error:
+                if isinstance(launch_error, CapacityUnavailable):
+                    try:
+                        store.write_cleanup_obligation(
+                            lease, registration, int(time.time())
+                        )
+                    except OSError:
+                        LOG.error(
+                            "prelaunch cleanup obligation could not be persisted; "
+                            "attempting immediate runner cleanup repo=%s runner_id=%s",
+                            repo, runner_id,
+                        )
                 try:
                     client.delete_runner(repo, runner_id)
-                except RunnerError as exc:
+                except RunnerError as cleanup_error:
                     LOG.error("deferring unused GitHub runner cleanup repo=%s runner_id=%s error=%s",
-                              repo, runner_id, exc)
-                    store.defer_cleanup(lease, {
-                        "lease": lease,
-                        "repo": repo,
-                        "runner_id": runner_id,
-                        "runner_name": runner_name,
-                        "trigger_run_id": job["run_id"],
-                        "trigger_job_id": job["job_id"],
-                    }, int(time.time()), preserve_lease=True)
+                              repo, runner_id, cleanup_error)
+                    try:
+                        store.defer_cleanup(lease, {
+                            "lease": lease,
+                            "repo": repo,
+                            "runner_id": runner_id,
+                            "runner_name": runner_name,
+                            "trigger_run_id": job["run_id"],
+                            "trigger_job_id": job["job_id"],
+                        }, int(time.time()), preserve_lease=True)
+                    except OSError as state_error:
+                        LOG.critical(
+                            "runner cleanup and durable recovery persistence failed "
+                            "repo=%s runner_id=%s",
+                            repo, runner_id,
+                        )
+                        raise RunnerError(
+                            "runner cleanup and durable recovery persistence failed"
+                        ) from state_error
                 else:
+                    if isinstance(launch_error, CapacityUnavailable):
+                        with with_lock(lifecycle_lock):
+                            retry_after = history.retry_after_cooldown(
+                                key, int(time.time())
+                            )
+                        LOG.info(
+                            "definitive prelaunch capacity rejection queued for retry "
+                            "repo=%s trigger_job_id=%s retry_after=%s",
+                            repo, job["job_id"], retry_after,
+                        )
                     store.remove_cleanup(registration)
                 raise
     return launched > 0
