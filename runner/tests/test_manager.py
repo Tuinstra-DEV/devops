@@ -280,7 +280,9 @@ class ManagerTests(unittest.TestCase):
 
             manager.launch(cfg, "one", base64.b64encode(b"opaque-one"))
             manager.launch(cfg, "two", base64.b64encode(b"opaque-two"))
-            with self.assertRaisesRegex(manager.RunnerError, "all runner slots are occupied"):
+            with self.assertRaisesRegex(
+                manager.CapacityUnavailable, "all runner slots are occupied"
+            ):
                 manager.launch(cfg, "three", base64.b64encode(b"opaque-three"))
 
             self.assertEqual(
@@ -288,6 +290,29 @@ class ManagerTests(unittest.TestCase):
                 {"one", "two"},
             )
             self.assertEqual(capacity.call_args_list, [mock.call(cfg, 1), mock.call(cfg, 2)])
+
+    @mock.patch.object(
+        manager,
+        "capacity_errors",
+        return_value=["host projected free memory is below the configured reserve"],
+    )
+    @mock.patch.object(manager, "helper")
+    def test_launch_reports_definitive_capacity_rejection_before_host_mutation(
+        self, helper, _capacity
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            helper.return_value = mock.Mock(stdout=b"{}")
+
+            with self.assertRaisesRegex(
+                manager.CapacityUnavailable, "projected free memory"
+            ):
+                manager.launch(cfg, "gh-20", base64.b64encode(b"opaque"))
+
+            helper.assert_called_once_with(cfg, "list")
+            self.assertEqual(manager.StateStore(cfg["state_dir"]).leases(), [])
+            self.assertEqual(manager.StateStore(cfg["state_dir"]).cleanup_items(), [])
 
     @mock.patch.object(manager, "capacity_errors", return_value=[])
     @mock.patch.object(manager, "helper")
@@ -906,6 +931,189 @@ class ManagerTests(unittest.TestCase):
                 manager.dispatch_once(cfg, client)
             client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
             self.assertEqual(list((root / "run").iterdir()), [])
+            self.assertTrue(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1000 + (365 * 24 * 60 * 60)
+                )
+            )
+
+    def test_dispatch_retries_definitive_prelaunch_capacity_rejection_after_cooldown(
+        self
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            cfg = {
+                "state_dir": root / "state",
+                "runtime_dir": root / "run",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+            (root / "run").mkdir()
+
+            clock = [1000]
+            capacity_error = manager.CapacityUnavailable(
+                "host projected free memory is below the configured reserve"
+            )
+            with mock.patch.object(manager.time, "time", side_effect=lambda: clock[0]), \
+                    mock.patch.object(manager, "launch", side_effect=capacity_error):
+                with self.assertRaisesRegex(manager.RunnerError, "projected free memory"):
+                    manager.dispatch_once(cfg, client)
+
+                self.assertFalse(manager.dispatch_once(cfg, client))
+                clock[0] = 1061
+                with self.assertRaisesRegex(manager.RunnerError, "projected free memory"):
+                    manager.dispatch_once(cfg, client)
+
+            self.assertEqual(client.delete_runner.call_count, 2)
+            client.delete_runner.assert_called_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(client.generate_jit.call_count, 2)
+            history = manager.DispatchHistory(root / "state")
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1180))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1181))
+            self.assertEqual(manager.StateStore(root / "state").leases(), [])
+            self.assertEqual(manager.StateStore(root / "state").cleanup_items(), [])
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(
+        manager,
+        "launch",
+        side_effect=manager.CapacityUnavailable(
+            "host projected free memory is below the configured reserve"
+        ),
+    )
+    def test_dispatch_keeps_capacity_rejection_quarantined_when_runner_delete_fails(
+        self, _launch, _time
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+            cfg = {
+                "state_dir": root / "state",
+                "runtime_dir": root / "run",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+            (root / "run").mkdir()
+
+            with self.assertRaisesRegex(manager.RunnerError, "projected free memory"):
+                manager.dispatch_once(cfg, client)
+
+            self.assertTrue(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1000 + (365 * 24 * 60 * 60)
+                )
+            )
+            cleanup = manager.StateStore(root / "state").cleanup_items()
+            self.assertEqual(len(cleanup), 1)
+            self.assertEqual(cleanup[0]["runner_id"], 30)
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(
+        manager,
+        "launch",
+        side_effect=manager.CapacityUnavailable(
+            "host projected free memory is below the configured reserve"
+        ),
+    )
+    def test_dispatch_still_deletes_runner_when_prelaunch_obligation_write_fails(
+        self, _launch, _time
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            cfg = {
+                "state_dir": root / "state",
+                "runtime_dir": root / "run",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+            (root / "run").mkdir()
+
+            with mock.patch.object(
+                manager.StateStore,
+                "write_cleanup_obligation",
+                side_effect=OSError("disk full"),
+            ), self.assertRaisesRegex(manager.RunnerError, "projected free memory"):
+                manager.dispatch_once(cfg, client)
+
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            history = manager.DispatchHistory(root / "state")
+            self.assertTrue(history.contains("Tuinstra-DEV/gate:20", 1059))
+            self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1060))
+
+    @mock.patch.object(manager.time, "time", return_value=1000)
+    @mock.patch.object(
+        manager,
+        "launch",
+        side_effect=manager.CapacityUnavailable("capacity unavailable"),
+    )
+    def test_dispatch_fails_closed_when_cleanup_and_recovery_persistence_fail(
+        self, _launch, _time
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}
+            ]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30},
+            }
+            client.delete_runner.side_effect = manager.RunnerError("cleanup unavailable")
+            cfg = {
+                "state_dir": root / "state",
+                "repositories": ["Tuinstra-DEV/gate"],
+                "runner_label": "trusted-heavy",
+            }
+
+            with mock.patch.object(
+                manager.StateStore,
+                "write_cleanup_obligation",
+                side_effect=OSError("disk full"),
+            ), mock.patch.object(
+                manager.StateStore,
+                "defer_cleanup",
+                side_effect=OSError("disk full"),
+            ), self.assertLogs("ci-runner-manager", level="CRITICAL") as logs, \
+                    self.assertRaisesRegex(
+                        manager.RunnerError, "durable recovery persistence failed"
+                    ):
+                manager.dispatch_once(cfg, client)
+
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertTrue(
+                manager.DispatchHistory(root / "state").contains(
+                    "Tuinstra-DEV/gate:20", 1000 + (365 * 24 * 60 * 60)
+                )
+            )
+            audit = "\n".join(logs.output)
+            self.assertIn("runner cleanup and durable recovery persistence failed", audit)
+            self.assertNotIn("cleanup unavailable", audit)
+            self.assertNotIn("disk full", audit)
 
     @mock.patch.object(manager, "launch")
     def test_dispatch_persists_github_runner_identity_with_lease(self, launch):
