@@ -135,6 +135,10 @@ def load_config(path: Path) -> dict[str, Any]:
             raise RunnerError(f"{key} must be exactly {expected}")
     if cfg["overlay_root"] != RUNNER_OVERLAY_ROOT:
         raise RunnerError(f"overlay_root must be exactly {RUNNER_OVERLAY_ROOT}")
+    disk_minimum = cfg["min_free_disk_gib"]
+    if not isinstance(disk_minimum, int) or isinstance(disk_minimum, bool) \
+            or not 60 <= disk_minimum <= 1024:
+        raise RunnerError("min_free_disk_gib must be between 60 and 1024")
     reserve = cfg["host_memory_reserve_mib"]
     if not isinstance(reserve, int) or isinstance(reserve, bool) or not 1024 <= reserve <= 65536:
         raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")

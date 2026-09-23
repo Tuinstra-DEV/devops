@@ -60,6 +60,9 @@ class ManagerTests(unittest.TestCase):
             ("runner_vcpus = 4", "runner_vcpus = true"),
             ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
             ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
+            ("min_free_disk_gib = 60", "min_free_disk_gib = 0"),
+            ("min_free_disk_gib = 60", "min_free_disk_gib = 40"),
+            ("min_free_disk_gib = 60", "min_free_disk_gib = true"),
             ('runner_cpu_sets = ["4,12,5,13", "6,14,7,15"]',
              'runner_cpu_sets = ["0,8,4,12", "6,14,7,15"]'),
             (

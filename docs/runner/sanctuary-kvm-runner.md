@@ -90,8 +90,11 @@ fork pull requests select this machine.
   exceed host logical CPUs, total memory must fit all projected guests plus the
   reserve, and `MemAvailable` after subtracting the new 6,144-MiB guest must
   retain the configured 4,096-MiB host reserve. Admission also requires
-  140 GiB free on `/var/lib/ci-runner/overlay`; the overlay remains on the main
-  NVMe. Global one-minute load is not an admission input. The two declared
+  the configured `runner_min_free_disk_gib` free on
+  `/var/lib/ci-runner/overlay` (60 GiB on Sanctuary); the overlay remains on the
+  main NVMe. Ansible allows only the reviewed live 40-to-60-GiB transition
+  (or an already-applied 60-GiB policy), and refuses to install when available
+  space is below 60 GiB. Global one-minute load is not an admission input. The two declared
   runner CPU sets provide the CPU slots, and the helper checks live libvirt
   allocations before launch. The helper also requires the live WoW CPU set to
   match the reviewed allocation. Ansible refuses hosts that cannot fit both
