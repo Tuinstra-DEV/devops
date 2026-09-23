@@ -1,5 +1,23 @@
 # CI runner host operations
 
+## DEV-23 temporary production profile (2026-09-23)
+
+Sanctuary currently runs one ephemeral `trusted-heavy` VM at a time, with four
+vCPUs, 6,144 MiB guest RAM, a 4,096 MiB host reserve and a 60 GiB minimum on
+the main NVMe. The manager and root helper both enforce a single domain. The
+WoW pin timer is disabled and the live WoW container has CPU set `0-15` after
+the production lag report. The two-runner, 4-GiB configuration below remains
+the undeployed DEV-23 target, not the current host state. Ansible now refuses
+to overwrite the live single-runner profile; a later rollout requires a
+separate reviewed capacity transition and a new WoW/CI soak.
+
+The operator's one-runner change backed up the previous host files in
+`/var/backups/dev23-single-runner-20260923T164122Z`. Before any further host
+change, drain CI and confirm there are no `sanctuary-ci-*` domains or overlays.
+The local operational script and its SHA-256 evidence are held with the DEV-23
+rollout record. Do not apply the two-runner role to this host until its capacity
+contract and WoW pin have been reviewed again.
+
 ## Provision
 
 1. Confirm Ubuntu 24.04, `/dev/kvm`, and persistent SSD/HDD mounts.
@@ -67,7 +85,7 @@ must not exist. The helper socket must be owned by `ci-runner-manager`, mode
 boundary to a group-writable socket or a wildcard sudo rule.
 The WoW CPU set must contain exactly CPUs `1,2,3,9,10,11`. If WoW health
 regresses, stop runner admission, disable `ci-wow-cpu-pin.timer`, clear the
-container CPU set with `docker update --cpuset-cpus='' tuinstra-realm-world`,
+container CPU set with `docker update --cpuset-cpus=0-15 tuinstra-realm-world`,
 and restore the prechange runner manager/helper/configuration copies before
 restarting the manager. Check WoW ports 8085/3724 and repeat a runner canary.
 
