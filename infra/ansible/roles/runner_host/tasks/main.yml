@@ -56,8 +56,11 @@
   no_log: true
   when: runner_existing_manager_policy.stat.exists
 
-- name: Extract the existing memory and disk admission policies
+- name: Extract the existing concurrency, memory and disk admission policies
   ansible.builtin.set_fact:
+    runner_existing_concurrency_lines: >-
+      {{ (runner_existing_manager_config.content | b64decode).splitlines()
+         | select('match', '^max_concurrency = [0-9]+$') | list }}
     runner_existing_memory_lines: >-
       {{ (runner_existing_manager_config.content | b64decode).splitlines()
          | select('match', '^runner_memory_mib = [0-9]+$') | list }}
@@ -69,6 +72,11 @@
 - name: Refuse unreviewed capacity transitions or insufficient NVMe capacity
   ansible.builtin.assert:
     that:
+      - >-
+        not runner_existing_manager_policy.stat.exists or
+        (runner_existing_concurrency_lines | length == 1 and
+         (runner_existing_concurrency_lines[0].split(' = ')[1] | int)
+         == (runner_max_concurrency | int))
       - >-
         not runner_existing_manager_policy.stat.exists or
         (runner_existing_memory_lines | length == 1 and
@@ -84,7 +92,7 @@
          | map(attribute='size_available') | first | int) >=
         (runner_min_free_disk_gib | int) * 1073741824
     fail_msg: >-
-      Refusing any runner memory policy transition other than the reviewed
+      Refusing an unreviewed runner concurrency transition, any memory policy transition other than the reviewed
       6144-to-4096-MiB change, any disk policy transition other than the
       reviewed 40-to-60-GiB change, or deployment when the main NVMe has
       less than 60 GiB free.
