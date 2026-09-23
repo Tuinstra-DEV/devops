@@ -52,20 +52,18 @@ class ManagerTests(unittest.TestCase):
         cfg = manager.load_config(source_path)
         self.assertEqual(
             (cfg["max_concurrency"], cfg["runner_vcpus"], cfg["runner_memory_mib"]),
-            (2, 4, 4096),
+            (1, 4, 6144),
         )
 
         replacements = (
-            ("max_concurrency = 2", "max_concurrency = 3"),
+            ("max_concurrency = 1", "max_concurrency = 2"),
             ("runner_vcpus = 4", "runner_vcpus = true"),
-            ("runner_memory_mib = 4096", "runner_memory_mib = 6144"),
-            ("runner_memory_mib = 4096", "runner_memory_mib = 12288"),
+            ("runner_memory_mib = 6144", "runner_memory_mib = 4096"),
+            ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
             ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
             ("min_free_disk_gib = 60", "min_free_disk_gib = 0"),
             ("min_free_disk_gib = 60", "min_free_disk_gib = 40"),
             ("min_free_disk_gib = 60", "min_free_disk_gib = true"),
-            ('runner_cpu_sets = ["4,12,5,13", "6,14,7,15"]',
-             'runner_cpu_sets = ["0,8,4,12", "6,14,7,15"]'),
             (
                 'overlay_root = "/var/lib/ci-runner/overlay"',
                 'overlay_root = "/mnt/ssd1000-01/ci-runner"',
@@ -77,6 +75,11 @@ class ManagerTests(unittest.TestCase):
                 path.write_text(source.replace(expected, invalid), encoding="utf-8")
                 with self.assertRaises(manager.RunnerError):
                     manager.load_config(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manager.toml"
+            path.write_text(source + '\nrunner_cpu_sets = ["4,12,5,13"]\n', encoding="utf-8")
+            with self.assertRaisesRegex(manager.RunnerError, "unsupported"):
+                manager.load_config(path)
 
     @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)
     @mock.patch.object(manager.socket, "socket")
@@ -104,7 +107,7 @@ class ManagerTests(unittest.TestCase):
         self.assertNotIn(jit, packets[0])
         request = json.loads(packets[0])
         self.assertEqual(request["vcpus"], 4)
-        self.assertEqual(request["memory_mib"], 4096)
+        self.assertEqual(request["memory_mib"], 6144)
         self.assertEqual(
             set(request), {"v", "id", "op", "lease", "vcpus", "memory_mib"}
         )
@@ -202,15 +205,15 @@ class ManagerTests(unittest.TestCase):
     @mock.patch.object(manager, "memory_total_mib", return_value=32000)
     @mock.patch.object(manager, "memory_available_mib", return_value=20000)
     @mock.patch.object(manager.shutil, "disk_usage")
-    def test_global_load_alone_does_not_block_available_runner_pool(
+    def test_global_load_alone_does_not_block_single_runner(
             self, disk, _available, _total, _cpu, _load):
         disk.return_value = mock.Mock(free=200 * 1024**3)
         cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 140,
-               "overlay_root": "/x", "runner_cpu_sets": ["4,12,5,13", "6,14,7,15"]}
+               "overlay_root": "/x"}
         self.assertEqual(manager.capacity_errors(cfg, 1), [])
 
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
-    @mock.patch.object(manager.os, "cpu_count", return_value=4)
+    @mock.patch.object(manager.os, "cpu_count", return_value=3)
     @mock.patch.object(manager, "memory_total_mib", return_value=20000)
     @mock.patch.object(manager, "memory_available_mib", return_value=20000)
     @mock.patch.object(manager.shutil, "disk_usage")
@@ -220,8 +223,8 @@ class ManagerTests(unittest.TestCase):
         cfg = {"host_memory_reserve_mib": 4000, "min_free_disk_gib": 140,
                "max_load_1m": 8, "overlay_root": "/x"}
         self.assertIn(
-            "host has fewer than 8 logical CPUs required for projected runners",
-            manager.capacity_errors(cfg, 2),
+            "host has fewer than 4 logical CPUs required for projected runners",
+            manager.capacity_errors(cfg, 1),
         )
 
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
@@ -229,7 +232,7 @@ class ManagerTests(unittest.TestCase):
     @mock.patch.object(manager, "memory_total_mib", return_value=20000)
     @mock.patch.object(manager, "memory_available_mib", return_value=7500)
     @mock.patch.object(manager.shutil, "disk_usage")
-    def test_capacity_blocks_second_launch_when_projected_memory_breaches_reserve(
+    def test_capacity_blocks_launch_when_projected_memory_breaches_reserve(
             self, disk, _available, _total, _cpu, _load):
         disk.return_value = mock.Mock(free=200 * 1024**3)
         cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 140,
@@ -237,23 +240,23 @@ class ManagerTests(unittest.TestCase):
 
         self.assertIn(
             "host projected free memory is below the configured reserve",
-            manager.capacity_errors(cfg, 2),
+            manager.capacity_errors(cfg, 1),
         )
 
     @mock.patch.object(manager.os, "cpu_count", return_value=16)
     @mock.patch.object(manager, "memory_total_mib", return_value=32000)
-    @mock.patch.object(manager, "memory_available_mib", return_value=8500)
+    @mock.patch.object(manager, "memory_available_mib", return_value=11000)
     @mock.patch.object(manager.shutil, "disk_usage")
-    def test_capacity_admits_second_4g_runner_above_host_reserve(
+    def test_capacity_admits_one_6g_runner_above_host_reserve(
             self, disk, _available, _total, _cpu):
         disk.return_value = mock.Mock(free=100 * 1024**3)
         cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 60,
-               "overlay_root": "/x", "runner_cpu_sets": ["4,12,5,13", "6,14,7,15"]}
-        self.assertEqual(manager.capacity_errors(cfg, 2), [])
+               "overlay_root": "/x"}
+        self.assertEqual(manager.capacity_errors(cfg, 1), [])
 
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
     @mock.patch.object(manager.os, "cpu_count", return_value=8)
-    @mock.patch.object(manager, "memory_total_mib", return_value=12000)
+    @mock.patch.object(manager, "memory_total_mib", return_value=10000)
     @mock.patch.object(manager, "memory_available_mib", return_value=15000)
     @mock.patch.object(manager.shutil, "disk_usage")
     def test_capacity_rejects_projected_total_memory_oversubscription(
@@ -264,7 +267,7 @@ class ManagerTests(unittest.TestCase):
 
         self.assertIn(
             "host memory cannot fit projected runners and reserve",
-            manager.capacity_errors(cfg, 2),
+            manager.capacity_errors(cfg, 1),
         )
 
     @mock.patch.object(manager, "helper")
@@ -297,28 +300,26 @@ class ManagerTests(unittest.TestCase):
 
     @mock.patch.object(manager, "capacity_errors", return_value=[])
     @mock.patch.object(manager, "helper")
-    def test_launch_allows_two_active_leases_and_rejects_third(self, helper, capacity):
+    def test_launch_allows_one_active_lease_and_rejects_second(self, helper, capacity):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
             helper.side_effect = [
                 mock.Mock(stdout=b"{}"), mock.Mock(),
-                mock.Mock(stdout=b'{"one":"running"}'), mock.Mock(),
-                mock.Mock(stdout=b'{"one":"running","two":"running"}'),
+                mock.Mock(stdout=b'{"one":"running"}'),
             ]
 
             manager.launch(cfg, "one", base64.b64encode(b"opaque-one"))
-            manager.launch(cfg, "two", base64.b64encode(b"opaque-two"))
             with self.assertRaisesRegex(
                 manager.CapacityUnavailable, "all runner slots are occupied"
             ):
-                manager.launch(cfg, "three", base64.b64encode(b"opaque-three"))
+                manager.launch(cfg, "two", base64.b64encode(b"opaque-two"))
 
             self.assertEqual(
                 {state["lease"] for state in manager.StateStore(cfg["state_dir"]).leases()},
-                {"one", "two"},
+                {"one"},
             )
-            self.assertEqual(capacity.call_args_list, [mock.call(cfg, 1), mock.call(cfg, 2)])
+            self.assertEqual(capacity.call_args_list, [mock.call(cfg, 1)])
 
     @mock.patch.object(
         manager,
@@ -1181,7 +1182,7 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(list((root / "run").iterdir()), [])
 
     @mock.patch.object(manager, "launch")
-    def test_dispatch_fills_both_free_slots_in_one_poll(self, launch):
+    def test_dispatch_claims_only_one_job_per_poll(self, launch):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             client = mock.Mock()
@@ -1201,9 +1202,9 @@ class ManagerTests(unittest.TestCase):
 
             self.assertTrue(manager.dispatch_once(cfg, client))
 
-            self.assertEqual(launch.call_count, 2)
+            self.assertEqual(launch.call_count, 1)
             self.assertEqual(
-                [call.args[1] for call in launch.call_args_list], ["gh-20", "gh-21"]
+                [call.args[1] for call in launch.call_args_list], ["gh-20"]
             )
 
     @mock.patch.object(manager, "launch")

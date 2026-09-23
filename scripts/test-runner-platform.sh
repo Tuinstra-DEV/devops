@@ -28,13 +28,13 @@ for file in infra/packer/sanctuary-runner.pkr.hcl infra/ansible/site.yml; do
 done
 
 grep -q 'rotate 30' runner/logrotate/ci-runner-audit
-grep -q '^MAX_CONCURRENCY = 2$' runner/host-helper/ci_runner_host_helper.py
-grep -q '^MEMORY_MIB = 4096$' runner/host-helper/ci_runner_host_helper.py
+grep -q '^MAX_CONCURRENCY = 1$' runner/host-helper/ci_runner_host_helper.py
+grep -q '^MEMORY_MIB = 6144$' runner/host-helper/ci_runner_host_helper.py
 grep -q '^VCPUS = 4$' runner/host-helper/ci_runner_host_helper.py
 grep -q 'DISK_GIB = "120G"' runner/host-helper/ci_runner_host_helper.py
-grep -q '^max_concurrency = 2$' runner/config/manager.toml
+grep -q '^max_concurrency = 1$' runner/config/manager.toml
 grep -q '^runner_vcpus = 4$' runner/config/manager.toml
-grep -q '^runner_memory_mib = 4096$' runner/config/manager.toml
+grep -q '^runner_memory_mib = 6144$' runner/config/manager.toml
 grep -q '^host_memory_reserve_mib = 4096$' runner/config/manager.toml
 grep -q 'max_lease_seconds = 7200' runner/config/manager.toml
 grep -q '^RuntimeMaxSec=7200$' runner/systemd/ci-runner-job.service
@@ -67,10 +67,15 @@ grep -q 'systemd-run' runner/host-helper/ci_runner_host_helper.py
 grep -q 'ubuntu-24.04-runner-{{ runner_base_image_sha256 }}.qcow2' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'src: manager.toml.j2' infra/ansible/roles/runner_host/tasks/main.yml
-grep -q 'runner_max_concurrency: 2' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q 'runner_max_concurrency: 1' infra/ansible/roles/runner_host/defaults/main.yml
 grep -q 'runner_vcpus: 4' infra/ansible/roles/runner_host/defaults/main.yml
-grep -q 'runner_memory_mib: 4096' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q 'runner_memory_mib: 6144' infra/ansible/roles/runner_host/defaults/main.yml
 grep -q 'runner_host_memory_reserve_mib: 4096' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q 'runner_min_free_disk_gib: 60' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q 'name: ci-wow-cpu-pin.timer' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'enabled: false' infra/ansible/roles/runner_host/tasks/main.yml
+assert_absent 'runner_cpu_sets' infra/ansible/roles/runner_host/templates/manager.toml.j2
+assert_absent 'cpuset=' runner/host-helper/ci_runner_host_helper.py
 grep -q 'dest: /etc/ci-runner/sanctuary-ci.xml' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'runner_libvirt_uri=qemu:///system' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'net-uuid sanctuary-ci' infra/ansible/roles/runner_host/tasks/main.yml

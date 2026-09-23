@@ -11,17 +11,14 @@
 - name: Assert runner capacity contract
   ansible.builtin.assert:
     that:
-      - runner_max_concurrency | int == 2
+      - runner_max_concurrency | int == 1
       - runner_vcpus | int == 4
-      - runner_memory_mib | int == 4096
-      - runner_expected_live_memory_mib | int == 6144
-      - runner_host_memory_reserve_mib | int >= 1024
-      - runner_host_memory_reserve_mib | int <= 65536
+      - runner_memory_mib | int == 6144
+      - runner_host_memory_reserve_mib | int == 4096
       - runner_min_free_disk_gib | int == 60
-      - runner_expected_live_disk_threshold_gib | int == 40
       - ansible_processor_vcpus | int >= (runner_max_concurrency | int) * (runner_vcpus | int)
       - ansible_memtotal_mb | int >= ((runner_max_concurrency | int) * (runner_memory_mib | int)) + (runner_host_memory_reserve_mib | int)
-    fail_msg: Host capacity must fit two 4-vCPU, 4096-MiB runners plus the memory reserve.
+    fail_msg: Host capacity must fit one 4-vCPU, 6144-MiB runner plus the 4096-MiB memory reserve.
 
 - name: Check KVM device
   ansible.builtin.stat:
@@ -69,7 +66,7 @@
          | select('match', '^min_free_disk_gib = [0-9]+$') | list }}
   when: runner_existing_manager_policy.stat.exists
 
-- name: Refuse unreviewed capacity transitions or insufficient NVMe capacity
+- name: Refuse capacity drift or insufficient NVMe capacity
   ansible.builtin.assert:
     that:
       - >-
@@ -81,21 +78,19 @@
         not runner_existing_manager_policy.stat.exists or
         (runner_existing_memory_lines | length == 1 and
          (runner_existing_memory_lines[0].split(' = ')[1] | int)
-         in [runner_expected_live_memory_mib | int, runner_memory_mib | int])
+         == (runner_memory_mib | int))
       - >-
         not runner_existing_manager_policy.stat.exists or
         (runner_existing_disk_threshold_lines | length == 1 and
          (runner_existing_disk_threshold_lines[0].split(' = ')[1] | int)
-         in [runner_expected_live_disk_threshold_gib | int, runner_min_free_disk_gib | int])
+         == (runner_min_free_disk_gib | int))
       - >-
         (ansible_mounts | selectattr('mount', 'equalto', '/')
          | map(attribute='size_available') | first | int) >=
         (runner_min_free_disk_gib | int) * 1073741824
     fail_msg: >-
-      Refusing an unreviewed runner concurrency transition, any memory policy transition other than the reviewed
-      6144-to-4096-MiB change, any disk policy transition other than the
-      reviewed 40-to-60-GiB change, or deployment when the main NVMe has
-      less than 60 GiB free.
+      Refusing runner capacity drift from the approved one-VM, 6144-MiB,
+      60-GiB policy or deployment when the main NVMe has less than 60 GiB free.
 
 - name: Install virtualization and policy packages
   ansible.builtin.apt:
@@ -198,6 +193,8 @@
   ansible.builtin.command:
     argv:
       - virsh
+      - --connect
+      - qemu:///system
       - list
       - --all
       - --name
@@ -286,38 +283,28 @@
     - Restart runner host helper socket
     - Restart runner manager
 
-- name: Install read-only CPU pool sampler
-  ansible.builtin.copy:
-    src: "{{ runner_manager_source_root }}/runner/monitoring/cpu_pools.py"
-    dest: /usr/local/bin/ci-cpu-pools
-    owner: root
-    group: root
-    mode: '0755'
+- name: Inspect the retired WoW CPU pin timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/ci-wow-cpu-pin.timer
+  register: runner_retired_wow_pin_timer
 
-- name: Install WoW CPU pin reconciliation files
-  ansible.builtin.copy:
-    src: "{{ runner_manager_source_root }}/{{ item.src }}"
-    dest: "{{ item.dest }}"
-    owner: root
-    group: root
-    mode: "{{ item.mode }}"
-  loop:
-    - { src: runner/host-helper/ci_wow_cpu_pin.py, dest: /usr/local/libexec/ci-wow-cpu-pin, mode: '0755' }
-    - { src: runner/systemd/ci-wow-cpu-pin.service, dest: /etc/systemd/system/ci-wow-cpu-pin.service, mode: '0644' }
-    - { src: runner/systemd/ci-wow-cpu-pin.timer, dest: /etc/systemd/system/ci-wow-cpu-pin.timer, mode: '0644' }
-
-- name: Apply WoW CPU pin before reopening runner admission
-  ansible.builtin.systemd:
-    name: ci-wow-cpu-pin.service
-    state: started
-    daemon_reload: true
-
-- name: Keep WoW CPU pin after container recreation and host reboot
+- name: Keep the retired WoW CPU pin timer disabled
   ansible.builtin.systemd:
     name: ci-wow-cpu-pin.timer
-    enabled: true
-    state: started
-    daemon_reload: true
+    enabled: false
+    state: stopped
+  when: runner_retired_wow_pin_timer.stat.exists
+
+- name: Remove retired CPU pin and pool sampler files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/bin/ci-cpu-pools
+    - /usr/local/libexec/ci-wow-cpu-pin
+    - /etc/systemd/system/ci-wow-cpu-pin.service
+    - /etc/systemd/system/ci-wow-cpu-pin.timer
+  notify: Reload systemd
 
 - name: Install runner manager configuration
   ansible.builtin.template:

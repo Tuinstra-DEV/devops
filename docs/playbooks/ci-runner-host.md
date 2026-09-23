@@ -1,22 +1,21 @@
 # CI runner host operations
 
-## DEV-23 temporary production profile (2026-09-23)
+## DEV-23 production profile (2026-09-23)
 
-Sanctuary currently runs one ephemeral `trusted-heavy` VM at a time, with four
+Sanctuary runs one ephemeral `trusted-heavy` VM at a time, with four
 vCPUs, 6,144 MiB guest RAM, a 4,096 MiB host reserve and a 60 GiB minimum on
-the main NVMe. The manager and root helper both enforce a single domain. The
-WoW pin timer is disabled and the live WoW container has CPU set `0-15` after
-the production lag report. The two-runner, 4-GiB configuration below remains
-the undeployed DEV-23 target, not the current host state. Ansible now refuses
-to overwrite the live single-runner profile; a later rollout requires a
-separate reviewed capacity transition and a new WoW/CI soak.
+the main NVMe. The manager and root helper both enforce a single domain.
+The WoW pin timer is retired; the WoW container uses CPU set `0-15`. The VM
+shares host CPUs with WoW and is admitted only when the one-VM slot, projected
+host memory reserve and disk gate permit it. This is the permanent profile.
+Changing concurrency, guest memory or WoW CPU affinity requires a separately
+reviewed capacity change and a new WoW/CI soak.
 
-The operator's one-runner change backed up the previous host files in
+The initial one-runner change backed up the previous host files in
 `/var/backups/dev23-single-runner-20260923T164122Z`. Before any further host
 change, drain CI and confirm there are no `sanctuary-ci-*` domains or overlays.
-The local operational script and its SHA-256 evidence are held with the DEV-23
-rollout record. Do not apply the two-runner role to this host until its capacity
-contract and WoW pin have been reviewed again.
+The Ansible role now enforces the same permanent policy and disables the retired
+pin timer. Keep the backup and rollout record for reversal and audit.
 
 ## Provision
 
@@ -29,18 +28,16 @@ contract and WoW pin have been reviewed again.
    and IPv6 deny lists, and `runner_production_networks_reviewed=true` in
    protected Ansible inventory, then run `ansible-playbook infra/ansible/site.yml`.
 6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1,
-   concurrency 2, 4 vCPU / 4,096 MiB guest dimensions, 4,096 MiB host memory
+   concurrency 1, 4 vCPU / 6,144 MiB guest dimensions, 4,096 MiB host memory
    reserve, and 120-minute lease limit in `/etc/ci-runner/manager.toml`.
 
 Image activation is fail-closed: Ansible stops new admission, refuses to switch
 the digest symlink while any `sanctuary-ci-*` domain or overlay entry exists,
 and retains prior digest-versioned images. Never bypass this drain assertion.
-For DEV-23, the same drained deployment applies the WoW CPU set to complete
-core pairs `1,9,2,10,3,11` before reopening admission. A root-owned systemd
-timer rechecks the named container every five seconds after boot or recreation.
-The runner helper independently refuses a launch while WoW is unpinned. A
-container recreation during an active VM can still have a brief unpinned
-interval; drain CI before planned WoW maintenance.
+The role disables and removes the retired WoW CPU pin timer and service.
+Verify the live WoW container remains on `0-15` after container recreation.
+Drain CI before planned WoW maintenance so guest and game load do not overlap
+during startup.
 
 Copy `infra/packer/sanctuary-runner.pkrvars.hcl.example` outside source control,
 replace every placeholder with an exact reviewed version or checksum, then run
@@ -72,7 +69,7 @@ sudo kvm-ok
 sudo virsh net-info sanctuary-ci
 sudo nft list table inet sanctuary_ci
 sudo systemctl status ci-runner-manager ci-runner-host-helper.socket libvirtd sanctuary-ci-firewall
-sudo systemctl status ci-wow-cpu-pin.service ci-wow-cpu-pin.timer
+systemctl is-enabled ci-wow-cpu-pin.timer  # disabled or not-found
 docker inspect --format '{{.HostConfig.CpusetCpus}}' tuinstra-realm-world
 sudo systemctl show ci-runner-manager -p NoNewPrivileges
 sudo stat -c '%U:%G %a %n' /run/ci-runner-host-helper.sock
@@ -83,11 +80,12 @@ The manager must report `NoNewPrivileges=yes`; `/etc/sudoers.d/ci-runner-manager
 must not exist. The helper socket must be owned by `ci-runner-manager`, mode
 `0600`, and the broker must reject every other peer UID. Do not weaken this
 boundary to a group-writable socket or a wildcard sudo rule.
-The WoW CPU set must contain exactly CPUs `1,2,3,9,10,11`. If WoW health
-regresses, stop runner admission, disable `ci-wow-cpu-pin.timer`, clear the
-container CPU set with `docker update --cpuset-cpus=0-15 tuinstra-realm-world`,
-and restore the prechange runner manager/helper/configuration copies before
-restarting the manager. Check WoW ports 8085/3724 and repeat a runner canary.
+The WoW CPU set must remain `0-15`; the runner VM must have no `vcpu cpuset`.
+If WoW health regresses during CI, stop new runner admission, let the current
+job finish or cancel it for containment, and compare WoW update times with
+the 2,000-bot baseline. Check WoW ports 8085/3724 before reopening admission.
+For a runner rollback, restore the reviewed manager/helper/configuration backup
+after draining and repeat a single runner canary.
 
 ### GitHub JIT redirect canary
 
@@ -117,12 +115,12 @@ commit for the runner-manager change, apply the same Ansible role from that
 reviewed revert, and re-run the host health checks. Do not amend, move a tag,
 force-push, restore an unreviewed binary, or delete state to hide an orphan.
 
-Launch two non-production canaries and verify: exact `trusted-heavy` routing;
-4 vCPU, 4,096 MiB RAM and 120 GiB disk per guest; rejection of a third launch;
+Launch one non-production canary and verify: exact `trusted-heavy` routing;
+4 vCPU, 6,144 MiB RAM and 120 GiB disk per guest; rejection of a second launch;
 public GitHub reachability while host, private and production ranges are
-blocked; one-job poweroff; complete multi-lease reconciliation within 30
+blocked; one-job poweroff; complete lease reconciliation within 30
 seconds; and audit events without the JIT payload. Repeat with projected free
-memory below the configured reserve and confirm the second launch is rejected.
+memory below the configured reserve and confirm a launch is rejected.
 
 Repeat a failure canary with the manager stopped. Confirm the guest and host
 timer power the VM off at the configured upper bound, then restart the manager

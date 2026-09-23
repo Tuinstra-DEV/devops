@@ -72,40 +72,13 @@ class HostHelperTests(unittest.TestCase):
     @mock.patch.object(helper, "run")
     @mock.patch.object(helper, "resolved_base_image")
     @mock.patch.object(helper.os, "geteuid", return_value=0)
-    def test_launch_rejects_third_domain_before_mutation(self, _euid, image, run):
+    def test_launch_rejects_second_domain_before_mutation(self, _euid, image, run):
         image.return_value = mock.Mock()
         run.return_value = mock.Mock(
-            stdout="sanctuary-ci-existing-1\nsanctuary-ci-existing-2\n"
+            stdout="sanctuary-ci-existing-1\n"
         )
         with self.assertRaisesRegex(RuntimeError, "slots are occupied"):
             helper.launch("new", b"aml0")
-
-    @mock.patch.object(helper.os, "sched_getaffinity", return_value={1, 2, 3, 9, 10, 11}, create=True)
-    @mock.patch.object(helper, "run")
-    def test_cpu_pool_selection_requires_pinned_wow_and_unique_runner_domains(self, run, affinity):
-        run.return_value = mock.Mock(stdout="123|true|1,9,2,10,3,11\n")
-        self.assertEqual(helper.select_cpu_set([]), "4,12,5,13")
-        run.side_effect = [
-            mock.Mock(stdout="123|true|1,9,2,10,3,11\n"),
-            mock.Mock(stdout="<domain><vcpu cpuset='4,12,5,13'>4</vcpu></domain>"),
-        ]
-        self.assertEqual(helper.select_cpu_set(["sanctuary-ci-one"]), "6,14,7,15")
-        self.assertEqual(helper.normalized_cpu_set("4-5,12-13"),
-                         helper.normalized_cpu_set("4,12,5,13"))
-        run.side_effect = [mock.Mock(stdout="123|true|\n")]
-        with self.assertRaisesRegex(RuntimeError, "WoW CPU allocation"):
-            helper.select_cpu_set([])
-        run.side_effect = [mock.Mock(stdout="123|true|1,9,2,10,3,11\n")]
-        affinity.return_value = {0, 1, 2, 3, 9, 10, 11}
-        with self.assertRaisesRegex(RuntimeError, "WoW CPU allocation"):
-            helper.select_cpu_set([])
-        affinity.return_value = {1, 2, 3, 9, 10, 11}
-        run.side_effect = [
-            mock.Mock(stdout="123|true|1,9,2,10,3,11\n"),
-            mock.Mock(stdout="<domain><vcpu>4</vcpu></domain>"),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "not CPU pinned"):
-            helper.select_cpu_set(["sanctuary-ci-legacy"])
 
     @mock.patch.object(helper.Path, "is_file", return_value=True)
     @mock.patch.object(helper.Path, "resolve")
@@ -119,9 +92,8 @@ class HostHelperTests(unittest.TestCase):
 
     @mock.patch.object(helper.os, "geteuid", return_value=0)
     @mock.patch.object(helper, "resolved_base_image")
-    @mock.patch.object(helper, "select_cpu_set", return_value="4,12,5,13")
     @mock.patch.object(helper, "run")
-    def test_launch_schedules_independent_host_expiry_timer(self, run, _cpu_set, image, _euid):
+    def test_launch_schedules_independent_host_expiry_timer(self, run, image, _euid):
         with tempfile.TemporaryDirectory() as directory:
             stdin = mock.Mock()
             stdin.buffer.read.return_value = b"aml0"
@@ -146,7 +118,7 @@ class HostHelperTests(unittest.TestCase):
         )
         self.assertEqual(
             virt_install[virt_install.index("--vcpus") + 1],
-            "4,cpuset=4,12,5,13"
+            "4"
         )
         self.assertEqual(
             virt_install[virt_install.index("--memory") + 1], str(helper.MEMORY_MIB)
@@ -189,7 +161,7 @@ class HostHelperTests(unittest.TestCase):
         valid = [
             {"v": 1, "id": self.request_id, "op": "list"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": 4, "memory_mib": 4096},
+             "vcpus": 4, "memory_mib": 6144},
             {"v": 1, "id": self.request_id, "op": "destroy", "lease": "job-1"},
         ]
         for request in valid:
@@ -204,11 +176,11 @@ class HostHelperTests(unittest.TestCase):
             {"v": 1, "id": self.request_id, "op": "destroy"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "../escape"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": True, "memory_mib": 4096},
+             "vcpus": True, "memory_mib": 6144},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": 8, "memory_mib": 4096},
+             "vcpus": 8, "memory_mib": 6144},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": 4, "memory_mib": 6144},
+             "vcpus": 4, "memory_mib": 4096},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
              "vcpus": 4, "memory_mib": 12288},
             {"v": 1, "id": self.request_id, "op": "list", "extra": False},
@@ -231,14 +203,14 @@ class HostHelperTests(unittest.TestCase):
     def test_serve_passes_validated_raw_jit_packet_to_launch(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 4096}
+                   "vcpus": 4, "memory_mib": 6144}
         jit = base64.b64encode(b"ephemeral registration material")
         connection.recv.side_effect = [json.dumps(request).encode(), jit]
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(helper, "HELPER_LOCK", Path(directory) / "helper.lock"):
             helper.serve_connection(connection, expected_uid=1002)
 
-        launch.assert_called_once_with("job-1", jit, vcpus=4, memory_mib=4096)
+        launch.assert_called_once_with("job-1", jit, vcpus=4, memory_mib=6144)
         self.assertEqual(connection.settimeout.call_args_list, [mock.call(5.0), mock.call(None)])
         self.assertEqual(self.decoded_response(connection), {
             "v": 1, "id": self.request_id, "ok": True, "result": None,
@@ -248,7 +220,7 @@ class HostHelperTests(unittest.TestCase):
     def test_serve_validates_jit_before_launch_mutation(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 4096}
+                   "vcpus": 4, "memory_mib": 6144}
         connection.recv.side_effect = [json.dumps(request).encode(), b"not base64!!"]
 
         helper.serve_connection(connection, expected_uid=1002)
@@ -261,7 +233,7 @@ class HostHelperTests(unittest.TestCase):
     def test_operation_errors_are_sanitized_in_response(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 4096}
+                   "vcpus": 4, "memory_mib": 6144}
         secret = "sensitive-jit-material"
         connection.recv.side_effect = [json.dumps(request).encode(), base64.b64encode(b"jit")]
         launch.side_effect = RuntimeError(secret)

@@ -1,5 +1,10 @@
 # DEV-23 Sanctuary CPU pool baseline and rollout gate
 
+Historical proposal, superseded on 2026-09-23 by the permanent one-runner
+profile in [the host playbook](../playbooks/ci-runner-host.md). The two-pool
+allocation and WoW pin below were tried, then rolled back after reported game
+latency. Do not use this document as a current deployment instruction.
+
 Status: runner code prepared on `chore/DEV-23-sanctuary-cpu-pools`; production allocation and soak remain pending.
 
 ## Topology and allocation
