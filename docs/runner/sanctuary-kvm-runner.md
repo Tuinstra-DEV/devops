@@ -84,16 +84,23 @@ fork pull requests select this machine.
 
 - Maximum concurrency is 2. The manager keeps one global lifecycle filesystem
   lock, and the root helper independently serializes libvirt mutations.
-- Each guest receives exactly 4 vCPU, 6,144 MiB RAM, and a 120 GiB
+- Each guest receives exactly 4 vCPU, 4,096 MiB RAM, and a 120 GiB
   grow-on-write disk.
 - Admission projects the new slot before launch: projected guest vCPUs must not
   exceed host logical CPUs, total memory must fit all projected guests plus the
-  reserve, and `MemAvailable` after subtracting the new 6,144-MiB guest must
-  retain the configured 4,096-MiB host reserve. Admission
-  also requires 140 GiB free on `/var/lib/ci-runner/overlay` and one-minute load
-  no higher than 8. Ansible refuses hosts that cannot fit both guests plus the
-  reserve. Manager and helper independently enforce the exact concurrency and
-  VM resource contract, so a configuration mismatch fails closed.
+  reserve, and `MemAvailable` after subtracting the new 4,096-MiB guest must
+  retain the configured 4,096-MiB host reserve. Admission also requires
+  the configured `runner_min_free_disk_gib` free on
+  `/var/lib/ci-runner/overlay` (60 GiB on Sanctuary); the overlay remains on the
+  main NVMe. Ansible allows only the reviewed live 40-to-60-GiB transition
+  (or an already-applied 60-GiB policy), and refuses to install when available
+  space is below 60 GiB. Global one-minute load is not an admission input. The two declared
+  runner CPU sets provide the CPU slots, and the helper checks live libvirt
+  allocations before launch. The helper also requires the live WoW CPU set to
+  match the reviewed allocation. Ansible refuses hosts that cannot fit both
+  guests plus the reserve. Manager and helper independently enforce the exact
+  concurrency and VM resource contract, so a configuration mismatch fails
+  closed.
 - The base image is root-owned and mode `0444`. The overlay root and per-job
   lease directories are root-owned, group `kvm`, and mode `0710`. Only the
   isolated `libvirt-qemu` account owns the mode `0600` overlay and seed images.

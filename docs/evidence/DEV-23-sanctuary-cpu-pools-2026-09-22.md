@@ -1,0 +1,59 @@
+# DEV-23 Sanctuary CPU pool baseline and rollout gate
+
+Status: runner code prepared on `chore/DEV-23-sanctuary-cpu-pools`; production allocation and soak remain pending.
+
+## Topology and allocation
+
+`lscpu -e` on Sanctuary reports one socket, eight physical cores, and sixteen SMT threads. The sibling pairs are `0/8`, `1/9`, `2/10`, `3/11`, `4/12`, `5/13`, `6/14`, and `7/15`.
+
+| Pool | Complete core pairs | Logical CPUs | Purpose |
+| --- | --- | --- | --- |
+| Host/daemons | `0/8` | 2 | Reserved from the explicit WoW and CI pins to leave host/daemon scheduling capacity; other host services remain schedulable across the machine. |
+| WoW production | `1/9`, `2/10`, `3/11` | 6 | Three physical cores for the current ~3.3-CPU worldserver workload; canary health must prove this is sufficient. |
+| CI VM slot 1 | `4/12`, `5/13` | 4 | One 4-vCPU ephemeral runner. |
+| CI VM slot 2 | `6/14`, `7/15` | 4 | A second disjoint 4-vCPU ephemeral runner when memory allows. |
+
+The VM CPU pins and WoW pin must be deployed as one drained change. The runner helper refuses launches while WoW is unrestricted or an existing runner lacks a verified pin. This trades temporary availability for an explicit no-overlap guarantee during rollout.
+
+## Read-only baseline, 2026-09-22 21:13 UTC
+
+- WoW `tuinstra-realm-world`: running, no healthcheck, zero restarts, unrestricted CPU set; CPU 330.11%, memory 7.788 GiB, 15 processes. TCP 8085 and 3724 listening.
+- Host: 32,013 MiB total, 12,843 MiB `MemAvailable`; projected after one 6,144-MiB VM leaves 6,699 MiB, above the 4,096-MiB reserve. A second VM would leave 555 MiB and is correctly rejected.
+- CPU pressure: `some avg10=1.00`, `full avg10=0.00`; the WoW process affinity was `0-15`; memory pressure `some avg10=0.00`, `full avg10=0.00`. A brief `mpstat -P ALL 1 2` sample showed 73.70% aggregate idle and 0% steal; it is not a soak or production SLO.
+- `/var/lib/ci-runner/overlay` resolves to the main NVMe root, with 70 GiB available. The prior checked-in minimum was 140 GiB. A privileged read on 2026-09-23 confirmed the live manager minimum was 40 GiB. The operator selected 60 GiB as the new minimum, tightening the live guard. Ansible permits only the reviewed 40-to-60-GiB transition (or an already-applied 60-GiB policy) and refuses deployment if the main NVMe has less than 60 GiB available.
+- Tracker PR #261's successful CI attempt took about 12 minutes, with a five-second frontend verdict delayed several minutes by host capacity. This is prior evidence, not a matched before/after soak.
+
+## Storage and memory inventory, 2026-09-23
+
+At 04:59 UTC, the 217-GiB NVMe root held 138 GiB used and 70 GiB available; ext4 also had about 10 GiB reserved from unprivileged use. The manager's `shutil.disk_usage(...).free`, Linux `statvfs.f_bavail`, and `df Available` were checked against each other and returned the same 74,418,237,440-byte figure at one sample; the ext4 reserve is excluded from admission. The runner overlay is on this root. At that pre-cleanup snapshot, a 60-GiB launch threshold left about 10 GiB above the gate, whereas each qcow2 guest has a 120-GiB virtual maximum. No historical overlay high-water or hard per-VM host-space bound has been established, so 60 GiB is an operator-selected policy value, not yet a proven production-safe reserve. A representative CI soak must measure peak overlay growth and protect host free space before rollout. Docker's **current** data root is `/mnt/ssd1000-01/docker/data-root` on a separate 1-TB SSD; pruning that engine's reported 45.95 GiB build cache would not free runner capacity on the NVMe.
+
+Privileged read-only `du` accounts for the full 138 GiB: `/var` 77 GiB, `/home` 37 GiB, `/tmp` 8.4 GiB, and `/usr` 5.7 GiB. The previously unexplained 51 GiB is `/var/lib/docker` on the NVMe: 49 GiB in `overlay2` image/container layers and 1.3 GiB in volumes. The current Docker engine uses the SSD path above, but the running `console_prod_agent` bind-mounts `/var/lib/docker` read-only at `/host/var/lib/docker`. Do not assume this directory is disposable: establish its contents, owner, last use, and agent dependency before any cleanup or migration. Other NVMe directories include about 20 GiB of three immutable runner images under `/var/lib/ci-runner/images` (the current symlink targets one of them), 20 GiB of corresponding Packer output directories under `/home/mtuinstra/ci-devops/infra/packer`, 8.4 GiB under `/tmp` (including archived build artifacts and test logs), and 4.8 GiB of `/var/log` (3.8 GiB of systemd journal). These figures are the pre-cleanup inventory; the Packer outputs were removed later as recorded below.
+
+The `/home` total is principally the three distinct Packer qcow2 outputs (6.6, 6.6, and 6.9 GiB), `/home/mtuinstra/.cache` (5.8 GiB, including 5.6 GiB image-security cache with three ~849-MiB PHP archives and two ~1.3-GiB Trivy databases), `/home/mtuinstra/games/dragonwilds/server-data` (5.2 GiB), and Linuxbrew (1.7 GiB). `/tmp` is mostly top-level Frostbound source archives (4.46 GiB), audit/test logs (1.17 GiB), worldserver binaries (1.07 GiB), and smaller staging trees. `/var/log` is primarily persistent systemd journal (3.9 GiB); rotated/current syslog, btmp, dmesg, and other logs account for the rest. Journald has no explicit `SystemMaxUse` or `MaxRetentionSec` override in the effective config inspected. These directories may contain production or audit evidence; retention and ownership need review before cleanup.
+
+At the same time, Sanctuary had 31 GiB RAM, 19 GiB used, about 8 GiB free and 12 GiB `MemAvailable`, with no swap. The largest containers were WoW worldserver about 7.9 GiB, realm database about 4.25 GiB, and a game server about 1.78 GiB. Other containers, kernel memory and cache make up the remainder. After a 6-GiB CI VM, the 4-GiB host reserve fits; a second VM generally does not at this workload snapshot. The two CPU slots remain disjoint for times when memory permits two, but normal admission may allow only one.
+
+Two 4,096-MiB runners are a possible separate resource-contract change, not an assured capacity fix. At a later sample with 11,496 MiB `MemAvailable`, subtracting two 4,096-MiB guests leaves 3,304 MiB, below the current 4,096-MiB host reserve; at the earlier 12,843-MiB sample it would leave only 555 MiB above reserve. Sanctuary has no swap. The current 6,144-MiB guest size is enforced independently by manager, helper, Ansible, and tests. Packer's 4,096-MiB image-build VM is not evidence that trusted-heavy browser and build jobs fit in a 4-GiB runtime guest. Measure representative guest memory high-water and job success before considering a 4-GiB contract.
+
+A later live sample showed 11,552 MiB `MemAvailable`, versus 16,384 MiB needed for two 6,144-MiB guests plus the 4,096-MiB host reserve: about 4,832 MiB short before either guest starts. WoW worldserver used 8.31 GiB, its database 4.45 GiB, and Dragonwilds 1.78 GiB; the host's remaining applications and kernel consumption explain why subtracting only those three from 32 GiB overstates runner headroom. Worldserver's process RSS was already about 8.28 GiB, so a 6- or 7-GiB cap alone would be below present use.
+
+The largest disk recovery candidates are the 51-GiB NVMe Docker tree (current engine data root is elsewhere, but `console_prod_agent` still mounts it read-only), three July Packer build outputs totaling about 20 GiB (installed runner images are separate), the 8.4-GiB `/tmp` build/evidence files, and the 5.6-GiB image-security cache. A cleanup plan must confirm owners, references, rollback copies, and audit retention before removal. The 3.9-GiB journal should receive an explicit retention policy rather than ad hoc deletion. At this baseline, no cleanup had been performed.
+
+With operator authorization, the three untracked Packer output directories were removed after their qcow2 SHA-256 hashes were matched to the installed immutable images. Root available space rose from 69 to 89 GiB; both active and previous image symlinks remained valid. Other dirty host checkout files were untouched. The old 51-GiB Docker tree remains because the running Console agent mounts it.
+
+The DEV-23 branch now prepares an exact 4,096-MiB guest contract in manager, helper, Ansible, tests, and runbooks. Ansible accepts only the observed 6,144→4,096-MiB live policy transition or an already-applied 4,096-MiB policy, before host changes. The host reserve remains 4,096 MiB; two 4-GiB guests require at least 12,288 MiB `MemAvailable` before launch under the conservative admission model. The latest `MemAvailable` sample was 12,392 MiB, only 104 MiB above that minimum; this fluctuating snapshot does not prove sustainable two-runner capacity. Local focused runner tests (119), lint, and the full test suite passed for the prepared branch. A representative trusted-heavy 4-GiB canary and matched WoW-load soak remain required before deployment.
+
+## Preconditions and controlled canary
+
+1. Confirm the reviewed 60-GiB disk threshold still fits the main NVMe at deploy time; the live 40-GiB threshold must be the only prior value. With 89 GiB available after cleanup, a launch has about 29 GiB of admission margin. Do not prune Docker data or change the overlay filesystem as an unreviewed shortcut. Confirm no active `sanctuary-ci-*` domains or overlays and retain a copy of the previous manager/helper configuration for rollback.
+2. Measure a representative runner overlay high-water mark under real heavy CI and define a host-space reserve or hard bound that remains safe with the selected 60-GiB admission gate. The virtual 120-GiB qcow2 maximum means the current ~29-GiB margin cannot itself justify production rollout.
+3. Establish and review a durable WoW lifecycle owner or managed reconciler that reapplies the CPU set after recreation and host restart. The current container has no Compose labels; the unversioned host override is not proven to own it. A one-off `docker update` does not satisfy persistence.
+4. Define an agreed WoW health threshold from existing service metrics before changing its CPU allocation. Record a comparable baseline under a concurrent WoW workload and trusted-heavy CI job (using `ci-cpu-pools` for credential-free per-pool busy/steal samples and the manager audit log for sanitized admission outcomes): queue duration, VM launch latency, per-pool `mpstat` use, CPU pressure, steal/throttle indicators, memory/disk admission, and WoW health.
+5. Drain CI, activate the persistent WoW pin, verify the effective container CPU set, then deploy the runner manager/helper/config. Launch one trusted-heavy canary and verify its libvirt `<vcpu cpuset>` and four vCPUs. Only then allow a second canary if memory and disk gates pass. Check that CPU sets do not intersect and required GitHub checks remain intact.
+6. Recreate the WoW container through its actual lifecycle owner and reboot only in an agreed maintenance window; verify the pin persists, service endpoints return, and CI can launch. Repeat the same measurements. Stop and roll back on WoW health regression, unexpected CPU pressure, or failed CI isolation.
+
+## Rollback drill
+
+Drain CI and stop new dispatch. Restore the prior manager, helper, and manager TOML from the captured prechange versions; restart the manager and helper socket. Restore the prior WoW lifecycle configuration and recreate the container, or disable the managed pin and clear the CPU set using the reviewed prior configuration. Verify WoW process state, ports 8085/3724, player/service health, and a trusted-heavy runner launch with the prior policy. Record the exact commands and observations in DEV-23 before marking the Story Delivered.
+
+No DEV-23 runner policy or WoW CPU allocation was changed while preparing this evidence.

@@ -13,12 +13,15 @@
     that:
       - runner_max_concurrency | int == 2
       - runner_vcpus | int == 4
-      - runner_memory_mib | int == 6144
+      - runner_memory_mib | int == 4096
+      - runner_expected_live_memory_mib | int == 6144
       - runner_host_memory_reserve_mib | int >= 1024
       - runner_host_memory_reserve_mib | int <= 65536
+      - runner_min_free_disk_gib | int == 60
+      - runner_expected_live_disk_threshold_gib | int == 40
       - ansible_processor_vcpus | int >= (runner_max_concurrency | int) * (runner_vcpus | int)
       - ansible_memtotal_mb | int >= ((runner_max_concurrency | int) * (runner_memory_mib | int)) + (runner_host_memory_reserve_mib | int)
-    fail_msg: Host capacity must fit two 4-vCPU, 6144-MiB runners plus the memory reserve.
+    fail_msg: Host capacity must fit two 4-vCPU, 4096-MiB runners plus the memory reserve.
 
 - name: Check KVM device
   ansible.builtin.stat:
@@ -40,6 +43,51 @@
       - runner_overlay_mount_source == '/dev/mapper/ubuntu--vg-ubuntu--lv'
       - (ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='device') | first) == runner_overlay_mount_source
     fail_msg: Runner overlays must use the reviewed main NVMe root and audit logs must use the dedicated HDD.
+
+- name: Inspect the existing runner manager policy before any host changes
+  ansible.builtin.stat:
+    path: /etc/ci-runner/manager.toml
+  register: runner_existing_manager_policy
+
+- name: Read the existing runner manager policy without exposing its contents
+  ansible.builtin.slurp:
+    src: /etc/ci-runner/manager.toml
+  register: runner_existing_manager_config
+  no_log: true
+  when: runner_existing_manager_policy.stat.exists
+
+- name: Extract the existing memory and disk admission policies
+  ansible.builtin.set_fact:
+    runner_existing_memory_lines: >-
+      {{ (runner_existing_manager_config.content | b64decode).splitlines()
+         | select('match', '^runner_memory_mib = [0-9]+$') | list }}
+    runner_existing_disk_threshold_lines: >-
+      {{ (runner_existing_manager_config.content | b64decode).splitlines()
+         | select('match', '^min_free_disk_gib = [0-9]+$') | list }}
+  when: runner_existing_manager_policy.stat.exists
+
+- name: Refuse unreviewed capacity transitions or insufficient NVMe capacity
+  ansible.builtin.assert:
+    that:
+      - >-
+        not runner_existing_manager_policy.stat.exists or
+        (runner_existing_memory_lines | length == 1 and
+         (runner_existing_memory_lines[0].split(' = ')[1] | int)
+         in [runner_expected_live_memory_mib | int, runner_memory_mib | int])
+      - >-
+        not runner_existing_manager_policy.stat.exists or
+        (runner_existing_disk_threshold_lines | length == 1 and
+         (runner_existing_disk_threshold_lines[0].split(' = ')[1] | int)
+         in [runner_expected_live_disk_threshold_gib | int, runner_min_free_disk_gib | int])
+      - >-
+        (ansible_mounts | selectattr('mount', 'equalto', '/')
+         | map(attribute='size_available') | first | int) >=
+        (runner_min_free_disk_gib | int) * 1073741824
+    fail_msg: >-
+      Refusing any runner memory policy transition other than the reviewed
+      6144-to-4096-MiB change, any disk policy transition other than the
+      reviewed 40-to-60-GiB change, or deployment when the main NVMe has
+      less than 60 GiB free.
 
 - name: Install virtualization and policy packages
   ansible.builtin.apt:
@@ -229,6 +277,14 @@
   notify:
     - Restart runner host helper socket
     - Restart runner manager
+
+- name: Install read-only CPU pool sampler
+  ansible.builtin.copy:
+    src: "{{ runner_manager_source_root }}/runner/monitoring/cpu_pools.py"
+    dest: /usr/local/bin/ci-cpu-pools
+    owner: root
+    group: root
+    mode: '0755'
 
 - name: Install runner manager configuration
   ansible.builtin.template:

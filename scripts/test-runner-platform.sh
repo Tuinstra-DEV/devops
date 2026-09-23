@@ -10,8 +10,8 @@ assert_absent() {
   fi
 }
 
-python3 -c 'import ast,pathlib; [ast.parse(p.read_text()) for root in ("runner/manager", "runner/host-helper", "runner/tests") for p in pathlib.Path(root).glob("*.py")]'
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="runner/manager:runner/host-helper" python3 -B -m unittest discover -s runner/tests -v
+python3 -c 'import ast,pathlib; [ast.parse(p.read_text()) for root in ("runner/manager", "runner/host-helper", "runner/monitoring", "runner/tests") for p in pathlib.Path(root).glob("*.py")]'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="runner/manager:runner/host-helper:runner/monitoring" python3 -B -m unittest discover -s runner/tests -v
 bash -n infra/packer/scripts/install-runner.sh infra/packer/scripts/seal-image.sh \
   infra/packer/scripts/verify-image-contract.sh runner/guest/run-jit-runner.sh
 
@@ -29,12 +29,12 @@ done
 
 grep -q 'rotate 30' runner/logrotate/ci-runner-audit
 grep -q '^MAX_CONCURRENCY = 2$' runner/host-helper/ci_runner_host_helper.py
-grep -q '^MEMORY_MIB = 6144$' runner/host-helper/ci_runner_host_helper.py
+grep -q '^MEMORY_MIB = 4096$' runner/host-helper/ci_runner_host_helper.py
 grep -q '^VCPUS = 4$' runner/host-helper/ci_runner_host_helper.py
 grep -q 'DISK_GIB = "120G"' runner/host-helper/ci_runner_host_helper.py
 grep -q '^max_concurrency = 2$' runner/config/manager.toml
 grep -q '^runner_vcpus = 4$' runner/config/manager.toml
-grep -q '^runner_memory_mib = 6144$' runner/config/manager.toml
+grep -q '^runner_memory_mib = 4096$' runner/config/manager.toml
 grep -q '^host_memory_reserve_mib = 4096$' runner/config/manager.toml
 grep -q 'max_lease_seconds = 7200' runner/config/manager.toml
 grep -q '^RuntimeMaxSec=7200$' runner/systemd/ci-runner-job.service
@@ -69,7 +69,7 @@ grep -q "path: /usr/local/libexec.*owner: root.*group: root.*mode: '0755'" infra
 grep -q 'src: manager.toml.j2' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'runner_max_concurrency: 2' infra/ansible/roles/runner_host/defaults/main.yml
 grep -q 'runner_vcpus: 4' infra/ansible/roles/runner_host/defaults/main.yml
-grep -q 'runner_memory_mib: 6144' infra/ansible/roles/runner_host/defaults/main.yml
+grep -q 'runner_memory_mib: 4096' infra/ansible/roles/runner_host/defaults/main.yml
 grep -q 'runner_host_memory_reserve_mib: 4096' infra/ansible/roles/runner_host/defaults/main.yml
 grep -q 'dest: /etc/ci-runner/sanctuary-ci.xml' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'runner_libvirt_uri=qemu:///system' infra/ansible/roles/runner_host/tasks/main.yml

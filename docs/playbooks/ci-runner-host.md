@@ -11,7 +11,7 @@
    and IPv6 deny lists, and `runner_production_networks_reviewed=true` in
    protected Ansible inventory, then run `ansible-playbook infra/ansible/site.yml`.
 6. Confirm the allowlisted repositories, `trusted-heavy` label, group ID 1,
-   concurrency 2, 4 vCPU / 6,144 MiB guest dimensions, 4,096 MiB host memory
+   concurrency 2, 4 vCPU / 4,096 MiB guest dimensions, 4,096 MiB host memory
    reserve, and 120-minute lease limit in `/etc/ci-runner/manager.toml`.
 
 Image activation is fail-closed: Ansible stops new admission, refuses to switch
@@ -87,7 +87,7 @@ reviewed revert, and re-run the host health checks. Do not amend, move a tag,
 force-push, restore an unreviewed binary, or delete state to hide an orphan.
 
 Launch two non-production canaries and verify: exact `trusted-heavy` routing;
-4 vCPU, 6,144 MiB RAM and 120 GiB disk per guest; rejection of a third launch;
+4 vCPU, 4,096 MiB RAM and 120 GiB disk per guest; rejection of a third launch;
 public GitHub reachability while host, private and production ranges are
 blocked; one-job poweroff; complete multi-lease reconciliation within 30
 seconds; and audit events without the JIT payload. Repeat with projected free
