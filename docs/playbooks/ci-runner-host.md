@@ -17,6 +17,12 @@
 Image activation is fail-closed: Ansible stops new admission, refuses to switch
 the digest symlink while any `sanctuary-ci-*` domain or overlay entry exists,
 and retains prior digest-versioned images. Never bypass this drain assertion.
+For DEV-23, the same drained deployment applies the WoW CPU set to complete
+core pairs `1,9,2,10,3,11` before reopening admission. A root-owned systemd
+timer rechecks the named container every five seconds after boot or recreation.
+The runner helper independently refuses a launch while WoW is unpinned. A
+container recreation during an active VM can still have a brief unpinned
+interval; drain CI before planned WoW maintenance.
 
 Copy `infra/packer/sanctuary-runner.pkrvars.hcl.example` outside source control,
 replace every placeholder with an exact reviewed version or checksum, then run
@@ -48,6 +54,8 @@ sudo kvm-ok
 sudo virsh net-info sanctuary-ci
 sudo nft list table inet sanctuary_ci
 sudo systemctl status ci-runner-manager ci-runner-host-helper.socket libvirtd sanctuary-ci-firewall
+sudo systemctl status ci-wow-cpu-pin.service ci-wow-cpu-pin.timer
+docker inspect --format '{{.HostConfig.CpusetCpus}}' tuinstra-realm-world
 sudo systemctl show ci-runner-manager -p NoNewPrivileges
 sudo stat -c '%U:%G %a %n' /run/ci-runner-host-helper.sock
 sudo journalctl -u ci-runner-manager -u 'ci-runner-host-helper@*' --since '-5 minutes'
@@ -57,6 +65,11 @@ The manager must report `NoNewPrivileges=yes`; `/etc/sudoers.d/ci-runner-manager
 must not exist. The helper socket must be owned by `ci-runner-manager`, mode
 `0600`, and the broker must reject every other peer UID. Do not weaken this
 boundary to a group-writable socket or a wildcard sudo rule.
+The WoW CPU set must contain exactly CPUs `1,2,3,9,10,11`. If WoW health
+regresses, stop runner admission, disable `ci-wow-cpu-pin.timer`, clear the
+container CPU set with `docker update --cpuset-cpus='' tuinstra-realm-world`,
+and restore the prechange runner manager/helper/configuration copies before
+restarting the manager. Check WoW ports 8085/3724 and repeat a runner canary.
 
 ### GitHub JIT redirect canary
 
