@@ -1,0 +1,11 @@
+[Unit]
+Description=Reapply Sanctuary WoW CPU allocation after container recreation
+
+[Timer]
+OnBootSec=10s
+OnCalendar=*-*-* *:*:0/5
+AccuracySec=1s
+Unit=ci-wow-cpu-pin.service
+
+[Install]
+WantedBy=timers.target

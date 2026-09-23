@@ -286,6 +286,31 @@
     group: root
     mode: '0755'
 
+- name: Install WoW CPU pin reconciliation files
+  ansible.builtin.copy:
+    src: "{{ runner_manager_source_root }}/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: runner/host-helper/ci_wow_cpu_pin.py, dest: /usr/local/libexec/ci-wow-cpu-pin, mode: '0755' }
+    - { src: runner/systemd/ci-wow-cpu-pin.service, dest: /etc/systemd/system/ci-wow-cpu-pin.service, mode: '0644' }
+    - { src: runner/systemd/ci-wow-cpu-pin.timer, dest: /etc/systemd/system/ci-wow-cpu-pin.timer, mode: '0644' }
+
+- name: Apply WoW CPU pin before reopening runner admission
+  ansible.builtin.systemd:
+    name: ci-wow-cpu-pin.service
+    state: started
+    daemon_reload: true
+
+- name: Keep WoW CPU pin after container recreation and host reboot
+  ansible.builtin.systemd:
+    name: ci-wow-cpu-pin.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
 - name: Install runner manager configuration
   ansible.builtin.template:
     src: manager.toml.j2
