@@ -84,11 +84,11 @@ fork pull requests select this machine.
 
 - Maximum concurrency is 2. The manager keeps one global lifecycle filesystem
   lock, and the root helper independently serializes libvirt mutations.
-- Each guest receives exactly 4 vCPU, 6,144 MiB RAM, and a 120 GiB
+- Each guest receives exactly 4 vCPU, 4,096 MiB RAM, and a 120 GiB
   grow-on-write disk.
 - Admission projects the new slot before launch: projected guest vCPUs must not
   exceed host logical CPUs, total memory must fit all projected guests plus the
-  reserve, and `MemAvailable` after subtracting the new 6,144-MiB guest must
+  reserve, and `MemAvailable` after subtracting the new 4,096-MiB guest must
   retain the configured 4,096-MiB host reserve. Admission also requires
   the configured `runner_min_free_disk_gib` free on
   `/var/lib/ci-runner/overlay` (60 GiB on Sanctuary); the overlay remains on the

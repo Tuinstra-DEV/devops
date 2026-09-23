@@ -4,7 +4,8 @@ runner_base_image_sha256: ""
 runner_manager_source_root: "{{ playbook_dir }}/../.."
 runner_max_concurrency: 2
 runner_vcpus: 4
-runner_memory_mib: 6144
+runner_memory_mib: 4096
+runner_expected_live_memory_mib: 6144
 runner_host_memory_reserve_mib: 4096
 runner_min_free_disk_gib: 60
 runner_expected_live_disk_threshold_gib: 40

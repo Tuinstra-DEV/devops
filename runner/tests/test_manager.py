@@ -52,13 +52,14 @@ class ManagerTests(unittest.TestCase):
         cfg = manager.load_config(source_path)
         self.assertEqual(
             (cfg["max_concurrency"], cfg["runner_vcpus"], cfg["runner_memory_mib"]),
-            (2, 4, 6144),
+            (2, 4, 4096),
         )
 
         replacements = (
             ("max_concurrency = 2", "max_concurrency = 3"),
             ("runner_vcpus = 4", "runner_vcpus = true"),
-            ("runner_memory_mib = 6144", "runner_memory_mib = 12288"),
+            ("runner_memory_mib = 4096", "runner_memory_mib = 6144"),
+            ("runner_memory_mib = 4096", "runner_memory_mib = 12288"),
             ("host_memory_reserve_mib = 4096", "host_memory_reserve_mib = 512"),
             ("min_free_disk_gib = 60", "min_free_disk_gib = 0"),
             ("min_free_disk_gib = 60", "min_free_disk_gib = 40"),
@@ -103,7 +104,7 @@ class ManagerTests(unittest.TestCase):
         self.assertNotIn(jit, packets[0])
         request = json.loads(packets[0])
         self.assertEqual(request["vcpus"], 4)
-        self.assertEqual(request["memory_mib"], 6144)
+        self.assertEqual(request["memory_mib"], 4096)
         self.assertEqual(
             set(request), {"v", "id", "op", "lease", "vcpus", "memory_mib"}
         )
@@ -226,7 +227,7 @@ class ManagerTests(unittest.TestCase):
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
     @mock.patch.object(manager.os, "cpu_count", return_value=8)
     @mock.patch.object(manager, "memory_total_mib", return_value=20000)
-    @mock.patch.object(manager, "memory_available_mib", return_value=10000)
+    @mock.patch.object(manager, "memory_available_mib", return_value=7500)
     @mock.patch.object(manager.shutil, "disk_usage")
     def test_capacity_blocks_second_launch_when_projected_memory_breaches_reserve(
             self, disk, _available, _total, _cpu, _load):
@@ -239,9 +240,20 @@ class ManagerTests(unittest.TestCase):
             manager.capacity_errors(cfg, 2),
         )
 
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=32000)
+    @mock.patch.object(manager, "memory_available_mib", return_value=8500)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_capacity_admits_second_4g_runner_above_host_reserve(
+            self, disk, _available, _total, _cpu):
+        disk.return_value = mock.Mock(free=100 * 1024**3)
+        cfg = {"host_memory_reserve_mib": 4096, "min_free_disk_gib": 60,
+               "overlay_root": "/x", "runner_cpu_sets": ["4,12,5,13", "6,14,7,15"]}
+        self.assertEqual(manager.capacity_errors(cfg, 2), [])
+
     @mock.patch.object(manager.os, "getloadavg", return_value=(1.0, 1.0, 1.0))
     @mock.patch.object(manager.os, "cpu_count", return_value=8)
-    @mock.patch.object(manager, "memory_total_mib", return_value=16000)
+    @mock.patch.object(manager, "memory_total_mib", return_value=12000)
     @mock.patch.object(manager, "memory_available_mib", return_value=15000)
     @mock.patch.object(manager.shutil, "disk_usage")
     def test_capacity_rejects_projected_total_memory_oversubscription(

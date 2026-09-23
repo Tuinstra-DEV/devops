@@ -189,7 +189,7 @@ class HostHelperTests(unittest.TestCase):
         valid = [
             {"v": 1, "id": self.request_id, "op": "list"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": 4, "memory_mib": 6144},
+             "vcpus": 4, "memory_mib": 4096},
             {"v": 1, "id": self.request_id, "op": "destroy", "lease": "job-1"},
         ]
         for request in valid:
@@ -204,9 +204,11 @@ class HostHelperTests(unittest.TestCase):
             {"v": 1, "id": self.request_id, "op": "destroy"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "../escape"},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": True, "memory_mib": 6144},
+             "vcpus": True, "memory_mib": 4096},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-             "vcpus": 8, "memory_mib": 6144},
+             "vcpus": 8, "memory_mib": 4096},
+            {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
+             "vcpus": 4, "memory_mib": 6144},
             {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
              "vcpus": 4, "memory_mib": 12288},
             {"v": 1, "id": self.request_id, "op": "list", "extra": False},
@@ -229,14 +231,14 @@ class HostHelperTests(unittest.TestCase):
     def test_serve_passes_validated_raw_jit_packet_to_launch(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 6144}
+                   "vcpus": 4, "memory_mib": 4096}
         jit = base64.b64encode(b"ephemeral registration material")
         connection.recv.side_effect = [json.dumps(request).encode(), jit]
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(helper, "HELPER_LOCK", Path(directory) / "helper.lock"):
             helper.serve_connection(connection, expected_uid=1002)
 
-        launch.assert_called_once_with("job-1", jit, vcpus=4, memory_mib=6144)
+        launch.assert_called_once_with("job-1", jit, vcpus=4, memory_mib=4096)
         self.assertEqual(connection.settimeout.call_args_list, [mock.call(5.0), mock.call(None)])
         self.assertEqual(self.decoded_response(connection), {
             "v": 1, "id": self.request_id, "ok": True, "result": None,
@@ -246,7 +248,7 @@ class HostHelperTests(unittest.TestCase):
     def test_serve_validates_jit_before_launch_mutation(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 6144}
+                   "vcpus": 4, "memory_mib": 4096}
         connection.recv.side_effect = [json.dumps(request).encode(), b"not base64!!"]
 
         helper.serve_connection(connection, expected_uid=1002)
@@ -259,7 +261,7 @@ class HostHelperTests(unittest.TestCase):
     def test_operation_errors_are_sanitized_in_response(self, launch):
         connection = self.connection_for_uid(1002)
         request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
-                   "vcpus": 4, "memory_mib": 6144}
+                   "vcpus": 4, "memory_mib": 4096}
         secret = "sensitive-jit-material"
         connection.recv.side_effect = [json.dumps(request).encode(), base64.b64encode(b"jit")]
         launch.side_effect = RuntimeError(secret)
