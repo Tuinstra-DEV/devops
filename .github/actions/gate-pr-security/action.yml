@@ -1,0 +1,118 @@
+name: Gate PR security producer
+description: Produce and submit bounded evidence from an immutable scanner profile.
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare exact PR sources
+      id: prepare
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GATE_REPOSITORY: ${{ github.repository }}
+        GATE_REPOSITORY_ID: ${{ github.repository_id }}
+        GATE_OWNER_ID: ${{ github.repository_owner_id }}
+        GATE_PR_NUMBER: ${{ github.event.pull_request.number }}
+        GATE_RUN_ID: ${{ github.run_id }}
+        GATE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GATE_EVENT_NAME: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        gate_task_dir="$RUNNER_TEMP/gate-pr-security-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        python3 "$GITHUB_ACTION_PATH/source.py" prepare --work-dir "$gate_task_dir"
+        printf 'work-dir=%s\n' "$gate_task_dir" >> "$GITHUB_OUTPUT"
+
+    - name: Pull fixed scanner image
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GATE_WORK_DIR: ${{ steps.prepare.outputs.work-dir }}
+      run: |
+        set -euo pipefail
+        export DOCKER_CONFIG="$GATE_WORK_DIR/docker-auth"
+        mkdir -m 700 "$DOCKER_CONFIG"
+        gate_image=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from constants import IMAGE; print(IMAGE)' "$GITHUB_ACTION_PATH")
+        printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null
+        docker pull --platform linux/arm64 "$gate_image" >/dev/null
+        docker logout ghcr.io >/dev/null
+        rm -f "$DOCKER_CONFIG/config.json"
+        rmdir "$DOCKER_CONFIG"
+
+    - name: Scan sources without network or credentials
+      shell: bash
+      env:
+        GATE_WORK_DIR: ${{ steps.prepare.outputs.work-dir }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/source.py" scan --work-dir "$GATE_WORK_DIR"
+
+    - name: Package verified producer evidence
+      shell: bash
+      env:
+        GATE_WORK_DIR: ${{ steps.prepare.outputs.work-dir }}
+        GATE_WORKFLOW_REF: ${{ job.workflow_ref }}
+        GATE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        GATE_CHECK_RUN_ID: ${{ job.check_run_id }}
+        GATE_EVENT_NAME: ${{ github.event_name }}
+        GATE_EXECUTION_REF: ${{ github.ref }}
+        GATE_EXECUTION_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/evidence.py" package --work-dir "$GATE_WORK_DIR"
+
+    - name: Upload immutable producer evidence
+      id: evidence
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-pr-security-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ steps.prepare.outputs.work-dir }}/staging/
+        if-no-files-found: error
+        compression-level: 0
+        overwrite: false
+        retention-days: 14
+
+    - name: Submit actual artifact with fresh Actions identity
+      shell: bash
+      env:
+        GATE_WORK_DIR: ${{ steps.prepare.outputs.work-dir }}
+        GATE_WORKFLOW_REF: ${{ job.workflow_ref }}
+        GATE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        GATE_CHECK_RUN_ID: ${{ job.check_run_id }}
+        GATE_EVENT_NAME: ${{ github.event_name }}
+        GATE_EXECUTION_REF: ${{ github.ref }}
+        GATE_EXECUTION_SHA: ${{ github.sha }}
+        GATE_ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+        GATE_ARTIFACT_DIGEST: sha256:${{ steps.evidence.outputs.artifact-digest }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/evidence.py" submit --work-dir "$GATE_WORK_DIR"
+
+    - name: Record producer cost evidence
+      if: always()
+      shell: bash
+      env:
+        GATE_WORK_DIR: ${{ steps.prepare.outputs.work-dir }}
+      run: |
+        set -euo pipefail
+        python3 - <<'SUMMARY'
+        import json, os
+        from pathlib import Path
+        work = os.environ.get("GATE_WORK_DIR", "")
+        state_path = Path(work) / "state.json" if work else None
+        state = json.loads(state_path.read_text()) if state_path and state_path.is_file() else {}
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+            summary.write("## Gate producer execution\n\nRunner: ubuntu-24.04-arm. Job limit: 20 minutes.\n\n")
+            for label, key in [("Preparation", "prepare_duration_ms"), ("Scanner", "scan_duration_ms")]:
+                value = state.get(key)
+                text = f"{value / 1000:.3f} seconds" if type(value) is int and value >= 0 else "unavailable"
+                summary.write(f"- {label}: {text}\n")
+            summary.write("\nReceipt acceptance is not a security pass. Review the separate App check.\n")
+        SUMMARY
+
+    - name: Remove temporary sources and credentials
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        gate_task_dir="$RUNNER_TEMP/gate-pr-security-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        python3 "$GITHUB_ACTION_PATH/source.py" cleanup --work-dir "$gate_task_dir"
