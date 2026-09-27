@@ -1,0 +1,65 @@
+{
+  "synthetic": true,
+  "ok": true,
+  "results": [
+    {
+      "case": "pass",
+      "ok": true,
+      "expected": "pass",
+      "scanner_outcome": "pass",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "pass"
+      },
+      "bridge_exit": 0,
+      "archive_sha256": "sha256:e828301d83b29f05bd5dd7b93b2226f46bea80115933dc655d6d4d2089c9c23a",
+      "archive_bytes": 8332
+    },
+    {
+      "case": "blocked",
+      "ok": true,
+      "expected": "blocked",
+      "scanner_outcome": "blocked",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "blocked"
+      },
+      "bridge_exit": 0,
+      "archive_sha256": "sha256:f7f6f8695bafbde2505bd10799ff7d03ce1478c584c1c6c9b5f32da7d18d713c",
+      "archive_bytes": 9109
+    },
+    {
+      "case": "incomplete",
+      "ok": true,
+      "expected": "incomplete",
+      "scanner_outcome": "incomplete",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "incomplete"
+      },
+      "bridge_exit": 0,
+      "archive_sha256": "sha256:63b47d6400379037d073f8f3d0256bc668ef6c1e66b9dc8e2d446cc554dd1c5c",
+      "archive_bytes": 8255
+    },
+    {
+      "case": "verified-absence",
+      "ok": true,
+      "expected": "pass",
+      "scanner_outcome": "pass",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "pass"
+      },
+      "bridge_exit": 0,
+      "archive_sha256": "sha256:63f437d74c4a95ca9b693f9ebc19ad7cd8a9ba0e17b3bc6f73f5e6e0dd1f03c5",
+      "archive_bytes": 8228
+    }
+  ],
+  "story": "DEV-46",
+  "verification_date": "2026-09-27",
+  "publisher_commit": "496f4877f243d0ea09a30c046079766c94ad0dfe",
+  "helper_commit": "1b9a5b2cb4b5a6168e46f9e8eb5424f501aeeae0",
+  "workflow_commit": "a1a170047dc26c2d9073dfbbbee79e03629756b0",
+  "scanner_manifest_digest": "sha256:6e579433706fbb7cf2f2360fc0b3ed9052f4e1a56dbfb9efbd57b811d81c99d0",
+  "scope": "Offline synthetic sources; actual immutable local scanner and PHP artifact verifier. No registry publication, live OIDC, App check or branch enforcement."
+}

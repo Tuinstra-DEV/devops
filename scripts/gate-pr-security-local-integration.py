@@ -7,7 +7,7 @@ scanner image already loaded. No image pulls, registry/API requests, credentials
 real application checkouts, or database access are used. The Git object fixtures
 contain only generated source. --output-dir must be a new dedicated directory;
 case evidence is retained there and results.json records compact outcomes.
-An upstream verified-absence downgrade remains a failing case until Gate fixes it.
+The verified-absence case requires the publisher correction covered by this proof.
 """
 import argparse
 import json

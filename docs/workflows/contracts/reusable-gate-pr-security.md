@@ -158,14 +158,16 @@ The local adapter replaces the fixed registry reference with the exact already
 loaded image ID. Thus it proves the scanner/helper/publisher data contract,
 without claiming registry distribution, live OIDC authentication or App checks.
 Synthetic identities are explicit; generated ZIPs and results stay in the
-chosen local output directory. Any unexpected outcome exits nonzero.
+chosen local output directory, which must be shared with the local Docker host. Any unexpected outcome exits nonzero.
 
 The first integration run proved pass, blocked and incomplete outcomes. It also
 exposed a publisher mismatch for a complete scope whose last source file was
 removed: the producer correctly retained `verified_absence`, while the publisher
-still treated every empty input list as incomplete. Delivery requires that
-publisher correction and a successful rerun; weakening or rewriting the scanner
-report is not an acceptable workaround.
+still treated every empty input list as incomplete. The publisher correction
+accepts only the exact empty-input proof while independently requiring complete
+coverage. Its regression was reproduced before the fix; the original unchanged
+ZIP now passes. Mixed or duplicate reasons, partial inputs and failed coverage
+remain non-passing.
 
 ### Acceptance evidence
 
@@ -183,3 +185,11 @@ stopped at that prerequisite, then passed with that existing toolchain. Packer
 formatting was skipped because Packer is unavailable. Cross-repository fleet
 policy checks were not requested (`DEPENDABOT_FLEET_ROOT` unset). No production
 services or deployment credentials were used by these tests.
+
+The final real-image run passed all four cases: clean → pass, new high finding →
+blocked, untrusted suppression configuration → incomplete, and removed final PHP
+file → pass with verified absence. The compact [integration receipt](../../evidence/DEV-46-offline-integration-2026-09-27.json)
+records the exact publisher/helper/workflow/image identities and ZIP hashes.
+The initial attempt using an unshared local temporary directory failed container
+creation; rerunning with fixtures in the existing Docker-shared project directory
+passed without changing scanner isolation or mounting credentials.
