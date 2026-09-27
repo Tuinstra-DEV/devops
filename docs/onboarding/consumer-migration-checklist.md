@@ -91,8 +91,13 @@ on:
     branches: [main]
 jobs:
   ci:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@v1
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-ci.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>
 ```
+
+Replace the placeholder with a reviewed, immutable full commit SHA. Production
+workflow callers must follow the
+[pipeline security policy](../security/pipeline-security-policy.md); do not pin
+them to a moving major tag.
 
 ## 6. Compose Files
 
@@ -171,7 +176,7 @@ cp <devops-repo>/templates/workflows/caller-release-tag.yml .github/workflows/re
 
 Git tags are used for release traceability. GitHub Releases are optional. The release PR remains the audit trail and the Docker image digest remains the rollback unit.
 
-## 10. Gate Baseline Evidence
+## 10. Gate Assurance Migration
 
 Copy the Gate baseline workflow template into your consumer repo:
 
@@ -179,12 +184,69 @@ Copy the Gate baseline workflow template into your consumer repo:
 cp <devops-repo>/templates/workflows/caller-gate-baseline.yml .github/workflows/gate-baseline.yml
 ```
 
-Create a repo-owned Gate integration contract at `.gate/baseline.yml`. Use
-`docs/standards/gate-baseline.md` for the required fields and rollout checklist.
+Read the [Gate baseline and assurance standard](../standards/gate-baseline.md)
+and the normative
+[Gate assurance contract](../workflows/contracts/gate-assurance-v1.md). Use
+[`contracts/gate-assurance/v1/inventory.json`](../../contracts/gate-assurance/v1/inventory.json)
+and [`schema.json`](../../contracts/gate-assurance/v1/schema.json) to determine
+scope and validate inventory changes. Configure application observability from
+[`templates/gate/observability.example.json`](../../templates/gate/observability.example.json).
 
-Start with `fail-on-missing: false` while onboarding so the workflow produces an
-evidence artifact without blocking unrelated work. After the checklist is green,
-set `fail-on-missing: true` and add the workflow to branch protection.
+All assurance facilities are planned; this checklist does not enroll a repo or
+make a check required. The Gate baseline workflow reports repository
+file/configuration presence only. It does not scan for security findings or
+prove end-to-end operation.
+
+### Gate PR Security: all 13 repositories
+
+The security rollout covers `gate`, `devops`, `notify`, `console`, `status`,
+`tracker`, `wodiq-app`, `wodiq-platform`, `openairco`, `marcel-site`,
+`tuinstra-site`, `wodiq-site`, and `openairco-site`. For each repository:
+
+- Run a green pilot and a red pilot against ordinary and fork/bot pull requests
+  before requiring `Gate PR Security` on `main` and `develop` where present.
+- Compare the exact base and head revisions with matching scanner versions,
+  rules, and advisory snapshots. New or worsened high/critical findings block;
+  old debt stays visible. Exception expiry by itself does not make old debt new.
+- Use trusted policy without executing pull request scripts, plugins, or
+  configuration. Scans are deterministic and use no AI. Missing tools,
+  timeouts, malformed output, or incomplete coverage fail closed.
+- Publish through the dedicated GitHub App and OIDC from an approved,
+  full-SHA-pinned reusable workflow. Keep publisher credentials separate from
+  Gate Heal credentials and retain stricter existing checks.
+
+### Gate Observability at production promotion: eight applications
+
+Gate Observability applies at production promotion only for `gate`, `notify`,
+`console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`, and `openairco`.
+It excludes `devops` and the four site repositories. Keep `Gate Observability`
+distinct from `Gate PR Security`.
+
+- New applications meet the Sentry standard before their first production
+  release. Existing applications migrate and prove coverage before enforcement.
+- Each application owns its runtime instrumentation. Send minimal, redacted
+  diagnostics only; do not send replay data, content, or user identifiers.
+  Unknown components or sources require human review.
+- Probe the verification environment during onboarding and relevant integration
+  changes. Every release verifies configuration, source maps, uploaded
+  artifacts, symbols, and evidence. Verify production configuration separately
+  and do not make release success depend synchronously on Sentry availability.
+- Roll back to a previously verified artifact when needed. An ordinary rollback
+  does not require an emergency bypass. An emergency bypass requires a human
+  decision with the reason and exact version recorded.
+
+### Gate Heal QA: automatically generated fix PRs only
+
+`Gate Heal QA` applies only to automatically generated fix PRs in the eight
+applications above. Preserve Gate's existing QA checks and controls. Automatic
+fix generation remains disabled; per-stack activation follows migration, with
+human approval still required for merges. Normal observability migration,
+production promotion, and application releases do not wait for a Gate Heal QA
+pilot.
+
+Do not make checks required until both green and red pilots pass for the
+applicable scope. The baseline evidence workflow is not a substitute for a
+pilot, scanner result, or observability proof.
 
 ## 11. DNS and Reverse Proxy
 
@@ -199,7 +261,14 @@ After setup, verify end-to-end:
 1. **CI**: Open a PR and confirm the reusable CI workflow runs and passes.
 2. **Production CD**: Push to `main` and confirm production deployment succeeds.
 3. **Health check**: Verify the production health URL returns HTTP 200.
-4. **Gate baseline**: Run the Gate baseline workflow and confirm the evidence artifact is uploaded.
+4. **Gate baseline evidence**: Confirm the file/configuration evidence artifact
+   is uploaded; treat it as presence evidence only.
+5. **Gate assurance pilots**: For an enrolled repository, retain green and red
+   pilot evidence for `Gate PR Security`. For one of the eight applications,
+   complete the `Gate Observability` production-promotion evidence before
+   enforcing that check. Gate Heal QA applies only to generated fix PRs under
+   its existing controls; per-stack activation follows migration. It is not a
+   prerequisite for ordinary observability migration or production promotion.
 
 ## 13. Rollback
 
@@ -207,7 +276,9 @@ If a deployment fails:
 
 - The reusable CD workflow includes automatic rollback on health check failure.
 - Manual rollback: SSH to the server and run `docker compose up -d` with the previous image digest.
-- Pin caller workflow to a known-good commit SHA if a workflow regression is suspected.
+- Pin caller workflow to a reviewed, known-good full commit SHA if a workflow
+  regression is suspected, following the
+  [pipeline security policy](../security/pipeline-security-policy.md).
 
 ## Troubleshooting
 
