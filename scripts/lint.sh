@@ -93,4 +93,9 @@ bash -n scripts/production-backup-contract-test.sh
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 ruby scripts/dependency-update-policy-test.rb
 
+python3 -c 'from pathlib import Path; [compile(p.read_text(), str(p), "exec") for p in Path(".github/actions/gate-pr-security").glob("*.py")]'
+ruby -c scripts/gate-pr-security-contract-test.rb
+
+python3 -c 'compile(open("scripts/gate-pr-security-local-integration.py", encoding="utf-8").read(), "scripts/gate-pr-security-local-integration.py", "exec")'
+
 echo "lint passed"
