@@ -62,3 +62,6 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_sanctuary_installer_c
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_escrow.py
 ./scripts/production-backup-contract-test.sh
 ./scripts/production-umami-test.sh
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source.py tests/test_gate_pr_security_evidence.py
+ruby scripts/gate-pr-security-contract-test.rb

@@ -1,0 +1,19 @@
+name: Gate PR security
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  # Unsupported until merge-group source binding has been implemented and proven.
+  # Fail visibly instead of leaving queue changes outside the producer path.
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  security:
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      packages: read
+      id-token: write
+    uses: Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@a1a170047dc26c2d9073dfbbbee79e03629756b0

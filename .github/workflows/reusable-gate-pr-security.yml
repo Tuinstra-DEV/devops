@@ -1,0 +1,19 @@
+name: Gate PR security producer
+
+on:
+  workflow_call:
+
+jobs:
+  producer:
+    name: Gate evidence producer
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Produce immutable PR security evidence
+        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@1b9a5b2cb4b5a6168e46f9e8eb5424f501aeeae0
