@@ -1,0 +1,652 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "gate-assurance-1",
+  "document_type": "inventory",
+  "reviewed_on": "2026-09-27",
+  "repositories": [
+    {
+      "repository": "Tuinstra-DEV/gate",
+      "owner_project": "IN",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "php",
+        "javascript-typescript",
+        "shell-infrastructure",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "scan-worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "heal-supervisor",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "browser",
+          "runtime": "browser-js",
+          "release_unit": "frontend",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "IN"
+        },
+        {
+          "id": "nuxt-server",
+          "runtime": "node",
+          "release_unit": "frontend",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "IN"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/devops",
+      "owner_project": "DEV",
+      "pr_security_required": true,
+      "observability_required": false,
+      "exclusion_reason": "Shared delivery platform; not an application",
+      "security_profiles": [
+        "python",
+        "shell-infrastructure",
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": null
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/notify",
+      "owner_project": "IN",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "php",
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "browser",
+          "runtime": "browser-js",
+          "release_unit": "frontend",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "IN"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/console",
+      "owner_project": "IN",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "php",
+        "javascript-typescript",
+        "shell-infrastructure",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "scheduler",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "browser",
+          "runtime": "browser-js",
+          "release_unit": "frontend",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "IN"
+        },
+        {
+          "id": "socket-proxy",
+          "runtime": "php",
+          "release_unit": "socket-proxy",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "host-agent",
+          "runtime": "php",
+          "release_unit": "host-agent",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/status",
+      "owner_project": "IN",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "php",
+        "python",
+        "shell-infrastructure",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "probe-worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "scheduler",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "notification-scheduler",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "publisher",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "expiry-guard",
+          "runtime": "shell",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "host-monitor",
+          "runtime": "shell",
+          "release_unit": "host-monitor",
+          "applicability": "when-deployed",
+          "symbols": "source",
+          "owner_project": "IN"
+        },
+        {
+          "id": "host-notifier",
+          "runtime": "python",
+          "release_unit": "host-monitor",
+          "applicability": "when-deployed",
+          "symbols": "source",
+          "owner_project": "IN"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/tracker",
+      "owner_project": "TRAC",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "php",
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "mcp-api",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "catalog-worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "release-evidence-worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "sentry-worker",
+          "runtime": "php",
+          "release_unit": "backend",
+          "applicability": "always",
+          "symbols": "source",
+          "owner_project": "TRAC"
+        },
+        {
+          "id": "browser",
+          "runtime": "browser-js",
+          "release_unit": "frontend",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "TRAC"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/wodiq-app",
+      "owner_project": "WODIQ",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "javascript-typescript",
+        "apple",
+        "android",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "browser",
+          "runtime": "browser-js",
+          "release_unit": "web",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "nuxt-server",
+          "runtime": "node",
+          "release_unit": "web",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "capacitor-ios",
+          "runtime": "capacitor-ios",
+          "release_unit": "ios",
+          "applicability": "always",
+          "symbols": "native-symbols",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "capacitor-android",
+          "runtime": "capacitor-android",
+          "release_unit": "android",
+          "applicability": "always",
+          "symbols": "native-symbols",
+          "owner_project": "WODIQ"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/wodiq-platform",
+      "owner_project": "WODIQ",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [
+        {
+          "id": "api",
+          "runtime": "node",
+          "release_unit": "api",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "management-browser",
+          "runtime": "browser-js",
+          "release_unit": "management",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "management-server",
+          "runtime": "node",
+          "release_unit": "management",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "sync-worker",
+          "runtime": "node",
+          "release_unit": "workers",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        },
+        {
+          "id": "retention-worker",
+          "runtime": "node",
+          "release_unit": "workers",
+          "applicability": "always",
+          "symbols": "sourcemaps",
+          "owner_project": "WODIQ"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/openairco",
+      "owner_project": "none",
+      "pr_security_required": true,
+      "observability_required": true,
+      "exclusion_reason": null,
+      "security_profiles": [
+        "dart-flutter",
+        "apple",
+        "android"
+      ],
+      "components": [
+        {
+          "id": "flutter-ios",
+          "runtime": "flutter-ios",
+          "release_unit": "ios",
+          "applicability": "always",
+          "symbols": "dart-and-native-symbols",
+          "owner_project": "none"
+        },
+        {
+          "id": "flutter-android",
+          "runtime": "flutter-android",
+          "release_unit": "android",
+          "applicability": "always",
+          "symbols": "dart-and-native-symbols",
+          "owner_project": "none"
+        },
+        {
+          "id": "ios-widgets",
+          "runtime": "swift-extension",
+          "release_unit": "ios",
+          "applicability": "always",
+          "symbols": "native-symbols",
+          "owner_project": "none"
+        },
+        {
+          "id": "watch-app",
+          "runtime": "watchos",
+          "release_unit": "watchos",
+          "applicability": "always",
+          "symbols": "native-symbols",
+          "owner_project": "none"
+        },
+        {
+          "id": "watch-complications",
+          "runtime": "watchos",
+          "release_unit": "watchos",
+          "applicability": "always",
+          "symbols": "native-symbols",
+          "owner_project": "none"
+        }
+      ],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": {
+          "stage": "planned",
+          "evidence_refs": []
+        }
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/marcel-site",
+      "owner_project": "DEV",
+      "pr_security_required": true,
+      "observability_required": false,
+      "exclusion_reason": "Approved public-site exception for Sentry/Heal only",
+      "security_profiles": [
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": null
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/tuinstra-site",
+      "owner_project": "DEV",
+      "pr_security_required": true,
+      "observability_required": false,
+      "exclusion_reason": "Approved public-site exception for Sentry/Heal only",
+      "security_profiles": [
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": null
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/wodiq-site",
+      "owner_project": "DEV",
+      "pr_security_required": true,
+      "observability_required": false,
+      "exclusion_reason": "Approved public-site exception for Sentry/Heal only",
+      "security_profiles": [
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": null
+      }
+    },
+    {
+      "repository": "Tuinstra-DEV/openairco-site",
+      "owner_project": "DEV",
+      "pr_security_required": true,
+      "observability_required": false,
+      "exclusion_reason": "Approved public-site exception for Sentry/Heal only",
+      "security_profiles": [
+        "javascript-typescript",
+        "containers"
+      ],
+      "components": [],
+      "rollout": {
+        "pr_security": {
+          "stage": "planned",
+          "evidence_refs": []
+        },
+        "observability": null
+      }
+    }
+  ]
+}

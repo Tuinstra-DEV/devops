@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "gate-assurance-1",
+  "document_type": "runtime-manifest",
+  "repository": "example/replace-before-onboarding",
+  "components": [
+    {
+      "id": "api",
+      "runtime": "php",
+      "release_unit": "backend",
+      "applicability": "always",
+      "symbols": "source",
+      "owner_project": "IN"
+    }
+  ],
+  "release_binding": "exact-commit-artifacts",
+  "integration_evidence": [],
+  "production_configuration": {
+    "status": "pending",
+    "evidence": null
+  }
+}

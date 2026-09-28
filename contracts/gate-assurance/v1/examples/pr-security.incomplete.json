@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "gate-assurance-1",
+  "evidence_mode": "fixture",
+  "document_type": "pr-security-evidence",
+  "repository": {
+    "repository": "example/gate-fixture",
+    "repository_id": "1",
+    "owner_id": "1"
+  },
+  "context": "pull_request",
+  "pull_requests": [
+    1
+  ],
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "2222222222222222222222222222222222222222",
+  "run": {
+    "id": "1",
+    "attempt": 1,
+    "workflow_ref": "example/devops/.github/workflows/gate.yml@3333333333333333333333333333333333333333",
+    "workflow_sha": "3333333333333333333333333333333333333333"
+  },
+  "policy_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scanner_image": "example.invalid/scanner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dataset_manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "coverage": [
+    {
+      "scanner": "gitleaks",
+      "version": "fixture",
+      "scope": "secrets",
+      "rules_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "advisory_digest": null,
+      "base_result": "complete",
+      "head_result": "complete"
+    }
+  ],
+  "findings": [],
+  "payload_files": [
+    {
+      "path": "reports/findings.json",
+      "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "outcome": "incomplete"
+}

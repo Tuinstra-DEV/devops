@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "gate-assurance-1",
+  "evidence_mode": "fixture",
+  "document_type": "observability-evidence",
+  "repository": {
+    "repository": "example/gate-fixture",
+    "repository_id": "1",
+    "owner_id": "1"
+  },
+  "component": "watch-app",
+  "environment": "verification",
+  "release": {
+    "commit": "2222222222222222222222222222222222222222",
+    "release": "fixture-watch-1.0.0",
+    "dist": "42",
+    "artifacts": [
+      {
+        "name": "example-artifact",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "provenance": {
+      "run_id": "1",
+      "run_attempt": 1,
+      "artifact_id": "1",
+      "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "native_builds": [
+      {
+        "platform": "watchos",
+        "target": "example-watch-app",
+        "app_version": "1.0.0",
+        "build_number": "42",
+        "architecture": "arm64",
+        "artifact_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbols": [
+          {
+            "kind": "dsym",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "debug_id": "00000000-0000-4000-8000-000000000042"
+          }
+        ]
+      }
+    ]
+  },
+  "integration_fingerprint": {
+    "sdk_initialization": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "routing": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "privacy_filters": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deployment_symbols": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "sentry": {
+    "installation_uuid": "00000000-0000-4000-8000-000000000001",
+    "project_id": "1",
+    "event_id": "00000000000000000000000000000000"
+  },
+  "heal_case_id": "fixture-case-not-live",
+  "assertions": {
+    "correct_case_binding": false,
+    "source_and_frames": false,
+    "symbols": false,
+    "redaction": false,
+    "deduplication": false,
+    "retry_binding": false,
+    "invalid_webhook_rejected": false,
+    "wrong_project_rejected": false,
+    "conflict_review": false,
+    "missing_dsn_nonblocking": false,
+    "network_failure_nonblocking": false,
+    "bounded_offline_behavior": false
+  },
+  "evidence": {
+    "run_id": "1",
+    "run_attempt": 1,
+    "artifact_id": "1",
+    "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "outcome": "incomplete"
+}

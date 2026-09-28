@@ -1,25 +1,98 @@
 # Gate DevOps Baseline
 
-This baseline defines the minimum DevOps evidence expected before a consumer
-repository is considered ready for Gate integration. It is intentionally small:
-the goal is to make release, dependency, artifact, deployment, and ownership
-signals easy to verify across repos.
+This document defines the repository baseline and rollout boundary for Gate
+assurance. The Gate baseline workflow is file/configuration evidence only: it
+reports whether expected files and settings are present. It does not scan code,
+prove security, or establish end-to-end enforcement.
+
+The normative security and application observability contract is
+[`gate-assurance-v1.md`](../workflows/contracts/gate-assurance-v1.md). The
+machine-readable rollout inventory and schema are in
+[`inventory.json`](../../contracts/gate-assurance/v1/inventory.json) and
+[`schema.json`](../../contracts/gate-assurance/v1/schema.json). The onboarding
+configuration example is
+[`observability.example.json`](../../templates/gate/observability.example.json).
+
+All Gate assurance facilities described here are planned. The repositories
+listed below are not yet enrolled or enforced by virtue of this document or a
+Gate baseline evidence artifact.
+
+## Assurance scope
+
+### Gate PR Security
+
+The planned Gate PR Security requirement covers these 13 repositories: `gate`, `devops`,
+`notify`, `console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
+`openairco`, `marcel-site`, `tuinstra-site`, `wodiq-site`, and `openairco-site`.
+It evaluates the exact base and head revisions with the same scanner versions,
+rules, and advisory snapshots. New or worsened high/critical findings block an
+ordinary pull request. Existing debt remains visible and is not reclassified as
+new debt solely because an exception expired. Existing stricter checks remain
+in force.
+
+The Gate PR Security check must use trusted policy and must not execute
+pull-request scripts, plugins, or configuration. Scanning is deterministic and
+uses no AI. Missing tools, timeouts, malformed output, or incomplete coverage
+cannot produce a green result. The dedicated publisher GitHub App uses OIDC
+from an approved reusable workflow pinned to a full commit SHA; its credentials
+are separate from Gate Heal credentials. Forks and bot pull requests receive
+the same security guarantee.
+
+### Gate Observability and Gate Heal QA
+
+Gate Observability applies at production promotion for these eight applications:
+`notify`, `console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
+`openairco`, and `gate`. They do not apply to `devops` or the four site
+repositories. `Gate Heal QA` applies only to automatically generated fix PRs
+for these applications. Gate's existing QA checks and controls remain intact;
+activation for each stack follows its migration. Treat the three decisions as
+distinct checks: `Gate PR Security`, `Gate Observability`, and `Gate Heal QA`.
+
+Each application owns its runtime instrumentation and sends only minimal,
+redacted diagnostics. Do not send replay data, request or message content, or
+user identifiers. An unknown component or source requires human review. New
+applications must meet the Sentry standard before their first production
+promotion; existing applications migrate and prove coverage before enforcement.
+Automatic fix generation remains disabled. Gate Heal QA evaluates generated
+fix PRs under its existing controls; per-stack activation follows migration,
+and merges remain human-approved.
+
+Probe the verification environment during onboarding and relevant integration
+changes. Every release verifies configuration, source maps, uploaded artifacts,
+symbols, and evidence. Production configuration is verified separately. A
+release must not depend synchronously on Sentry availability. Normal rollback to
+a previously verified artifact remains available. An emergency bypass requires
+a human decision with the reason and exact version recorded.
+
+## Rollout and exceptions
+
+Run both green and red pilot pull requests before making `Gate PR Security`
+required on `main` and `develop` where those branches exist. Keep existing
+stricter required checks. A baseline artifact or reusable workflow call alone
+does not satisfy the pilot or prove scanner coverage. Exception expiry does not
+turn an unchanged finding into a newly introduced finding; compare the same
+base/head policy snapshots and require human review where classification is
+uncertain.
 
 ## Consumer Repository Checklist
 
 ### Required workflows
 
 - CI workflow calls the appropriate reusable workflow from this repo:
-  - Node/Nuxt/Vite: `reusable-ci.yml@v1`
-  - PHP/Symfony: `reusable-php-lint.yml@v1` and `reusable-php-test.yml@v1`
+  - Node/Nuxt/Vite: `reusable-ci.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>`
+  - PHP/Symfony: `reusable-php-lint.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>`
+    and `reusable-php-test.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>`
 - Containerized services run Docker build and vulnerability scanning through
-  `reusable-ci-docker.yml@v1`.
+  `reusable-ci-docker.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>`.
 - Deployable services have environment-specific deployment callers for staging
-  and production using the matching `reusable-cd-*.yml@v1` workflow.
+  and production using the matching `reusable-cd-*.yml` workflow pinned to an
+  approved full commit SHA.
 - Release automation is installed:
-  - `reusable-release-pr.yml@v1` for `develop` to `main` promotion PRs.
-  - `reusable-release-tag.yml@v1` for release tags on `main`.
-- The Gate baseline evidence workflow is installed from
+  - `reusable-release-pr.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>` for `develop`
+    to `main` promotion PRs.
+  - `reusable-release-tag.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>` for release
+    tags on `main`.
+- The optional Gate baseline evidence workflow is installed from
   `templates/workflows/caller-gate-baseline.yml`.
 
 ### Release and tag policy
@@ -58,10 +131,14 @@ signals easy to verify across repos.
   - `github>marcel-tuinstra/devops:renovate/nuxt`
   - `github>marcel-tuinstra/devops:renovate/symfony`
   - or `github>marcel-tuinstra/devops:renovate/default`
-- Consumer workflows pin reusable workflows to a stable major tag such as `@v1`
-  for normal operation.
+- Consumer workflows pin reusable workflows to an approved immutable full
+  commit SHA. Follow the
+  [pipeline security policy](../security/pipeline-security-policy.md); do not
+  use a major tag as a production workflow pin. In examples, replace
+  `@<APPROVED_40_CHARACTER_COMMIT_SHA>` with a reviewed, real commit SHA.
 - `@main` is only used for canary validation and should not be required by
-  branch protection.
+  branch protection. Production workflow pins follow the
+  [pipeline security policy](../security/pipeline-security-policy.md).
 - If a reusable workflow regression is suspected, callers may temporarily pin
   to a known-good commit SHA while the platform fix rolls forward.
 
@@ -72,8 +149,9 @@ signals easy to verify across repos.
   branch.
 - Production deployments use the `production` environment and require manual
   approval when the repo has user-facing production traffic.
-- Required checks include CI and, after rollout, the Gate baseline evidence
-  workflow in enforcing mode.
+- Required checks include CI and the checks approved for that repository after
+  the Gate assurance rollout. The Gate baseline evidence workflow is not a
+  security or end-to-end check.
 
 ### Gate integration contract
 
@@ -89,7 +167,15 @@ staging_branch: develop
 release_policy: semver-release-pr
 required_checks:
   - ci
-  - gate-baseline
+  - Gate PR Security
+# At production promotion for the eight applications, add after migration and
+# successful pilots. Gate Heal QA applies only to generated fix PRs, under
+# existing controls; activation for each stack follows migration.
+application_checks:
+  production_promotion:
+    - Gate Observability
+  automatic_fix_prs:
+    - Gate Heal QA # existing controls; per-stack activation follows migration
 deployments:
   staging:
     environment: staging
@@ -107,26 +193,29 @@ release, and evidence expectations that Gate and maintainers can read safely.
 
 ## Baseline Evidence Workflow
 
-Consumer repos can copy
-`templates/workflows/caller-gate-baseline.yml` to
-`.github/workflows/gate-baseline.yml`.
+Consumer repos may install
+`templates/workflows/caller-gate-baseline.yml` as
+`.github/workflows/gate-baseline.yml` for repository file/configuration
+evidence. It reports presence only and is not a scanner, security check, or
+end-to-end verification.
 
 Start in report-only mode:
 
 ```yaml
 jobs:
   gate-baseline:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-gate-baseline.yml@v1
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-gate-baseline.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>
     with:
       fail-on-missing: false
 ```
 
-After the checklist is green, switch to enforcing mode:
+After the checklist is green, the workflow may fail on missing baseline files;
+this does not enable or enforce Gate assurance checks:
 
 ```yaml
 jobs:
   gate-baseline:
-    uses: marcel-tuinstra/devops/.github/workflows/reusable-gate-baseline.yml@v1
+    uses: marcel-tuinstra/devops/.github/workflows/reusable-gate-baseline.yml@<APPROVED_40_CHARACTER_COMMIT_SHA>
     with:
       fail-on-missing: true
 ```
