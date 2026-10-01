@@ -5,17 +5,8 @@ require "yaml"
 require "json"
 
 root = File.expand_path("..", __dir__)
-config = YAML.safe_load(File.read(File.join(root, ".github/dependabot.yml")))
-abort "Dependabot schema version must be 2" unless config["version"] == 2
-abort "DevOps must monitor GitHub Actions" unless config["updates"].any? { |update| update["package-ecosystem"] == "github-actions" }
-
-config["updates"].each do |update|
-  abort "Version PR limit must be capped at 2" unless update["open-pull-requests-limit"] == 2
-  abort "Updates must be monthly" unless update.dig("schedule", "interval") == "monthly"
-  group = update.dig("groups", "routine-updates")
-  abort "Routine group is missing" unless group
-  abort "Routine group must apply only to version updates" unless group["applies-to"] == "version-updates"
-  abort "Majors must remain outside the routine group" unless group["update-types"] == %w[minor patch]
+%w[.github/dependabot.yml .github/dependabot.yaml].each do |path|
+  abort "Automatic Dependabot version updates must remain disabled: #{path}" if File.exist?(File.join(root, path))
 end
 
 matrix = File.read(File.join(root, "docs/workflows/dependency-rollout-matrix.md"))
@@ -45,7 +36,7 @@ baseline = File.read(File.join(root, "docs/workflows/dependency-rollout-baseline
 end
 
 policy = File.read(File.join(root, "docs/standards/dependency-update-policy.md"))
-["at least 20% fewer", "at least 15% fewer", "within 35 days", "within 24 hours"].each do |threshold|
+["DEV-47", "Marcel", "weekly", "within 24 hours"].each do |threshold|
   abort "Policy misses measurable threshold: #{threshold}" unless policy.include?(threshold)
 end
 

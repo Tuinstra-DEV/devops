@@ -1,3 +1,15 @@
+# Dependency update policy — DEV-47
+
+Effective 1 October 2026: automatic Dependabot version and security-update pull requests are disabled across all Tuinstra-DEV repositories. CVE alerts, dependency graphs and dependency audit checks are retained. This supersedes the automated DEV-13 rollout policy below.
+
+Marcel owns manual dependency maintenance: review routine updates weekly and triage new high/critical CVEs within 24 hours, choosing a tested fix or an explicitly documented mitigation. Do not suppress audit failures to obtain a green build.
+
+Version updates stop by removing both supported Dependabot config filenames from the repository default branch. Security-update PR settings are disabled separately. Organization defaults already disable security updates for newly created repositories. Check new repositories for configuration files during onboarding.
+
+See [manual maintenance](dependency-maintenance.md) for scope, verification, and rollback.
+
+## Historical DEV-13 policy (superseded)
+
 # Dependency Update and CI-Minute Policy
 
 ## Goal

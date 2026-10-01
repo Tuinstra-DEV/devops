@@ -24,7 +24,6 @@ required_paths=(
   "docs/workflows/change-aware-routing.md"
   "scripts/dependency-update-policy-test.rb"
   "scripts/dependency-update-fleet-test.rb"
-  ".github/dependabot.yml"
   "docs/standards/dependency-update-policy.md"
   "docs/workflows/dependency-rollout-matrix.md"
   "docs/workflows/dependency-rollout-evidence-template.md"
