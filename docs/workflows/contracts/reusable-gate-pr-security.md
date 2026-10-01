@@ -233,3 +233,7 @@ The [DEV-49 compact receipt](../../evidence/DEV-49-offline-integration-2026-10-0
 retains these results and both report/ZIP hashes. This is synthetic offline
 execution, not a live OIDC/App/required-check probe. Full Gate source with policy
 exclusions is still a separately stated IN-29 prerequisite.
+
+The DEV-49 helper pin is `99ee0df4a14877fae2327ea29d293b0187ef3271`;
+the consumer workflow pin is `598636f8f0f4290be95427a0f7670a6b515a2cc5`. Enrollment
+must register that exact workflow ref/SHA and the fixed image/profile above.
