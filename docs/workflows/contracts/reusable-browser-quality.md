@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Runs a locked npm install and one named Playwright package script on either a GitHub-hosted runner or the controlled `trusted-heavy` runner class. The workflow installs exactly one of Chromium, Firefox, or WebKit and publishes a predictably named report artifact.
+Runs the locked npm install and named Playwright script only for a same-repository human pull request from `develop` to `main`. The browser job uses the Sanctuary `[self-hosted, trusted-heavy]` runner and publishes a predictably named report artifact.
 
 ## Public interface
 
@@ -26,16 +26,10 @@ Output `report-artifact` is `browser-quality-<github.sha>`. The workflow accepts
 
 ## Execution trust boundary
 
-`execution-class` accepts only `hosted` or `trusted-heavy`. Omitted and invalid values select `ubuntu-24.04`; invalid values then fail validation. `trusted-heavy` resolves only to `[self-hosted, trusted-heavy]` and is rejected for fork pull requests, `pull_request_target`, and every actor whose login ends in `[bot]`, including Dependabot and Renovate. Callers must preserve a hosted path for untrusted changes.
+A small policy job runs on `ubuntu-24.04` and skips ordinary pull requests, pushes, schedules, and manual dispatches. It enables browser execution only when the event is a pull request with base `main` and head `develop`, the head repository is the same repository, the head is not a fork, the PR author is a human, and both the actor and triggering actor are human. The Sanctuary job repeats those checks directly before runner assignment. A separate always-running hosted `release-verdict` fails if a release candidate is untrusted, the policy did not enable the suite, or the browser job was skipped or failed. Require `release-verdict` as the caller's branch-protection context when adopting this workflow.
 
-Consumer repositories can use a controlled repository variable while retaining the safe default:
+The browser job is pinned to `[self-hosted, trusted-heavy]`; it has no hosted fallback. Sanctuary runner images provision browser operating-system dependencies. The workflow installs the requested Playwright browser without `--with-deps`, which would make privileged system package changes on the persistent runner. `execution-class` remains as a deprecated compatibility input, but it does not change this routing.
 
-```yaml
-jobs:
-  browser:
-    uses: Tuinstra-DEV/devops/.github/workflows/reusable-browser-quality.yml@<full-v10-commit-sha>
-    with:
-      execution-class: ${{ vars.CI_EXECUTION_CLASS || 'hosted' }}
-```
+`execution-class` remains accepted for caller compatibility but no longer changes browser routing.
 
-For manual callers, expose a `workflow_dispatch` choice containing only `hosted` and `trusted-heavy`. Never pass a free-form runner label.
+Manual dispatches are not eligible for browser execution. Keep the input for compatibility while migrating consumers; do not use it to route browser suites to a hosted runner.

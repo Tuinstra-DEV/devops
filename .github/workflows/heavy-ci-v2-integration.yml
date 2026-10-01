@@ -33,6 +33,7 @@ jobs:
       entrypoint: tests/fixtures/heavy-ci-v2/wodiq/entrypoint.sh
       run-unit: true
       run-browser: true
+      browser-coverage: not-applicable
 
   tracker-shape:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence-mode == 'proceed' }}
@@ -47,6 +48,7 @@ jobs:
       run-unit: true
       run-integration: true
       run-browser: true
+      browser-coverage: not-applicable
 
   wodiq-blocked-evidence:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence-mode == 'blocked' }}
@@ -60,6 +62,7 @@ jobs:
       entrypoint: tests/fixtures/heavy-ci-v2/wodiq/entrypoint.sh
       run-unit: true
       run-browser: true
+      browser-coverage: not-applicable
 
   tracker-blocked-evidence:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence-mode == 'blocked' }}
@@ -74,3 +77,4 @@ jobs:
       run-unit: true
       run-integration: true
       run-browser: true
+      browser-coverage: not-applicable

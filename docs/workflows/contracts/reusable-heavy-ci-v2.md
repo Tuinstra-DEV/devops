@@ -29,9 +29,11 @@ The machine-readable `preflight-decision` output is one of `blocked`, `skip`, or
 | Decision | Reason category | Meaning |
 |---|---|---|
 | `proceed` | `hosted-requested` | A trusted context explicitly selected hosted execution. |
-| `proceed` | `trusted-heavy-approved` | A trusted context passed all gates and may queue the isolated heavy runner. |
+| `proceed` | `trusted-heavy-approved` | A trusted context passed policy checks; routine Heavy CI stages still remain hosted. |
+| `proceed` | `release-browser-sanctuary` | A trusted `develop`-to-`main` pull request requested browser work; only the browser stage uses Sanctuary. |
 | `proceed` | `untrusted-hosted` | A fork, Dependabot, or `pull_request_target` context explicitly selected hosted execution. |
-| `proceed` | `untrusted-hosted-fallback` | An untrusted context requested `trusted-heavy`; the complete enabled stage set is routed to hosted instead. |
+| `proceed` | `untrusted-hosted-fallback` | An untrusted context requested `trusted-heavy`; its enabled non-browser stages use hosted runners and browser stages remain disabled. |
+| `blocked` | `trusted-release-required` | A `develop`-to-`main` release candidate is forked or bot-authored/triggered and cannot execute trusted browser code. |
 | `blocked` | `invalid-contract` | An enum, identifier, boolean, or retention input is invalid. |
 | `blocked` | `invalid-context` | Repository, run, actor, fork, ref, or workflow identity context is missing or inconsistent. |
 | `blocked` | `unsupported-event` | The event is outside the documented allowlist. |
@@ -43,7 +45,7 @@ The machine-readable `preflight-decision` output is one of `blocked`, `skip`, or
 
 `preflight-evidence` is one JSON object with schema `heavy-ci/preflight-v1`. It records the decision and reason, requested/effective execution class, trust tier, event, enabled-stage count, duration, caller and reusable workflow SHAs, and two queue-cost counters. `planned-expensive-jobs` counts build plus enabled fan-out jobs after approval. `avoided-expensive-jobs` reports that same candidate count when a validation blocks before queueing; it is zero for `proceed`. The evidence is also written to the hosted preflight job summary so a blocked run retains its decision even when workflow-call outputs are unavailable to the caller.
 
-The event allowlist is `push`, `pull_request`, `pull_request_target`, `merge_group`, `workflow_dispatch`, `schedule`, `repository_dispatch`, and `workflow_run`. Unknown events fail closed. Fork, Dependabot, and `pull_request_target` work always uses the isolated cache tier, cannot write caches, and runs the full enabled stage set on hosted when valid. Same-repository `./.github/workflows/...` calls must resolve caller and reusable files from the same commit. Cross-repository calls must use a 40-character SHA that equals the resolved reusable workflow SHA. Both resolved SHAs are validated and included in evidence.
+The event allowlist is `push`, `pull_request`, `pull_request_target`, `merge_group`, `workflow_dispatch`, `schedule`, `repository_dispatch`, and `workflow_run`. Unknown events fail closed. Fork, Dependabot, and `pull_request_target` work always uses the isolated cache tier and cannot write caches. Browser stages are omitted outside trusted release PRs; an untrusted `develop`-to-`main` candidate fails closed. Build, unit, integration, live-smoke, and summary stages always use GitHub-hosted runners regardless of the legacy `execution-class` input. Same-repository `./.github/workflows/...` calls must resolve caller and reusable files from the same commit. Cross-repository calls must use a 40-character SHA that equals the resolved reusable workflow SHA. Both resolved SHAs are validated and included in evidence.
 
 ## Adapter interface
 
@@ -59,14 +61,16 @@ The `entrypoint` input names a repository-relative Bash script. The workflow pas
 | `browser` | Run browser/E2E checks. |
 | `live-smoke` | Run caller-owned smoke checks without receiving shared secrets. |
 
-The caller controls whether optional stages run. The shared workflow never encodes WODIQ or Tracker commands, databases, credentials, routes, or product behavior.
+The caller controls whether optional stages run. Every caller declares `browser-coverage` as `required` or `not-applicable`; this expectation is independent of the deprecated `run-browser` toggle. `required` forces the browser stage on for a qualifying release PR, while `not-applicable` is for callers such as contract fixtures that have no browser suite. Browser stages have an additional shared release gate: they run only for a same-repository, human-authored and human-triggered pull request from `develop` to `main`. Ordinary pull requests, pushes, schedules, manual dispatches, forks, and bot-created release candidates do not execute browser stages; an untrusted `develop`-to-`main` candidate fails preflight. Build and every non-browser stage stay on GitHub-hosted runners. Only the eligible browser stage uses `[self-hosted, trusted-heavy]` (Sanctuary).
+
+The shared workflow never encodes WODIQ or Tracker commands, databases, credentials, routes, or product behavior.
 
 ## Inputs
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
 | `contract-id` | string | `default` | Safe identifier; separates two calls in one workflow run. |
-| `execution-class` | string | `hosted` | Only `hosted` or `trusted-heavy`. |
+| `execution-class` | string | `hosted` | Only `hosted` or `trusted-heavy`; retained for caller compatibility. |
 | `cache-policy` | string | `restore-only` | `off`, `restore-only`, or `trusted-write`. |
 | `cache-path` | string | `.cache/heavy-ci` | Tool download cache only. |
 | `cache-schema` | string | `v1` | Explicit invalidation dimension. |
@@ -76,7 +80,8 @@ The caller controls whether optional stages run. The shared workflow never encod
 | `artifact-path` | string | `.heavy-ci/payload` | Build payload packed once and restored by every stage. |
 | `run-unit` | boolean | `true` | Enables `unit`. |
 | `run-integration` | boolean | `false` | Enables `integration`. |
-| `run-browser` | boolean | `false` | Enables `e2e-prepare` and `browser`. |
+| `run-browser` | boolean | `false` | Deprecated compatibility toggle; `browser-coverage` declares release browser expectation. |
+| `browser-coverage` | string | required | `required` forces browser execution for trusted release PRs; `not-applicable` explicitly records that the caller has no browser suite. |
 | `run-live-smoke` | boolean | `false` | Enables `live-smoke`. |
 | `artifact-retention-days` | number | `14` | Allowed range 1-30 days. |
 
@@ -102,7 +107,7 @@ The exact cache key contains repository ID, contract major and ID, trust tier, r
 
 Forks, bot actors such as Dependabot or Renovate, and `pull_request_target` are assigned the `untrusted` cache tier and cannot save. A `trusted-heavy` request from those contexts selects the documented hosted/full fallback before any self-hosted job queues. Same-repository trusted pull requests may restore the exact trusted default-branch cache but cannot write it.
 
-The contract test executes the actual hosted preflight script against positive and negative contexts. Cases cover hosted and trusted routing, local same-revision calls, fork/Dependabot/Renovate/`pull_request_target` fallback, mutable cross-repository workflow refs, malformed identity context, missing or symlinked caller inputs, path conflicts, unsafe cache paths, parent traversal, broad restore prefixes, privileged permissions, secret inheritance, incomplete artifact binding, and non-SHA Action references. The hosted preflight performs the same trust decision before any self-hosted job is queued.
+The contract test executes the actual hosted preflight script against positive and negative contexts. Cases cover hosted and trusted routing, trusted release browser routing to Sanctuary, ordinary/manual browser skips, bot release failure, local same-revision calls, fork/Dependabot/Renovate/`pull_request_target` fallback, mutable cross-repository workflow refs, malformed identity context, missing or symlinked caller inputs, path conflicts, unsafe cache paths, parent traversal, broad restore prefixes, privileged permissions, secret inheritance, incomplete artifact binding, and non-SHA Action references. The hosted preflight performs the same trust decision before any self-hosted job is queued.
 
 ## Security boundaries
 

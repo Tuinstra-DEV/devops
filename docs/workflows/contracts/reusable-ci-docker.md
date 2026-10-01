@@ -21,7 +21,7 @@ Builds a local Docker image, enforces a Trivy vulnerability policy, and publishe
 | `upload-sarif` | boolean | No | `false` |
 | `artifact-retention-days` | number | No | `14` |
 
-The existing v1 inputs remain valid. v10 adds `execution-class`, `artifact-retention-days`, and outputs without changing the default hosted behavior.
+The existing v1 inputs remain valid. v10 adds `execution-class`, `artifact-retention-days`, and outputs without changing the default hosted behavior. Routine build-and-scan work always runs on `ubuntu-24.04`; `execution-class` is retained for compatibility and does not select a self-hosted runner.
 
 | Output | Guarantee |
 |---|---|
@@ -31,7 +31,7 @@ The existing v1 inputs remain valid. v10 adds `execution-class`, `artifact-reten
 
 The build/scan job grants only `contents: read`. The optional upload job grants `actions: read`, `contents: read`, and `security-events: write`. No secrets are accepted. `build-args` is the only build-argument source and is for non-secret values only.
 
-The execution trust boundary and repository-variable/manual fallback are documented in [reusable-browser-quality](reusable-browser-quality.md). Fork pull requests, `pull_request_target`, and bot actors such as Dependabot or Renovate can never select a trusted runner.
+Browser-only Sanctuary routing is documented in [reusable-browser-quality](reusable-browser-quality.md). This Docker workflow remains hosted for every event.
 
 ## Example
 
@@ -43,6 +43,5 @@ jobs:
       security-events: write
     uses: Tuinstra-DEV/devops/.github/workflows/reusable-ci-docker.yml@<full-v10-commit-sha>
     with:
-      execution-class: ${{ vars.CI_EXECUTION_CLASS || 'hosted' }}
       upload-sarif: true
 ```

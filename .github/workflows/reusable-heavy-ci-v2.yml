@@ -55,9 +55,14 @@ on:
         default: false
         type: boolean
       run-browser:
+        description: Deprecated compatibility input; browser expectation is declared with browser-coverage
         required: false
         default: false
         type: boolean
+      browser-coverage:
+        description: Declare whether a qualifying release PR must execute the browser stage, independent of run-browser
+        required: true
+        type: string
       run-live-smoke:
         required: false
         default: false
@@ -144,6 +149,9 @@ jobs:
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || '' }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -154,6 +162,7 @@ jobs:
           RUN_UNIT: ${{ inputs.run-unit }}
           RUN_INTEGRATION: ${{ inputs.run-integration }}
           RUN_BROWSER: ${{ inputs.run-browser }}
+          BROWSER_COVERAGE: ${{ inputs['browser-coverage'] }}
           RUN_LIVE_SMOKE: ${{ inputs.run-live-smoke }}
         run: |
           set -uo pipefail
@@ -245,12 +254,12 @@ jobs:
           for toggle in "$RUN_UNIT" "$RUN_INTEGRATION" "$RUN_BROWSER" "$RUN_LIVE_SMOKE"; do
             case "$toggle" in true|false) ;; *) block_preflight invalid-contract "stage toggles must be true or false" ;; esac
           done
+          case "$BROWSER_COVERAGE" in required|not-applicable) ;; *) block_preflight invalid-contract "browser-coverage must be required or not-applicable" ;; esac
           [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || block_preflight invalid-contract "artifact-retention-days must be an integer"
           (( RETENTION_DAYS >= 1 && RETENTION_DAYS <= 30 )) || block_preflight invalid-contract "artifact-retention-days must be between 1 and 30"
 
           [[ "$RUN_UNIT" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
           [[ "$RUN_INTEGRATION" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
-          [[ "$RUN_BROWSER" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
           [[ "$RUN_LIVE_SMOKE" = true ]] && enabled_stage_count=$((enabled_stage_count+1))
           candidate_expensive_jobs=$((1+enabled_stage_count))
           avoided_expensive_jobs=$candidate_expensive_jobs
@@ -327,7 +336,25 @@ jobs:
             untrusted=true
           fi
 
-          if [[ "$untrusted" = true ]]; then
+          release_browser=false
+          if [[ "$EVENT_NAME" = pull_request && "$BASE_REF" = main && "$HEAD_REF" = develop ]]; then
+            if [[ "$IS_FORK" = true || "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" || "$pr_author_type" != User || "$ACTOR" = *'[bot]' || "$TRIGGERING_ACTOR" = *'[bot]' ]]; then
+              block_preflight trusted-release-required "develop-to-main release browser execution requires a same-repository PR authored and triggered by a human"
+            fi
+            if [[ "$BROWSER_COVERAGE" = required ]]; then
+              release_browser=true
+              enabled_stage_count=$((enabled_stage_count+1))
+              candidate_expensive_jobs=$((1+enabled_stage_count))
+            fi
+          fi
+
+          if [[ "$release_browser" = true ]]; then
+            # The browser stage alone uses Sanctuary; routine build and test
+            # stages remain on GitHub-hosted runners.
+            effective_execution_class=hosted
+            trust_tier=trusted
+            reason_category=release-browser-sanctuary
+          elif [[ "$untrusted" = true ]]; then
             effective_execution_class=hosted
             runner='"ubuntu-24.04"'
             trust_tier=untrusted
@@ -337,8 +364,7 @@ jobs:
               reason_category=untrusted-hosted
             fi
           elif [[ "$EXECUTION_CLASS" = trusted-heavy ]]; then
-            effective_execution_class=trusted-heavy
-            runner='["self-hosted","trusted-heavy"]'
+            effective_execution_class=hosted
             trust_tier=trusted
             reason_category=trusted-heavy-approved
           else
@@ -355,7 +381,7 @@ jobs:
           stages=()
           [[ "$RUN_UNIT" = true ]] && stages+=(unit)
           [[ "$RUN_INTEGRATION" = true ]] && stages+=(integration)
-          [[ "$RUN_BROWSER" = true ]] && stages+=(browser)
+          [[ "$release_browser" = true ]] && stages+=(browser)
           [[ "$RUN_LIVE_SMOKE" = true ]] && stages+=(live-smoke)
           matrix='{"include":['
           separator=''
@@ -387,7 +413,7 @@ jobs:
   build:
     if: ${{ needs.preflight.outputs.preflight-decision == 'proceed' }}
     needs: preflight
-    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -524,7 +550,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
-    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}
+    runs-on: ${{ matrix.stage == 'browser' && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:

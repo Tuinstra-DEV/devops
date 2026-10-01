@@ -65,12 +65,22 @@ for file in "${contract_files[@]}"; do
   grep -Fq 'execution-class:' "$file" || fail "$file does not declare execution-class"
   grep -Fq 'default: hosted' "$file" || fail "$file does not default to hosted"
   grep -Fq 'hosted|trusted-heavy' "$file" || fail "$file does not reject arbitrary execution classes"
-  grep -Fq "fromJSON('[\"self-hosted\",\"trusted-heavy\"]')" "$file" || fail "$file does not use the constrained trusted runner labels"
-  grep -Fq "|| 'ubuntu-24.04'" "$file" || fail "$file does not use the safe hosted fallback"
-  grep -Fq "github.event_name != 'pull_request_target'" "$file" || fail "$file does not keep pull_request_target off trusted runners"
-  grep -Fq '!github.event.pull_request.head.repo.fork' "$file" || fail "$file does not keep forks off trusted runners"
-  grep -Fq "!endsWith(github.actor, '[bot]')" "$file" || fail "$file does not keep bots off trusted runners"
-  grep -Fq "github.event.pull_request.user.type != 'Bot'" "$file" || fail "$file does not preserve bot authorship after synchronization"
+  if [[ "$file" = ".github/workflows/reusable-browser-quality.yml" ]]; then
+    grep -Fq 'runs-on: [self-hosted, trusted-heavy]' "$file" || fail "$file does not pin release browsers to Sanctuary"
+    grep -Fq 'needs.release-policy.outputs.run-browser' "$file" || fail "$file does not gate browser execution on release policy"
+  elif [[ "$file" = ".github/workflows/reusable-ci-docker.yml" ]]; then
+    grep -Fq 'runs-on: ubuntu-24.04' "$file" || fail "$file does not keep routine Docker CI hosted"
+  else
+    grep -Fq "fromJSON('[\"self-hosted\",\"trusted-heavy\"]')" "$file" || fail "$file does not use the constrained trusted runner labels"
+    grep -Fq "github.event_name == 'push'" "$file" || fail "$file does not restrict Sanctuary to protected release events"
+    grep -Fq "github.ref == 'refs/heads/main'" "$file" || fail "$file does not restrict Sanctuary to main pushes"
+    grep -Fq "startsWith(github.ref, 'refs/tags/')" "$file" || fail "$file does not restrict Sanctuary to tag pushes"
+    grep -Fq "github.event.action == 'published'" "$file" || fail "$file does not restrict Sanctuary release events to published releases"
+    grep -Fq 'Tuinstra-DEV/tuinstra-site' "$file" || fail "$file is missing the app runner allowlist"
+    if grep -Fq 'Tuinstra-DEV/devops' "$file"; then fail "$file must exclude the DevOps control plane"; fi
+    if grep -Fq 'github.event.repository.default_branch' "$file"; then fail "$file must not send develop default-branch pushes to Sanctuary"; fi
+    grep -Fq "|| 'ubuntu-24.04'" "$file" || fail "$file does not retain the safe hosted path"
+  fi
 done
 
 docker_workflow=".github/workflows/reusable-ci-docker.yml"
@@ -85,6 +95,21 @@ grep -Fq 'security-events: write' "$docker_workflow" || fail "optional SARIF upl
 browser_workflow=".github/workflows/reusable-browser-quality.yml"
 grep -Fq 'report-artifact:' "$browser_workflow" || fail "browser report output missing"
 grep -Fq 'if-no-files-found: error' "$browser_workflow" || fail "browser artifact is not enforced"
+grep -Fq 'runs-on: [self-hosted, trusted-heavy]' "$browser_workflow" || fail "release browser job is not pinned to Sanctuary"
+grep -Fq 'needs.release-policy.outputs.run-browser' "$browser_workflow" || fail "browser job is not gated by release policy"
+grep -Fq 'BASE_REF' "$browser_workflow" || fail "release base-branch policy is missing"
+grep -Fq 'HEAD_REF' "$browser_workflow" || fail "release head-branch policy is missing"
+grep -Fq "github.event.pull_request.head.ref == 'develop'" "$browser_workflow" || fail "Sanctuary job is missing a direct release source-branch guard"
+grep -Fq 'github.event.pull_request.head.repo.full_name == github.repository' "$browser_workflow" || fail "Sanctuary job is missing a direct same-repository guard"
+grep -Fq 'release-verdict:' "$browser_workflow" || fail "independent hosted release verdict is missing"
+grep -Fq 'if: ${{ always() }}' "$browser_workflow" || fail "release verdict is not always-run"
+grep -Fq 'FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"' "$browser_workflow" || fail "Node 24 action runtime policy is missing"
+if grep -Fq 'install --with-deps' "$browser_workflow"; then fail "persistent Sanctuary runner must not install privileged OS dependencies"; fi
+
+heavy_workflow=".github/workflows/reusable-heavy-ci-v2.yml"
+grep -Fq 'runs-on: ubuntu-24.04' "$heavy_workflow" || fail "heavy CI preflight/build jobs must remain hosted"
+grep -Fq "matrix.stage == 'browser'" "$heavy_workflow" || fail "heavy CI fan-out does not isolate the browser runner"
+grep -Fq "stages+=(browser)" "$heavy_workflow" || fail "release browser stage routing is missing"
 
 release_workflow=".github/workflows/reusable-release-image.yml"
 for release_output in image-ref image-digest provenance-artifact provenance-url; do

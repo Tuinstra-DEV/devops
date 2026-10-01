@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       execution-class:
-        description: "Execution class: hosted or trusted-heavy"
+        description: "Execution class: hosted or trusted-heavy; Sanctuary is limited to human main/tag/published-release events from the app allowlist"
         required: false
         default: hosted
         type: string
@@ -65,7 +65,7 @@ on:
 
 jobs:
   release-image:
-    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && github.event_name != 'pull_request_target' && !endsWith(github.actor, '[bot]') && (github.event_name != 'pull_request' || (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.type != 'Bot')) && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && contains(fromJSON('["Tuinstra-DEV/gate","Tuinstra-DEV/wodiq-app","Tuinstra-DEV/tracker","Tuinstra-DEV/notify","Tuinstra-DEV/console","Tuinstra-DEV/wodiq-site","Tuinstra-DEV/marcel-site","Tuinstra-DEV/tuinstra-site"]'), github.repository) && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'release' && github.event.action == 'published')) && !endsWith(github.actor, '[bot]') && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
     permissions:
       attestations: write
       contents: read
