@@ -1,0 +1,231 @@
+{
+  "synthetic": true,
+  "scanner_image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2",
+  "policy_digest": "sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6",
+  "bundle_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
+  "phase": "pre-pin local verification; final fixed-candidate persona proof is separate",
+  "source_image_run": "36829949775",
+  "source_image_commit": "299d1f99722cfca78ec34119b4293b283bbbffd2",
+  "oci_archive_sha256": "sha256:f91bd99f5a54488086affa9ff0a042c71ffa402cc2d32e819e16b70bef8dc06f",
+  "publisher_source": "85256be32acb7e5c589e97f05170484fe43a9b2d",
+  "initial_yarn_red": {
+    "case": "unsupported-yarn",
+    "ok": false,
+    "reason": "untrusted_coverage"
+  },
+  "results": [
+    {
+      "case": "pass",
+      "ok": true,
+      "expected": "pass",
+      "scanner_outcome": "pass",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "pass"
+      },
+      "bridge_exit": 0,
+      "findings": 0,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:7aabc49529cbe5a91ce03a7c344b928bec84ddd2a7cd1b41c559cb57b96b9ea0",
+      "archive_sha256": "sha256:9657cbf9023cdd37fa5a8bf42070a3ef1d6f037f056517295a20691c2ebbfa6c"
+    },
+    {
+      "case": "blocked",
+      "ok": true,
+      "expected": "blocked",
+      "scanner_outcome": "blocked",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "blocked"
+      },
+      "bridge_exit": 0,
+      "findings": 1,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:3e9ac74f7ae2c39964dc1c42a6176f59a086d0977fc68890edf55cc1c6b013c7",
+      "archive_sha256": "sha256:e1b7bfd0975698dc65fb0ef043f3e0efd28e2247e1c42391c8cafe8fd23d9329"
+    },
+    {
+      "case": "incomplete",
+      "ok": true,
+      "expected": "incomplete",
+      "scanner_outcome": "incomplete",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "incomplete"
+      },
+      "bridge_exit": 0,
+      "findings": 0,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:2ee0452f0d739c414e59ab5ecc4a95322656fcf9130de6fcac54cbf526e3d003",
+      "archive_sha256": "sha256:c34f8450810c21b160aaea738187230ef9ce9b03af47b23fe5801f6ac1d3b60f"
+    },
+    {
+      "case": "verified-absence",
+      "ok": true,
+      "expected": "pass",
+      "scanner_outcome": "pass",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "pass"
+      },
+      "bridge_exit": 0,
+      "findings": 0,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:12985602ea5e9148e3385f8684a9c612f612ffad70bcc25b9453f81689e4c639",
+      "archive_sha256": "sha256:83835298ce600a9366249da92e68ea855e28471c96c0a2a0c663ae5fedbb8af1"
+    },
+    {
+      "case": "existing-debt",
+      "ok": true,
+      "expected": "pass",
+      "scanner_outcome": "pass",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "pass"
+      },
+      "bridge_exit": 0,
+      "findings": 1,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:30d4cb3c8f91f3c9bcb3fa8ba6ad1c33424f617696add0954389c470c1e46486",
+      "archive_sha256": "sha256:3f72403e7df4e6ed2aaf757d401a6320228e45b295a0c55c4f9e567a91dc0d4c"
+    },
+    {
+      "case": "unknown-input",
+      "ok": true,
+      "expected": "incomplete",
+      "scanner_outcome": "incomplete",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "incomplete"
+      },
+      "bridge_exit": 0,
+      "findings": 0,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "unknown-input",
+        "web-assets"
+      ],
+      "raw_report_sha256": "sha256:86ffbeabea94b4c09bd764eb28942c74c57f676961b11d3577f282f7884eea4e",
+      "archive_sha256": "sha256:3036c8d61c559ae5f65bfec61b773fd8d700d5b0f9d062f85dd2744515c799bc"
+    },
+    {
+      "case": "unsupported-yarn",
+      "ok": true,
+      "expected": "incomplete",
+      "scanner_outcome": "incomplete",
+      "publisher_bridge": {
+        "ok": true,
+        "outcome": "incomplete"
+      },
+      "bridge_exit": 0,
+      "findings": 0,
+      "coverage_scopes": [
+        "build-configuration",
+        "composer",
+        "configuration",
+        "dockerfile",
+        "embedded-web",
+        "javascript-typescript",
+        "npm",
+        "php",
+        "php-framework",
+        "pnpm",
+        "secrets",
+        "shell-infrastructure",
+        "template",
+        "web-assets",
+        "yarn"
+      ],
+      "raw_report_sha256": "sha256:4908380dc16a57ff335b2ed2f76125c6563eb955f36925a63d4c45046a8f7fba",
+      "archive_sha256": "sha256:70d6be2e49aad6d47751b9545189577e8e27f4eea821dd5624a7e435972be30b"
+    }
+  ],
+  "ok": true
+}

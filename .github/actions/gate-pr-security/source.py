@@ -388,6 +388,7 @@ def scan(work):
             "scanner_report_invalid")
     for field in ("coverage", "findings", "inputs", "reasons", "uncompared_findings"):
         require(isinstance(report.get(field), list), "scanner_report_invalid")
+    state["scanner_image"] = IMAGE
     state["scanner_exit"] = code
     state["scan_duration_ms"] = int((time.monotonic() - started) * 1000)
     save_state(work, state)

@@ -64,12 +64,12 @@ try {
     }
 
     // Reviewed DevOps constants.py literals; never derive policy from the ZIP.
-    $bundle = 'sha256:c2dbaf868aedb5d67202d91d8a9a93e82c0262d7d85b4bdfcd46ae4063169cb7';
-    $policy = 'sha256:8bd185c4dd22c74bcee7f6490e1c96d21bd7c87de44f76ec07065c72897c0a97';
-    $image = 'ghcr.io/tuinstra-dev/gate-ci-scanner@sha256:6e579433706fbb7cf2f2360fc0b3ed9052f4e1a56dbfb9efbd57b811d81c99d0';
+    $bundle = 'sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24';
+    $policy = 'sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6';
+    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2';
     $sha = str_repeat('a', 40);
     $workflow = 'Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@'.$sha;
-    // Five approved rows from IN-25's clean result, without observed statuses.
+    // Fixed synthetic-fixture profile; never derive required coverage from the ZIP.
     $coverage = [];
     foreach ([
         ['osv', '2.3.8', 'composer', $bundle],
@@ -77,6 +77,16 @@ try {
         ['osv', '2.3.8', 'npm', $bundle],
         ['semgrep', '1.136.0', 'php', null],
         ['gitleaks', '8.30.1', 'secrets', null],
+        ['osv', '2.3.8', 'pnpm', $bundle],
+        ['semgrep', '1.136.0', 'embedded-web', null],
+        ['gate-text', '1', 'configuration', null],
+        ['gate-text', '1', 'shell-infrastructure', null],
+        ['gate-text', '1', 'dockerfile', null],
+        ['gate-text', '1', 'web-assets', null],
+        ['gate-text', '1', 'template', null],
+        ['gate-text', '1', 'php-framework', null],
+        ['gate-text', '1', 'build-configuration', null],
+
     ] as [$scanner, $version, $scope, $advisory]) {
         $coverage[] = ['scanner' => $scanner, 'version' => $version, 'scope' => $scope,
             'rules_digest' => $bundle, 'advisory_digest' => $advisory];

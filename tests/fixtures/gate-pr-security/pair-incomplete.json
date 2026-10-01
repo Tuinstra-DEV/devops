@@ -6,16 +6,16 @@
   "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "base_tree": "cccccccccccccccccccccccccccccccccccccccc",
   "head_tree": "dddddddddddddddddddddddddddddddddddddddd",
-  "bundle_digest": "sha256:c2dbaf868aedb5d67202d91d8a9a93e82c0262d7d85b4bdfcd46ae4063169cb7",
-  "policy_digest": "sha256:8bd185c4dd22c74bcee7f6490e1c96d21bd7c87de44f76ec07065c72897c0a97",
-  "dataset_manifest_digest": "sha256:c2dbaf868aedb5d67202d91d8a9a93e82c0262d7d85b4bdfcd46ae4063169cb7",
+  "bundle_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
+  "policy_digest": "sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6",
+  "dataset_manifest_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
   "outcome": "incomplete",
   "coverage": [
     {
       "scanner": "gitleaks",
       "version": "8.30.1",
       "scope": "secrets",
-      "rules_digest": "sha256:c2dbaf868aedb5d67202d91d8a9a93e82c0262d7d85b4bdfcd46ae4063169cb7",
+      "rules_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
       "advisory_digest": null,
       "base_result": "complete",
       "head_result": "failed"

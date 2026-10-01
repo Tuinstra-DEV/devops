@@ -200,6 +200,7 @@ class SourceTests(unittest.TestCase):
                     source.scan(self.work)
                 state = json.loads((self.work / "state.json").read_text())
                 self.assertEqual(code, state["scanner_exit"])
+                self.assertEqual(source.IMAGE, state["scanner_image"])
                 self.assertIsInstance(state["scan_duration_ms"], int)
                 create = calls[0][0]
                 for fragment in ("--read-only", "--cap-drop", "no-new-privileges", source.IMAGE, "--user"):

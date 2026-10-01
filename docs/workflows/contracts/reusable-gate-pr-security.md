@@ -1,6 +1,7 @@
 # Gate PR Security reusable workflow
 
-DEV-46 supplies a producer for the separate Gate publisher. It prepares exact PR
+DEV-46 supplies the producer for the separate Gate publisher; DEV-49 binds it
+to the published Gate scanner. It prepares exact PR
 sources, runs the immutable scanner with no network or credentials, uploads a
 bounded artifact and submits its actual ID/digest with a fresh Actions OIDC
 identity. Receipt acceptance is not a security pass. Gate publishes the App-owned
@@ -9,12 +10,18 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 ## Review and enrollment
 
 This delivery is preparation for the Gate/DevOps pilot. It does not enroll a
-consumer, create an App, alter branch rules or increase a budget. The scanner's
-verified local OCI digest is fixed in `constants.py`. Its proposed private GHCR
-package must be published with that same digest and granted Actions read access
-per approved consumer before live use. The current local GitHub credential lacks
-package-read permission; remote publication/access has not been established.
-Do not substitute a mutable tag, rebuild silently, or make this image public.
+consumer, create an App, alter branch rules or increase a budget. The reviewed private image is
+`ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2`.
+IN-28 published it from protected Gate run `36829949775`, source
+`299d1f99722cfca78ec34119b4293b283bbbffd2`, and proved authenticated pull plus
+anonymous refusal. Only Gate currently has package Actions access. DEV-49 loaded
+that run's actual OCI artifact locally and verified its manifest, not a rebuild.
+The profile uses policy
+`sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6`
+and bundle/dataset
+`sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24`;
+both hashes were read back from the loaded image. No mutable image override is accepted.
+Package access for another consumer needs separate approved enrollment.
 
 Before enrollment, verify all of:
 
@@ -23,7 +30,8 @@ Before enrollment, verify all of:
 - A separate publisher App, registry entry, migrated storage and recovery scheduler.
 - Exact provider-visible required producer job name, repository/owner IDs and
   registered `pull_request_target` event mode.
-- Green and deliberately blocked live probes, including a fork and bot PR.
+- Green, deliberately blocked and incomplete live probes, including a bot PR.
+  Fork admission requires a separate probe where the repository actually allows forks.
 - App-specific branch requirements, current base/head reevaluation and strict
   freshness, plus non-passing handling of missing/cancelled/uncertain receipt.
 
@@ -67,10 +75,25 @@ no-new-privileges is set, and memory/CPU/PID/time limits apply. No Docker socket
 runner workspace, authentication directory or environment credentials are passed
 into the container. Registry credentials exist only during the trusted pull.
 
-The initial profile proves secrets, PHP, JavaScript/TypeScript, Composer and npm
-package-lock coverage. Unsupported pnpm/Yarn, framework, infrastructure and native
-scopes remain incomplete. This delivery does not declare full Gate or DevOps
-repository coverage merely because the scanner process completed.
+The fixed profile covers secrets, PHP/Symfony, JavaScript/TypeScript, strict Vue
+script/template processing, Composer, npm and supported pnpm v9 locks. Its bounded
+`gate-text` rules process configuration, shell/workflows/infrastructure, Dockerfiles,
+web text assets, Twig, framework markers and build configuration. The named scopes
+and rules in the image inventory define the capability; complete does not promise
+exhaustive vulnerability detection. Yarn, native and other unregistered required
+scopes remain incomplete. The known Yarn adapter can emit its pinned OSV identity
+with both results `unsupported`; that exact row is retained only for an incomplete
+report and never advertised as supported coverage. The report must name exactly the pinned tool/rule/data
+identities, and trusted execution state must name the pinned scanner image.
+
+**Gate full-source enrollment prerequisite (IN-29):** the image's exact hash-bound
+policy exclusions currently use `approved_exclusion` in the raw input rows. The
+producer refuses to package those rows as complete analysis, and the existing PHP
+publisher also treats them as incomplete. Exclusions cannot be relabeled as scanned
+or have their reasons stripped. IN-29 must provide a reviewed shared representation
+that preserves the source/hash binding and explicitly separates exclusions from
+actual scan coverage before a full Gate repository can pass. DEV-49's synthetic
+ordinary-scope proof does not claim that enrollment has happened.
 
 ## Artifact and receipt
 
@@ -142,10 +165,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/gate-pr-security-local-integration.py 
   --output-dir /absolute/path/to/new/temporary/probe-output
 ```
 
-The ordinary suite includes 29 producer unit tests and a workflow contract check.
+The ordinary suite includes 39 producer unit tests and a workflow contract check.
 It tests source identities, fork bindings, stale attempts, unsafe paths, output
 limits, Docker isolation, cleanup, malformed/unsupported evidence, verified
 absence, OIDC binding, artifact submission and bounded retries.
+
+Select individual scenarios with repeatable `--case NAME` when investigating a concrete failure.
 
 The optional integration command requires the existing Gate backend dependencies,
 PHP with ZIP support, Git, Docker with a local Unix socket and the already loaded
@@ -154,8 +179,8 @@ It creates only synthetic Git objects and regular source fixtures, never another
 application checkout. The scanner runs with the production restrictions and its
 actual report is packaged and verified by Gate's real PHP artifact verifier.
 
-The local adapter replaces the fixed registry reference with the exact already
-loaded image ID. Thus it proves the scanner/helper/publisher data contract,
+The local adapter requires Docker to inspect the exact already loaded OCI manifest
+identity, then maps the fixed registry reference to that digest. It never uses a tag. Thus it proves the scanner/helper/publisher data contract,
 without claiming registry distribution, live OIDC authentication or App checks.
 Synthetic identities are explicit; generated ZIPs and results stay in the
 chosen local output directory, which must be shared with the local Docker host. Any unexpected outcome exits nonzero.
@@ -186,10 +211,32 @@ formatting was skipped because Packer is unavailable. Cross-repository fleet
 policy checks were not requested (`DEPENDABOT_FLEET_ROOT` unset). No production
 services or deployment credentials were used by these tests.
 
-The final real-image run passed all four cases: clean → pass, new high finding →
+The historical DEV-46 real-image run passed all four cases: clean → pass, new high finding →
 blocked, untrusted suppression configuration → incomplete, and removed final PHP
 file → pass with verified absence. The compact [integration receipt](../../evidence/DEV-46-offline-integration-2026-09-27.json)
 records the exact publisher/helper/workflow/image identities and ZIP hashes.
 The initial attempt using an unshared local temporary directory failed container
 creation; rerunning with fixtures in the existing Docker-shared project directory
 passed without changing scanner isolation or mounting credentials.
+
+### DEV-49 published-image verification
+
+The actual IN-28 published artifact (archive SHA-256
+`f91bd99f5a54488086affa9ff0a042c71ffa402cc2d32e819e16b70bef8dc06f`)
+was loaded without rebuilding or overwriting an existing local tag. Fourteen
+ordinary scopes reached the real PHP verifier. Clean and verified absence passed;
+a new high finding blocked; existing high debt stayed visible and passed under
+the new/worsened policy. Untrusted suppression config and unknown input remained
+incomplete. The first Yarn run exposed a producer contract mismatch; its exact
+nonpassing OSV format was reproduced, fixed and passed on a focused rerun.
+The [DEV-49 compact receipt](../../evidence/DEV-49-offline-integration-2026-10-01.json)
+retains these results and both report/ZIP hashes. This is synthetic offline
+execution, not a live OIDC/App/required-check probe. Full Gate source with policy
+exclusions is still a separately stated IN-29 prerequisite.
+
+The DEV-49 helper pin is `99ee0df4a14877fae2327ea29d293b0187ef3271`;
+the consumer workflow pin is `598636f8f0f4290be95427a0f7670a6b515a2cc5`. Enrollment
+must register that exact workflow ref/SHA and the fixed image/profile above.
+
+The [four-persona scorecard](../../evidence/DEV-49-persona-verification-2026-10-01.md)
+records fresh CLI journeys on the fixed DEV-49 candidate and their explicit limits.

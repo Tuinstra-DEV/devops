@@ -34,7 +34,7 @@ WORKFLOW_REF_MAX = 256
 APPROVED_WORKFLOW_PATH = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml"
 EVENT_NAMES = {"pull_request_target"}
 OUTCOME_EXIT = {"pass": 0, "blocked": 1, "incomplete": 2}
-TOOL_VERSIONS = {"semgrep": "1.136.0", "gitleaks": "8.30.1", "osv": "2.3.8"}
+TOOL_VERSIONS = {"semgrep": "1.136.0", "gitleaks": "8.30.1", "osv": "2.3.8", "gate-text": "1", "policy-exclusion": "1"}
 SCOPE_SCANNERS = {
     "secrets": "gitleaks",
     "php": "semgrep",
@@ -42,7 +42,17 @@ SCOPE_SCANNERS = {
     "composer": "osv",
     "npm": "osv",
     "pnpm": "osv",
-    "yarn": "osv",
+    "embedded-web": "semgrep",
+    "configuration": "gate-text",
+    "shell-infrastructure": "gate-text",
+    "dockerfile": "gate-text",
+    "web-assets": "gate-text",
+    "template": "gate-text",
+    "php-framework": "gate-text",
+    "build-configuration": "gate-text",
+    "opaque-input": "policy-exclusion",
+    "unknown-input": "policy-exclusion",
+    "embedded-code": "policy-exclusion",
 }
 PAIR_REQUIRED = {
     "schema_version", "document_type", "policy_version", "base_sha", "head_sha",
@@ -53,7 +63,7 @@ PAIR_REQUIRED = {
 STATE_REQUIRED = {
     "repository", "repository_id", "owner_id", "pull_request", "run_id",
     "run_attempt", "base_sha", "head_sha", "base_tree", "head_tree", "scanner_exit",
-    "prepare_duration_ms", "scan_duration_ms",
+    "prepare_duration_ms", "scan_duration_ms", "scanner_image",
 }
 
 
@@ -143,6 +153,8 @@ def _load_inputs(work_dir: Path) -> tuple[dict[str, Any], bytes, dict[str, Any]]
 
 
 def _validate_state(state: dict[str, Any]) -> None:
+    if state["scanner_image"] != constants.IMAGE:
+        raise EvidenceError("scanner_image_mismatch")
     repository = state["repository"]
     if not isinstance(repository, str) or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise EvidenceError("invalid_state")
@@ -184,7 +196,12 @@ def _coverage(report: dict[str, Any], complete_outcome: bool) -> list[dict[str, 
             if complete_outcome or row["version"] != "unregistered" or row["advisory_digest"] is not None or row["base_result"] != "unsupported" or row["head_result"] != "unsupported":
                 raise EvidenceError("untrusted_coverage")
             continue
-        if SCOPE_SCANNERS.get(scope) != scanner or scanner not in TOOL_VERSIONS or row["version"] != TOOL_VERSIONS[scanner]:
+        # This image retains the OSV adapter identity for unsupported Yarn.
+        # Preserve its nonpassing report; never treat it as supported coverage.
+        unsupported_yarn = (not complete_outcome and scope == "yarn" and scanner == "osv"
+                            and row["base_result"] == "unsupported" and row["head_result"] == "unsupported")
+        if ((SCOPE_SCANNERS.get(scope) != scanner and not unsupported_yarn)
+            or scanner not in TOOL_VERSIONS or row["version"] != TOOL_VERSIONS[scanner]):
             raise EvidenceError("untrusted_coverage")
         expected_advisory = constants.BUNDLE_DIGEST if "osv" == scanner else None
         if row["advisory_digest"] != expected_advisory:
@@ -252,6 +269,7 @@ def _inputs(report: dict[str, Any], coverage: list[dict[str, Any]], complete_out
         by_scope[scope] = entry
     if set(by_scope) != {row["scope"] for row in coverage}:
         raise EvidenceError("input_coverage_mismatch")
+    coverage_by_scope = {row["scope"]: row for row in coverage}
     for entry in entries:
         for side in ("base", "head"):
             data = entry[side]
@@ -268,7 +286,9 @@ def _inputs(report: dict[str, Any], coverage: list[dict[str, Any]], complete_out
                 raise EvidenceError("invalid_inputs")
             if complete_outcome:
                 verified_absence = not discovered and not scanned and reasons == ["verified_absence"]
-                if discovered != scanned or (reasons and not verified_absence):
+                excluded = coverage_by_scope[entry["scope"]]["scanner"] == "policy-exclusion"
+                if ((excluded and not verified_absence) or not discovered and not verified_absence
+                    or discovered != scanned or (reasons and not verified_absence)):
                     raise EvidenceError("outcome_input_mismatch")
 
 
