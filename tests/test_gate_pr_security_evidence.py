@@ -41,6 +41,7 @@ def state(scanner_exit):
         "head_sha": "b" * 40,
         "base_tree": "c" * 40,
         "head_tree": "d" * 40,
+        "scanner_image": evidence.constants.IMAGE,
         "scanner_exit": scanner_exit,
         "prepare_duration_ms": 11,
         "scan_duration_ms": 22,
@@ -58,6 +59,58 @@ def setup_work(work: Path, fixture: str, exit_code: int | None = None):
     (work / "output/pair/result.json").write_bytes(raw)
     (work / "output/pair/result.sha256").write_text(f"{hashlib.sha256(raw).hexdigest()}  result.json\n", encoding="ascii")
     return raw, report
+
+
+def write_report(work: Path, report: dict) -> bytes:
+    """Keep the scanner's checksum valid when testing report-contract failures."""
+    raw = (json.dumps(report, indent=2) + "\n").encode()
+    (work / "output/pair/result.json").write_bytes(raw)
+    (work / "output/pair/result.sha256").write_text(f"{hashlib.sha256(raw).hexdigest()}  result.json\n", encoding="ascii")
+    return raw
+
+
+def current_profile(report: dict) -> dict:
+    """Keep synthetic cases tied to the verified deployment constants under test."""
+    report["bundle_digest"] = evidence.constants.BUNDLE_DIGEST
+    report["policy_digest"] = evidence.constants.POLICY_DIGEST
+    report["dataset_manifest_digest"] = evidence.constants.DATASET_DIGEST
+    for row in report["coverage"]:
+        row["rules_digest"] = evidence.constants.BUNDLE_DIGEST
+        if row["scanner"] == "osv":
+            row["advisory_digest"] = evidence.constants.BUNDLE_DIGEST
+    return report
+
+
+def coverage_row(scope: str, scanner: str, version: str) -> dict:
+    return {
+        "scanner": scanner, "version": version, "scope": scope,
+        "rules_digest": evidence.constants.BUNDLE_DIGEST,
+        "advisory_digest": evidence.constants.BUNDLE_DIGEST if scanner == "osv" else None,
+        "base_result": "complete", "head_result": "complete",
+    }
+
+
+def input_row(scope: str, path: str, reasons: list[str] | None = None) -> dict:
+    side = {"discovered": [path], "scanned": [path], "reasons": reasons or []}
+    return {"scope": scope, "base": dict(side), "head": dict(side)}
+
+
+def absent_input_row(scope: str) -> dict:
+    side = {"discovered": [], "scanned": [], "reasons": ["verified_absence"]}
+    return {"scope": scope, "base": dict(side), "head": dict(side)}
+
+
+def unsupported_yarn_report(report: dict) -> dict:
+    """Match the unsupported Yarn row emitted by the pinned Gate scanner."""
+    report["coverage"][1].update({
+        "scanner": "osv", "version": evidence.TOOL_VERSIONS["osv"], "scope": "yarn",
+        "advisory_digest": evidence.constants.BUNDLE_DIGEST,
+        "base_result": "unsupported", "head_result": "unsupported",
+    })
+    report["inputs"][1]["scope"] = "yarn"
+    for side in ("base", "head"):
+        report["inputs"][1][side]["discovered"] = ["frontend/yarn.lock"]
+    return report
 
 
 class FakeResponse:
@@ -133,6 +186,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 self.assertEqual(outer["pull_requests"], [73])
                 self.assertEqual(outer["repository"]["repository_id"], "100100")
                 self.assertEqual(outer["run"]["workflow_sha"], environment()["GATE_WORKFLOW_SHA"])
+                self.assertEqual(outer["scanner_image"], evidence.constants.IMAGE)
                 self.assertEqual(outer["payload_files"][0]["sha256"], "sha256:" + hashlib.sha256(raw).hexdigest())
 
     def test_verified_absence_is_preserved_without_rewriting_report(self):
@@ -141,6 +195,153 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
             self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
             self.assertEqual(json.loads((staging / "reports/result.json").read_bytes()), report)
             self.assertEqual(report["inputs"][0]["head"]["reasons"], ["verified_absence"])
+
+    def test_packages_gate_text_embedded_web_and_pnpm_as_distinct_scanner_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            cases = (
+                ("configuration", "gate-text", "1", ".github/workflows/ci.yml"),
+                ("embedded-web", "semgrep", evidence.TOOL_VERSIONS["semgrep"], "frontend/App.vue"),
+                ("pnpm", "osv", evidence.TOOL_VERSIONS["osv"], "frontend/pnpm-lock.yaml"),
+            )
+            for scope, scanner, version, path in cases:
+                report["coverage"].append(coverage_row(scope, scanner, version))
+                report["inputs"].append(input_row(scope, path))
+            report["coverage"].append(coverage_row("opaque-input", "policy-exclusion", "1"))
+            report["inputs"].append(absent_input_row("opaque-input"))
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            outer = json.loads((staging / "evidence.json").read_bytes())
+            self.assertEqual(outer["coverage"], report["coverage"])
+            self.assertEqual({row["scope"]: row["scanner"] for row in outer["coverage"]}, {
+                "secrets": "gitleaks", "configuration": "gate-text", "embedded-web": "semgrep",
+                "pnpm": "osv", "opaque-input": "policy-exclusion",
+            })
+            self.assertEqual(report["inputs"][-1]["head"]["reasons"], ["verified_absence"])
+
+    def test_rejects_forged_complete_yarn_osv_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            report["coverage"].append(coverage_row("yarn", "osv", evidence.TOOL_VERSIONS["osv"]))
+            report["inputs"].append(input_row("yarn", "frontend/yarn.lock"))
+            write_report(work, report)
+            with self.assertRaisesRegex(evidence.EvidenceError, "untrusted_coverage"):
+                evidence.package(work, environment())
+            self.assertFalse((work / "staging").exists())
+
+    def test_preserves_unsupported_yarn_as_incomplete_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-unsupported.json")
+            unsupported_yarn_report(report)
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            outer = json.loads((staging / "evidence.json").read_bytes())
+            self.assertEqual(outer["outcome"], "incomplete")
+            self.assertEqual(outer["coverage"][1]["scanner"], "osv")
+            self.assertEqual(outer["coverage"][1]["base_result"], "unsupported")
+            self.assertEqual(outer["coverage"][1]["head_result"], "unsupported")
+
+    def test_rejects_mixed_or_unpinned_unsupported_yarn_coverage(self):
+        for case in ("head_complete", "base_failed", "wrong_version", "wrong_advisory"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-unsupported.json")
+                unsupported_yarn_report(report)
+                row = report["coverage"][1]
+                if case == "head_complete":
+                    row["head_result"] = "complete"
+                    report["inputs"][1]["head"].update({"scanned": ["frontend/yarn.lock"], "reasons": []})
+                elif case == "base_failed":
+                    row["base_result"] = "failed"
+                elif case == "wrong_version":
+                    row["version"] = "0"
+                else:
+                    row["advisory_digest"] = "sha256:" + "e" * 64
+                write_report(work, report)
+                with self.assertRaisesRegex(evidence.EvidenceError, "untrusted_coverage"):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
+
+    def test_approved_exclusion_cannot_be_laundered_into_a_complete_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            report["coverage"].append(coverage_row("opaque-input", "policy-exclusion", "1"))
+            report["inputs"].append(input_row("opaque-input", "assets/model.bin", ["approved_exclusion"]))
+            write_report(work, report)
+            with self.assertRaisesRegex(evidence.EvidenceError, "outcome_input_mismatch"):
+                evidence.package(work, environment())
+            self.assertFalse((work / "staging").exists())
+
+    def test_rejects_exclusion_laundered_as_real_scanner_coverage(self):
+        cases = (
+            ("php", "policy-exclusion", "1", ["approved_exclusion"], "untrusted_coverage"),
+            ("opaque-input", "semgrep", evidence.TOOL_VERSIONS["semgrep"], [], "untrusted_coverage"),
+            ("configuration", "gate-text", "1", ["approved_exclusion"], "outcome_input_mismatch"),
+        )
+        for scope, scanner, version, reasons, error in cases:
+            with self.subTest(scope=scope, scanner=scanner), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-pass.json")
+                current_profile(report)
+                report["coverage"].append(coverage_row(scope, scanner, version))
+                report["inputs"].append(input_row(scope, "src/example.php", reasons))
+                write_report(work, report)
+                with self.assertRaisesRegex(evidence.EvidenceError, error):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
+
+    def test_rejects_policy_exclusion_without_explicit_approval_reason(self):
+        for reasons in ([], ["verified_absence"], ["approved_exclusion", "other"]):
+            with self.subTest(reasons=reasons), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-pass.json")
+                current_profile(report)
+                report["coverage"].append(coverage_row("opaque-input", "policy-exclusion", "1"))
+                report["inputs"].append(input_row("opaque-input", "assets/model.bin", reasons))
+                write_report(work, report)
+                with self.assertRaisesRegex(evidence.EvidenceError, "outcome_input_mismatch"):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
+
+    def test_rejects_wrong_gate_scope_version_and_profile_identities(self):
+        cases = ("gate_text_version", "policy_exclusion_version", "policy_digest", "dataset_digest", "rules_digest", "advisory_digest")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-pass.json")
+                current_profile(report)
+                report["coverage"].append(coverage_row("configuration", "gate-text", "1"))
+                report["inputs"].append(input_row("configuration", ".github/workflows/ci.yml"))
+                report["coverage"].append(coverage_row("opaque-input", "policy-exclusion", "1"))
+                report["inputs"].append(absent_input_row("opaque-input"))
+                report["coverage"].append(coverage_row("pnpm", "osv", evidence.TOOL_VERSIONS["osv"]))
+                report["inputs"].append(input_row("pnpm", "frontend/pnpm-lock.yaml"))
+                if case == "gate_text_version":
+                    report["coverage"][1]["version"] = "2"
+                elif case == "policy_exclusion_version":
+                    report["coverage"][2]["version"] = "2"
+                elif case == "policy_digest":
+                    report["policy_digest"] = "sha256:" + "e" * 64
+                elif case == "dataset_digest":
+                    report["dataset_manifest_digest"] = "sha256:" + "e" * 64
+                elif case == "rules_digest":
+                    report["coverage"][1]["rules_digest"] = "sha256:" + "e" * 64
+                else:
+                    report["coverage"][3]["advisory_digest"] = "sha256:" + "e" * 64
+                write_report(work, report)
+                error = "report_profile_mismatch" if case in {"policy_digest", "dataset_digest"} else "untrusted_coverage"
+                with self.assertRaisesRegex(evidence.EvidenceError, error):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
 
     def test_rejects_mismatched_state_sha_bundle_and_checksum(self):
         cases = ("state_sha", "bundle", "checksum")
@@ -163,6 +364,34 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                     (work / "output/pair/result.sha256").write_text("0" * 64 + "  result.json\n")
                 with self.assertRaises(evidence.EvidenceError):
                     evidence.package(work, environment())
+
+    def test_rejects_state_with_a_different_executed_image_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            setup_work(work, "pair-pass.json")
+            state_data = json.loads((work / "state.json").read_text())
+            state_data["scanner_image"] = "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:" + "e" * 64
+            (work / "state.json").write_text(json.dumps(state_data))
+            with self.assertRaisesRegex(evidence.EvidenceError, "scanner_image_mismatch"):
+                evidence.package(work, environment())
+            self.assertFalse((work / "staging").exists())
+
+    def test_rejects_unknown_scanner_version_and_rule_profile(self):
+        cases = ("scanner", "version", "rules_digest")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-pass.json")
+                if case == "scanner":
+                    report["coverage"][0]["scanner"] = "unregistered"
+                elif case == "version":
+                    report["coverage"][0]["version"] = "0"
+                else:
+                    report["coverage"][0]["rules_digest"] = "sha256:" + "e" * 64
+                write_report(work, report)
+                with self.assertRaisesRegex(evidence.EvidenceError, "untrusted_coverage"):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
 
     def test_rejects_exit_outcome_mismatch_without_forcing_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:

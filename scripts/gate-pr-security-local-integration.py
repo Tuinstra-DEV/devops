@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run four offline, synthetic-source DEV-46 producer/publisher integration cases.
+"""Run offline, synthetic-source DEV-49 producer/publisher integration cases.
 
 Requires Python 3.10+, Git, PHP with ZIP and the existing Gate backend's installed
 Composer dependencies, and a local Docker Unix socket with the exact reviewed
@@ -10,6 +10,7 @@ case evidence is retained there and results.json records compact outcomes.
 The verified-absence case requires the publisher correction covered by this proof.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,9 +42,49 @@ BASE_FILES = {
         "packages": {"": {"name": "fixture", "version": "1.0.0"}, "node_modules/left-pad": {"version": "1.3.0"}}}).encode(),
     "README.md": b"Synthetic DEV-46 integration fixture.\n",
 }
+COMPOSER_MANIFEST = {"name": "fixture/app", "require": {"symfony/framework-bundle": "^7.4"}}
+COMPOSER_HASH = hashlib.md5(json.dumps(COMPOSER_MANIFEST, sort_keys=True, separators=(",", ":")).replace("/", "\\/").encode()).hexdigest()
+BASE_FILES.update({
+    "composer.json": json.dumps(COMPOSER_MANIFEST).encode(),
+    "composer.lock": json.dumps({"content-hash": COMPOSER_HASH, "packages": [
+        {"name": "symfony/framework-bundle", "version": "v7.4.0"},
+        {"name": "twig/twig", "version": "v3.27.0"}], "packages-dev": []}).encode(),
+    "pnpm-app/package.json": b'{"dependencies":{"left-pad":"1.3.0"}}',
+    "pnpm-app/pnpm-lock.yaml": b"lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      left-pad:\n        specifier: 1.3.0\n        version: 1.3.0\npackages:\n  left-pad@1.3.0:\n    resolution:\n      integrity: sha512-QUFBQQ==\nsnapshots:\n  left-pad@1.3.0: {}\n",
+    "component.vue": b'<template><div>{{ value }}</div></template>\n<script setup lang="ts">const value = "safe"</script>\n',
+    ".github/workflows/checks.yml": b"name: Synthetic checks\non: [pull_request]\npermissions:\n  contents: read\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps: []\n",
+    "config.json": b'{"tls_verify":true}',
+    "Dockerfile": b"FROM scratch\nCOPY app /app\n",
+    "styles.css": b"body { color: black; }\n",
+    "page.twig": b"{{ title }}\n",
+    "Makefile": b"check:\n\techo synthetic\n",
+})
 
 
-def fixture(work, head_files):
+def fixture_tree(store, files):
+    nested = {}
+    for path, body in files.items():
+        cursor = nested
+        parts = path.split("/")
+        for part in parts[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[parts[-1]] = body
+
+    def tree(entries):
+        rows = []
+        for name, value in sorted(entries.items()):
+            if isinstance(value, dict):
+                rows.append(b"040000 tree " + tree(value) + b"\t" + name.encode() + b"\0")
+            else:
+                blob = source.git(store, ["hash-object", "-w", "--stdin"], data=value).strip()
+                rows.append(b"100644 blob " + blob + b"\t" + name.encode() + b"\0")
+        return source.git(store, ["mktree", "-z"], data=b"".join(rows)).strip()
+
+    return tree(nested).decode()
+
+
+
+def fixture(work, head_files, base_files):
     work.mkdir(mode=0o700)
     marker = {"version": 1, "id": uuid.uuid4().hex, "path": str(work), "uid": os.getuid()}
     (work / ".gate-work.json").write_text(json.dumps(marker), encoding="utf-8")
@@ -57,12 +98,8 @@ def fixture(work, head_files):
     }
     state = {"repository": "Tuinstra-DEV/gate", "repository_id": "42", "owner_id": "12", "pull_request": 7,
         "run_id": "900", "run_attempt": 2, "prepare_duration_ms": 0}
-    for side, files in [("base", BASE_FILES), ("head", head_files)]:
-        entries = []
-        for path, body in sorted(files.items()):
-            blob = source.git(store, ["hash-object", "-w", "--stdin"], data=body).strip()
-            entries.append(b"100644 blob " + blob + b"\t" + path.encode() + b"\0")
-        tree = source.git(store, ["mktree", "-z"], data=b"".join(entries)).decode().strip()
+    for side, files in [("base", base_files), ("head", head_files)]:
+        tree = fixture_tree(store, files)
         commit = source.git(store, ["commit-tree", tree], env=git_env, data=b"DEV-46 synthetic source\n").decode().strip()
         state[side + "_sha"], state[side + "_tree"] = commit, tree
         source.materialize(store, commit, work / side)
@@ -112,11 +149,10 @@ def configure_docker(output):
     source.run = local_run
 
 
-def run_case(name, head_files, output, backend, php):
+def run_case(name, expected, head_files, base_files, output, backend, php):
     work = output / name
-    expected = "pass" if name == "verified-absence" else name
     try:
-        fixture(work, head_files)
+        fixture(work, head_files, base_files)
         source.scan(work)
         report = json.loads((work / "output/pair/result.json").read_text(encoding="utf-8"))
         staging = evidence.package(work, CONTEXT)
@@ -137,7 +173,10 @@ def run_case(name, head_files, output, backend, php):
         return {"case": name, "ok": code == 0 and safe_bridge.get("ok") is True
                 and safe_bridge.get("outcome") == expected and report["outcome"] == expected,
                 "expected": expected, "scanner_outcome": report["outcome"],
-                "publisher_bridge": safe_bridge, "bridge_exit": code}
+                "publisher_bridge": safe_bridge, "bridge_exit": code,
+                "findings": len(report["findings"]), "coverage_scopes": [row["scope"] for row in report["coverage"]],
+                "raw_report_sha256": "sha256:" + hashlib.sha256((work / "output/pair/result.json").read_bytes()).hexdigest(),
+                "archive_sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()}
     except Exception as error:
         return {"case": name, "ok": False, "reason": safe_reason(error)}
 
@@ -146,6 +185,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--gate-backend", type=Path, required=True, help="Existing trusted Gate backend directory with vendor/autoload.php; never cloned.")
     parser.add_argument("--output-dir", type=Path, required=True, help="New dedicated directory for synthetic fixtures and results.json (must not exist).")
+    parser.add_argument("--case", action="append", choices=["pass", "blocked", "incomplete", "verified-absence", "existing-debt", "unsupported-yarn", "unknown-input"], help="Run selected synthetic scenarios; repeat to select more than one.")
     args = parser.parse_args()
     results = []
     output = None
@@ -159,14 +199,19 @@ def main():
         candidate.mkdir(mode=0o700, parents=True)
         output = candidate.resolve()
         configure_docker(output)
+        debt = dict(BASE_FILES, **{"legacy.php": b'<?php eval($_GET["legacy"]);\n'})
         cases = [
-            ("pass", dict(BASE_FILES)),
-            ("blocked", dict(BASE_FILES, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'})),
-            ("incomplete", dict(BASE_FILES, **{".gitleaksignore": b"untrusted-ignore-fixture\n"})),
-            ("verified-absence", {key: value for key, value in BASE_FILES.items() if key != "safe.php"}),
+            ("pass", "pass", dict(BASE_FILES), BASE_FILES),
+            ("blocked", "blocked", dict(BASE_FILES, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'}), BASE_FILES),
+            ("incomplete", "incomplete", dict(BASE_FILES, **{".gitleaksignore": b"untrusted-ignore-fixture\n"}), BASE_FILES),
+            ("verified-absence", "pass", {key: value for key, value in BASE_FILES.items() if key != "safe.php"}, BASE_FILES),
+            ("existing-debt", "pass", dict(debt, **{"README.md": b"Synthetic documentation update.\n"}), debt),
+            ("unsupported-yarn", "incomplete", dict(BASE_FILES, **{"yarn.lock": b"# Synthetic unsupported Yarn lock\n"}), BASE_FILES),
+            ("unknown-input", "incomplete", dict(BASE_FILES, **{"unclassified.payload": b"Synthetic unknown input.\n"}), BASE_FILES),
         ]
-        results = [run_case(name, files, output, backend, php) for name, files in cases]
-        summary = {"synthetic": True, "ok": all(result["ok"] for result in results), "results": results}
+        selected = [case for case in cases if not args.case or case[0] in args.case]
+        results = [run_case(name, expected, files, base, output, backend, php) for name, expected, files, base in selected]
+        summary = {"synthetic": True, "scanner_image": constants.IMAGE, "policy_digest": constants.POLICY_DIGEST, "bundle_digest": constants.BUNDLE_DIGEST, "ok": all(result["ok"] for result in results), "results": results}
     except Exception as error:
         summary = {"synthetic": True, "ok": False, "reason": safe_reason(error), "results": results}
     if output is not None:
