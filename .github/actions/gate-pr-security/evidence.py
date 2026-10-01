@@ -37,6 +37,13 @@ WORKFLOW_REF_MAX = 256
 APPROVED_WORKFLOW_PATH = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml"
 EVENT_NAMES = {"pull_request_target"}
 OUTCOME_EXIT = {"pass": 0, "blocked": 1, "incomplete": 2}
+OIDC_MAX_ISSUED_AGE_SECONDS = 300
+OIDC_MAX_FUTURE_IAT_SECONDS = 60
+OIDC_MAX_LIFETIME_SECONDS = 600
+PUBLICATION_MAX_WAIT_SECONDS = 180
+PUBLICATION_POLL_INTERVAL_SECONDS = 1.5
+PUBLICATION_MAX_ATTEMPTS = 120
+TRANSIENT_RETRY_LIMIT = 3
 TOOL_VERSIONS = {"semgrep": "1.136.0", "gitleaks": "8.30.1", "osv": "2.3.8", "gate-text": "1", "policy-exclusion": "1"}
 SCOPE_SCANNERS = {
     "secrets": "gitleaks",
@@ -604,7 +611,7 @@ def _decode_token_claims(token: str) -> dict[str, Any]:
     return claims
 
 
-def _check_claims(claims: dict[str, Any], state: dict[str, Any], context: dict[str, str]) -> None:
+def _check_claims(claims: dict[str, Any], state: dict[str, Any], context: dict[str, str]) -> tuple[int, int]:
     aud = claims.get("aud")
     if claims.get("iss") != "https://token.actions.githubusercontent.com" or aud != constants.AUDIENCE:
         raise EvidenceError("oidc_identity_mismatch")
@@ -624,6 +631,18 @@ def _check_claims(claims: dict[str, Any], state: dict[str, Any], context: dict[s
     for claim, value in expected.items():
         if claims.get(claim) != value:
             raise EvidenceError("oidc_identity_mismatch")
+
+    issued_at = claims.get("iat")
+    expires_at = claims.get("exp")
+    now = int(time.time())
+    if (type(issued_at) is not int or type(expires_at) is not int
+        or issued_at < 1 or expires_at <= issued_at
+        or issued_at > now + OIDC_MAX_FUTURE_IAT_SECONDS
+        or now - issued_at > OIDC_MAX_ISSUED_AGE_SECONDS
+        or expires_at <= now or expires_at - issued_at > OIDC_MAX_LIFETIME_SECONDS):
+        raise EvidenceError("oidc_token_time_invalid")
+
+    return issued_at, expires_at
 
 
 def _read_http_body(response: Any) -> bytes:
@@ -656,7 +675,7 @@ def _fetch_oidc_token(environment: dict[str, str], opener: Any | None = None) ->
     return value
 
 
-def _post_receipt(body: bytes, token: str, opener: Any) -> None:
+def _post_receipt(body: bytes, token: str, opener: Any, issued_at: int, expires_at: int) -> None:
     parsed = urlsplit(constants.ENDPOINT)
     if parsed.scheme != "https" or parsed.netloc != "gate.tuinstra.dev" or parsed.path != "/integrations/github/pr-security/receipts" or parsed.query or parsed.fragment:
         raise EvidenceError("publisher_endpoint_invalid")
@@ -666,38 +685,82 @@ def _post_receipt(body: bytes, token: str, opener: Any) -> None:
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    for attempt in range(3):
+    server_deadline = min(expires_at, issued_at + OIDC_MAX_ISSUED_AGE_SECONDS)
+    token_remaining = server_deadline - time.time()
+    if token_remaining <= 0:
+        raise EvidenceError("oidc_token_time_invalid")
+    deadline = time.monotonic() + min(PUBLICATION_MAX_WAIT_SECONDS, token_remaining)
+    receipt_id: str | None = None
+    consecutive_transient_errors = 0
+
+    def remaining_time() -> float:
+        now = time.time()
+        if expires_at <= now or issued_at + OIDC_MAX_ISSUED_AGE_SECONDS <= now:
+            raise EvidenceError("oidc_token_time_invalid")
+        return min(deadline - time.monotonic(), expires_at - now, issued_at + OIDC_MAX_ISSUED_AGE_SECONDS - now)
+
+    def retry_transient() -> None:
+        nonlocal consecutive_transient_errors
+        consecutive_transient_errors += 1
+        if consecutive_transient_errors >= TRANSIENT_RETRY_LIMIT:
+            raise EvidenceError("publisher_temporarily_unavailable", 1)
+        remaining = remaining_time()
+        if remaining <= 0:
+            raise EvidenceError("publication_admission_timeout", 1)
+        time.sleep(min(0.15 * consecutive_transient_errors, remaining))
+
+    for _ in range(PUBLICATION_MAX_ATTEMPTS):
+        remaining = remaining_time()
+        if remaining <= 0:
+            raise EvidenceError("publication_admission_timeout", 1)
+        request_timeout = min(15.0, remaining)
+        if request_timeout <= 0:
+            raise EvidenceError("publication_admission_timeout", 1)
+
         try:
-            with opener.open(request, timeout=15) as response:
+            with opener.open(request, timeout=request_timeout) as response:
                 status = response.status
                 response_body = _read_http_body(response)
-            if status == 202:
-                receipt = _decode_json(response_body, "receipt_response_invalid")
-                receipt_id = receipt.get("receiptId")
-                if receipt.get("status") != "accepted" or not isinstance(receipt_id, str) or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", receipt_id) is None:
-                    raise EvidenceError("receipt_response_invalid")
-                return
-            if status in {408, 425, 429} or 500 <= status <= 599:
-                if attempt < 2:
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                raise EvidenceError("publisher_temporarily_unavailable", 1)
-            raise EvidenceError("receipt_rejected")
         except HTTPError as error:
             status = error.code
             error.close()
             if status in {408, 425, 429} or 500 <= status <= 599:
-                if attempt < 2:
-                    time.sleep(0.15 * (attempt + 1))
-                    continue
-                raise EvidenceError("publisher_temporarily_unavailable", 1) from None
+                retry_transient()
+                continue
             raise EvidenceError("receipt_rejected") from None
         except (URLError, TimeoutError, OSError):
-            if attempt < 2:
-                time.sleep(0.15 * (attempt + 1))
+            retry_transient()
+            continue
+
+        if status != 202:
+            if status in {408, 425, 429} or 500 <= status <= 599:
+                retry_transient()
                 continue
-            raise EvidenceError("publisher_temporarily_unavailable", 1) from None
-    raise EvidenceError("publisher_temporarily_unavailable", 1)
+            raise EvidenceError("receipt_rejected")
+
+        receipt = _decode_json(response_body, "receipt_response_invalid")
+        current_receipt_id = receipt.get("receiptId")
+        admission_ready = receipt.get("admissionReady")
+        if (receipt.get("status") != "accepted"
+            or not isinstance(current_receipt_id, str)
+            or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", current_receipt_id) is None
+            or type(admission_ready) is not bool):
+            raise EvidenceError("receipt_response_invalid")
+        if receipt_id is not None and current_receipt_id != receipt_id:
+            raise EvidenceError("receipt_identity_changed")
+        receipt_id = current_receipt_id
+        consecutive_transient_errors = 0
+        if admission_ready:
+            if remaining_time() <= 0:
+                raise EvidenceError("publication_admission_timeout", 1)
+            return
+
+        remaining = remaining_time()
+        if remaining <= 0:
+            raise EvidenceError("publication_admission_timeout", 1)
+        time.sleep(min(PUBLICATION_POLL_INTERVAL_SECONDS, remaining))
+
+    raise EvidenceError("publication_admission_timeout", 1)
 
 
 def submit(work_dir: str | Path, environment: dict[str, str] | None = None) -> None:
@@ -721,10 +784,6 @@ def submit(work_dir: str | Path, environment: dict[str, str] | None = None) -> N
         raise EvidenceError("staging_evidence_changed")
     artifact_id = _text(environment.get("GATE_ARTIFACT_ID"), POSITIVE_RE, "artifact_identity_invalid")
     artifact_digest = _text(environment.get("GATE_ARTIFACT_DIGEST"), DIGEST_RE, "artifact_identity_invalid")
-    opener = build_opener(_NoRedirect())
-    token = _fetch_oidc_token(environment, opener)
-    claims = _decode_token_claims(token)
-    _check_claims(claims, state, context)
     body = json.dumps({
         "repositoryId": state["repository_id"],
         "pullRequest": state["pull_request"],
@@ -733,7 +792,11 @@ def submit(work_dir: str | Path, environment: dict[str, str] | None = None) -> N
         "artifactId": artifact_id,
         "artifactDigest": artifact_digest,
     }, separators=(",", ":")).encode("utf-8")
-    _post_receipt(body, token, opener)
+    opener = build_opener(_NoRedirect())
+    token = _fetch_oidc_token(environment, opener)
+    claims = _decode_token_claims(token)
+    issued_at, expires_at = _check_claims(claims, state, context)
+    _post_receipt(body, token, opener, issued_at, expires_at)
 
 
 def main(argv: list[str] | None = None) -> int:

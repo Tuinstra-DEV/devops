@@ -119,11 +119,23 @@ repository, event and immutable workflow claims before sending the six-field
 receipt to the fixed HTTPS endpoint. Gate verifies the signature independently.
 
 A valid scanner exit `0`, `1` or `2` corresponds to pass, blocked or incomplete
-semantic evidence. After successful upload and durable 202 receipt, the producer
-job finishes successfully for all three: Gate interprets evidence once that job
-has completed. It does not wait on its own check. Scanner crashes, malformed or
-missing reports, stale identities, upload failure or exhausted receipt retries
-fail the producer; they never manufacture a clean report.
+semantic evidence. After upload, the producer repeats the same authenticated
+receipt until `202` includes the same receipt UUID and strict boolean
+`admissionReady: true`. That acknowledgement means the worker verified the
+current execution identity and confirmed its initial nonpassing App check under
+the current receipt/generation fence. Mere persistence is not acknowledgement.
+The producer may then finish successfully for all three outcomes; only after
+run/jobs complete does Gate inspect the artifact and publish the final verdict.
+It never waits for its own final security verdict.
+
+Polling is limited to 180 seconds, 120 attempts and the OIDC token's remaining
+expiry/accepted-age window, with finite request timeouts and three consecutive
+transient retries. Missing/nonboolean acknowledgement, a changed receipt UUID,
+expiry, outage or timeout fail the producer. Scanner crashes, malformed or
+missing reports, stale identities and upload failures also fail it; no clean
+report is manufactured. App check plus producer enforcement still requires the
+live protected-merge and same-name workflow collision tests; acknowledgement
+alone does not prove that an older same-head success cannot be reused.
 
 ## Operations and cost
 
