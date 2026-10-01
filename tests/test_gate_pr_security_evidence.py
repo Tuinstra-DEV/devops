@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import sys
 import unittest
@@ -113,6 +115,50 @@ def unsupported_yarn_report(report: dict) -> dict:
     return report
 
 
+def git_exclusion_source(work: Path, placeholder: bytes = b"") -> tuple[str, str, str]:
+    """Create synthetic bare objects; never clone or check out application code."""
+    store = work / "objects.git"
+    subprocess.run(["git", "init", "--bare", "--template=", str(store)], check=True, capture_output=True)
+
+    def git(*args: str, stdin: bytes = b"") -> str:
+        env = {
+            "GIT_AUTHOR_NAME": "Synthetic Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+            "GIT_COMMITTER_NAME": "Synthetic Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+            "GIT_AUTHOR_DATE": "2001-01-01T00:00:00+0000", "GIT_COMMITTER_DATE": "2001-01-01T00:00:00+0000",
+        }
+        process = subprocess.run(["git", "--git-dir", str(store), *args], input=stdin,
+                                 check=True, capture_output=True, env=env)
+        return process.stdout.decode().strip()
+
+    def tree(entries: list[tuple[str, str, str, str]]) -> str:
+        data = "".join(f"{mode} {kind} {oid}\t{name}\n" for mode, kind, oid, name in entries)
+        return git("mktree", stdin=data.encode())
+
+    placeholder_blob = git("hash-object", "-w", "--stdin", stdin=placeholder)
+    php_blob = git("hash-object", "-w", "--stdin", stdin=b"<?php echo 'synthetic';\n")
+    controller = tree([("100644", "blob", placeholder_blob, ".placeholder")])
+    src = tree([("040000", "tree", controller, "Controller")])
+    backend = tree([("040000", "tree", src, "src")])
+    source = tree([("100644", "blob", php_blob, "app.php")])
+    root = tree([("040000", "tree", backend, "backend"), ("040000", "tree", source, "src")])
+    base = git("commit-tree", root, "-m", "synthetic base")
+    head = git("commit-tree", root, "-p", base, "-m", "synthetic head")
+    return base, head, root
+
+
+def exclusion_report(work: Path, placeholder: bytes = b"") -> tuple[dict, bytes]:
+    _, report = setup_work(work, "pair-pass.json")
+    base, head, tree = git_exclusion_source(work, placeholder)
+    state_data = json.loads((work / "state.json").read_text())
+    for container in (state_data, report):
+        container.update({"base_sha": base, "head_sha": head, "base_tree": tree, "head_tree": tree})
+    (work / "state.json").write_text(json.dumps(state_data), encoding="utf-8")
+    report["coverage"].append(coverage_row("unknown-input", "policy-exclusion", "1"))
+    report["inputs"].append(input_row("unknown-input", "backend/src/Controller/.placeholder", ["approved_exclusion"]))
+    raw = write_report(work, report)
+    return report, raw
+
+
 class FakeResponse:
     def __init__(self, status, body):
         self.status = status
@@ -179,6 +225,8 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
                 self.assertEqual(sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()), ["evidence.json", "reports/result.json"])
                 outer = json.loads((staging / "evidence.json").read_bytes())
+                self.assertEqual(outer["schema_version"], "1.1")
+                self.assertEqual(outer["exclusions"], [])
                 self.assertEqual(outer["coverage"], report["coverage"])
                 self.assertEqual(outer["findings"], report["findings"])
                 self.assertEqual(outer["outcome"], report["outcome"])
@@ -277,9 +325,51 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
             report["coverage"].append(coverage_row("opaque-input", "policy-exclusion", "1"))
             report["inputs"].append(input_row("opaque-input", "assets/model.bin", ["approved_exclusion"]))
             write_report(work, report)
-            with self.assertRaisesRegex(evidence.EvidenceError, "outcome_input_mismatch"):
+            with self.assertRaisesRegex(evidence.EvidenceError, "unregistered_exclusion"):
                 evidence.package(work, environment())
             self.assertFalse((work / "staging").exists())
+
+    def test_attests_exact_policy_exclusion_from_both_git_source_trees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            report, raw = exclusion_report(work)
+            staging = evidence.package(work, environment())
+            outer = json.loads((staging / "evidence.json").read_bytes())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            self.assertEqual(json.loads(raw), report)
+            self.assertEqual(outer["schema_version"], "1.1")
+            self.assertEqual(outer["exclusions"], [
+                {"scope": "unknown-input", "side": side, "path": "backend/src/Controller/.placeholder",
+                 "source_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                 "reason_id": "approved_exclusion"}
+                for side in ("base", "head")
+            ])
+            self.assertEqual(outer["coverage"][-1]["scanner"], "policy-exclusion")
+
+    def test_exclusion_attestation_fails_closed_on_unbound_sources_and_reasons(self):
+        for case in ("wrong_hash", "missing_git", "wrong_tree", "unknown_path", "duplicate", "stripped_reason"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                report, _ = exclusion_report(work, b"not-empty" if case == "wrong_hash" else b"")
+                if case == "missing_git":
+                    shutil.rmtree(work / "objects.git")
+                elif case == "wrong_tree":
+                    state_data = json.loads((work / "state.json").read_text())
+                    report["head_tree"] = state_data["head_tree"] = "e" * 40
+                    (work / "state.json").write_text(json.dumps(state_data), encoding="utf-8")
+                elif case == "unknown_path":
+                    for side in ("base", "head"):
+                        report["inputs"][1][side]["discovered"] = ["backend/src/Controller/unlisted.placeholder"]
+                        report["inputs"][1][side]["scanned"] = ["backend/src/Controller/unlisted.placeholder"]
+                elif case == "duplicate":
+                    report["inputs"][1]["head"]["discovered"].append("backend/src/Controller/.placeholder")
+                    report["inputs"][1]["head"]["scanned"].append("backend/src/Controller/.placeholder")
+                elif case == "stripped_reason":
+                    report["inputs"][1]["head"]["reasons"] = []
+                write_report(work, report)
+                with self.assertRaises(evidence.EvidenceError):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
 
     def test_rejects_exclusion_laundered_as_real_scanner_coverage(self):
         cases = (
@@ -489,6 +579,27 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 "repositoryId": "100100", "pullRequest": 73, "baseSha": "a" * 40,
                 "headSha": "b" * 40, "artifactId": artifact_id, "artifactDigest": artifact_digest,
             })
+
+    def test_submit_rechecks_exclusion_git_objects_before_oidc_or_http(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            exclusion_report(work)
+            staging = evidence.package(work, environment())
+            original_manifest = (staging / "evidence.json").read_bytes()
+            original_report = (staging / "reports/result.json").read_bytes()
+            shutil.rmtree(work / "objects.git")
+            env = environment()
+            env.update({
+                "GATE_ARTIFACT_ID": "8675309", "GATE_ARTIFACT_DIGEST": "sha256:" + "1" * 64,
+                "ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/run",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-request-token",
+            })
+            with patch.object(evidence, "build_opener", side_effect=AssertionError("OIDC or HTTP reached")) as opener:
+                with self.assertRaisesRegex(evidence.EvidenceError, "exclusion_source_unavailable"):
+                    evidence.submit(work, env)
+            opener.assert_not_called()
+            self.assertEqual((staging / "evidence.json").read_bytes(), original_manifest)
+            self.assertEqual((staging / "reports/result.json").read_bytes(), original_report)
 
     def test_submit_rejects_stale_attempt_claim_and_wrong_oidc_origin(self):
         for claim_changes, url in (({"run_attempt": "1"}, "https://pipelines.actions.githubusercontent.com/run"), (None, "https://attacker.invalid/token")):

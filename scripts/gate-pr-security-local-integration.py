@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run offline, synthetic-source DEV-49 producer/publisher integration cases.
+"""Run offline, synthetic-source Gate producer/publisher integration cases.
 
 Requires Python 3.10+, Git, PHP with ZIP and the existing Gate backend's installed
 Composer dependencies, and a local Docker Unix socket with the exact reviewed
@@ -34,6 +34,7 @@ CONTEXT = {
     "GATE_EVENT_NAME": "pull_request_target", "GATE_EXECUTION_REF": "refs/heads/main",
     "GATE_EXECUTION_SHA": "d" * 40,
 }
+EXCLUSION_CASES = {"approved-exclusions", "changed-exclusion", "removed-exclusions", "blocked-with-exclusions"}
 BASE_FILES = {
     "safe.php": b'<?php $stmt=$PDO->prepare("SELECT name FROM users WHERE id = ?"); $stmt->execute([$id]);\n',
     "safe.js": b'export function display(req) { return String(req.query.value); }\n',
@@ -160,12 +161,17 @@ def run_case(name, expected, head_files, base_files, output, backend, php):
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zipped:
             for entry in ["evidence.json", "reports/result.json"]:
                 zipped.write(staging / entry, entry)
-        code, raw = source.run([php, str(BRIDGE), str(backend), str(work / "state.json"), str(archive), expected],
+        profile = "exclusions" if name in EXCLUSION_CASES else "ordinary"
+        code, raw = source.run([php, str(BRIDGE), str(backend), str(work / "state.json"), str(archive), expected, profile],
                                max_bytes=4096)
         bridge = json.loads(raw)
         source.require(isinstance(bridge, dict), "invalid_bridge_result")
         if bridge.get("ok") is True and bridge.get("outcome") in ("pass", "blocked", "incomplete"):
             safe_bridge = {"ok": True, "outcome": bridge["outcome"]}
+            for key in ("scannedInputCount", "excludedInputCount"):
+                value = bridge.get(key)
+                source.require(type(value) is int and value >= 0, "invalid_bridge_counts")
+                safe_bridge[key] = value
         else:
             reason = bridge.get("reason", "invalid_bridge_result")
             source.require(isinstance(reason, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason), "invalid_bridge_result")
@@ -176,7 +182,9 @@ def run_case(name, expected, head_files, base_files, output, backend, php):
                 "publisher_bridge": safe_bridge, "bridge_exit": code,
                 "findings": len(report["findings"]), "coverage_scopes": [row["scope"] for row in report["coverage"]],
                 "raw_report_sha256": "sha256:" + hashlib.sha256((work / "output/pair/result.json").read_bytes()).hexdigest(),
-                "archive_sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()}
+                "archive_sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "assurance_version": json.loads((staging / "evidence.json").read_bytes())["schema_version"],
+                "exclusion_records": len(json.loads((staging / "evidence.json").read_bytes())["exclusions"])}
     except Exception as error:
         return {"case": name, "ok": False, "reason": safe_reason(error)}
 
@@ -185,7 +193,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--gate-backend", type=Path, required=True, help="Existing trusted Gate backend directory with vendor/autoload.php; never cloned.")
     parser.add_argument("--output-dir", type=Path, required=True, help="New dedicated directory for synthetic fixtures and results.json (must not exist).")
-    parser.add_argument("--case", action="append", choices=["pass", "blocked", "incomplete", "verified-absence", "existing-debt", "unsupported-yarn", "unknown-input"], help="Run selected synthetic scenarios; repeat to select more than one.")
+    parser.add_argument("--case", action="append", choices=["pass", "blocked", "incomplete", "verified-absence", "existing-debt", "unsupported-yarn", "unknown-input", *sorted(EXCLUSION_CASES)], help="Run selected synthetic scenarios; repeat to select more than one.")
     args = parser.parse_args()
     results = []
     output = None
@@ -200,6 +208,11 @@ def main():
         output = candidate.resolve()
         configure_docker(output)
         debt = dict(BASE_FILES, **{"legacy.php": b'<?php eval($_GET["legacy"]);\n'})
+        excluded = dict(BASE_FILES, **{
+            "backend/src/Controller/.placeholder": b"",
+            "frontend/public/favicon-16x16.png": (backend.parent / "frontend/public/favicon-16x16.png").read_bytes(),
+            "scripts/test-php-runtime.sh": (backend.parent / "scripts/test-php-runtime.sh").read_bytes(),
+        })
         cases = [
             ("pass", "pass", dict(BASE_FILES), BASE_FILES),
             ("blocked", "blocked", dict(BASE_FILES, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'}), BASE_FILES),
@@ -208,6 +221,10 @@ def main():
             ("existing-debt", "pass", dict(debt, **{"README.md": b"Synthetic documentation update.\n"}), debt),
             ("unsupported-yarn", "incomplete", dict(BASE_FILES, **{"yarn.lock": b"# Synthetic unsupported Yarn lock\n"}), BASE_FILES),
             ("unknown-input", "incomplete", dict(BASE_FILES, **{"unclassified.payload": b"Synthetic unknown input.\n"}), BASE_FILES),
+            ("approved-exclusions", "pass", dict(excluded), excluded),
+            ("changed-exclusion", "incomplete", dict(excluded, **{"frontend/public/favicon-16x16.png": excluded["frontend/public/favicon-16x16.png"] + b"changed"}), excluded),
+            ("removed-exclusions", "pass", dict(BASE_FILES), excluded),
+            ("blocked-with-exclusions", "blocked", dict(excluded, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'}), excluded),
         ]
         selected = [case for case in cases if not args.case or case[0] in args.case]
         results = [run_case(name, expected, files, base, output, backend, php) for name, expected, files, base in selected]

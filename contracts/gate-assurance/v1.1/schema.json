@@ -1,0 +1,1004 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gate PR security assurance 1.1 (structural validation only)",
+  "$comment": "Raw scanner report remains v1 and byte-identical. Exclusions require independent server-owned policy and authentic immutable producer verification.",
+  "$ref": "#/$defs/pr_security_evidence",
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "runtime": {
+          "enum": [
+            "php",
+            "browser-js",
+            "node",
+            "python",
+            "shell",
+            "capacitor-ios",
+            "capacitor-android",
+            "flutter-ios",
+            "flutter-android",
+            "swift-extension",
+            "watchos"
+          ]
+        },
+        "release_unit": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "applicability": {
+          "enum": [
+            "always",
+            "when-deployed"
+          ]
+        },
+        "symbols": {
+          "enum": [
+            "source",
+            "sourcemaps",
+            "native-symbols",
+            "dart-and-native-symbols"
+          ]
+        },
+        "owner_project": {
+          "enum": [
+            "IN",
+            "TRAC",
+            "WODIQ",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "runtime",
+        "release_unit",
+        "applicability",
+        "symbols",
+        "owner_project"
+      ]
+    },
+    "repository_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "repository_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "owner_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "repository",
+        "repository_id",
+        "owner_id"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workflow_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "workflow_sha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      },
+      "required": [
+        "id",
+        "attempt",
+        "workflow_ref",
+        "workflow_sha"
+      ]
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "run_id",
+        "run_attempt",
+        "artifact_id",
+        "sha256"
+      ]
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "dist": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "name",
+              "digest"
+            ]
+          },
+          "minItems": 1
+        },
+        "provenance": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "native_builds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "platform": {
+                "enum": [
+                  "ios",
+                  "android",
+                  "watchos"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "app_version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "build_number": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "architecture": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "artifact_digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "symbols": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "dsym",
+                        "dart",
+                        "proguard",
+                        "native-debug"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "debug_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "digest",
+                    "debug_id"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "platform",
+              "target",
+              "app_version",
+              "build_number",
+              "architecture",
+              "artifact_digest",
+              "symbols"
+            ]
+          }
+        }
+      },
+      "required": [
+        "commit",
+        "release",
+        "dist",
+        "artifacts",
+        "provenance",
+        "native_builds"
+      ]
+    },
+    "integration_fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sdk_initialization": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "routing": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "privacy_filters": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "deployment_symbols": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "sdk_initialization",
+        "routing",
+        "privacy_filters",
+        "deployment_symbols"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scanner": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "scope": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "rules_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "advisory_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_result": {
+          "enum": [
+            "complete",
+            "failed",
+            "unsupported"
+          ]
+        },
+        "head_result": {
+          "enum": [
+            "complete",
+            "failed",
+            "unsupported"
+          ]
+        }
+      },
+      "required": [
+        "scanner",
+        "version",
+        "scope",
+        "rules_digest",
+        "advisory_digest",
+        "base_result",
+        "head_result"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "category": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "change": {
+          "enum": [
+            "new",
+            "worsened",
+            "existing",
+            "resolved"
+          ]
+        },
+        "base_severity": {
+          "enum": [
+            null,
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "head_severity": {
+          "enum": [
+            null,
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "exception_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "fingerprint",
+        "rule_id",
+        "category",
+        "path",
+        "change",
+        "base_severity",
+        "head_severity",
+        "exception_id"
+      ]
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "policy_version": {
+          "const": "gate-assurance-1"
+        },
+        "document_type": {
+          "const": "inventory"
+        },
+        "reviewed_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "repository": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+              },
+              "owner_project": {
+                "enum": [
+                  "DEV",
+                  "IN",
+                  "TRAC",
+                  "WODIQ",
+                  "none"
+                ]
+              },
+              "pr_security_required": {
+                "const": true
+              },
+              "observability_required": {
+                "type": "boolean"
+              },
+              "exclusion_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "security_profiles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "minItems": 1
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/component"
+                },
+                "minItems": 0
+              },
+              "rollout": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pr_security": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "stage": {
+                        "enum": [
+                          "planned",
+                          "pilot",
+                          "verified",
+                          "enforced"
+                        ]
+                      },
+                      "evidence_refs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "minItems": 0
+                      }
+                    },
+                    "required": [
+                      "stage",
+                      "evidence_refs"
+                    ]
+                  },
+                  "observability": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "stage": {
+                            "enum": [
+                              "planned",
+                              "pilot",
+                              "verified",
+                              "enforced"
+                            ]
+                          },
+                          "evidence_refs": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "minItems": 0
+                          }
+                        },
+                        "required": [
+                          "stage",
+                          "evidence_refs"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "pr_security",
+                  "observability"
+                ]
+              }
+            },
+            "required": [
+              "repository",
+              "owner_project",
+              "pr_security_required",
+              "observability_required",
+              "exclusion_reason",
+              "security_profiles",
+              "components",
+              "rollout"
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "policy_version",
+        "document_type",
+        "reviewed_on",
+        "repositories"
+      ]
+    },
+    "runtime_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "policy_version": {
+          "const": "gate-assurance-1"
+        },
+        "document_type": {
+          "const": "runtime-manifest"
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/component"
+          },
+          "minItems": 1
+        },
+        "release_binding": {
+          "enum": [
+            "exact-commit-artifacts",
+            "native-version-build-ci-map",
+            "mixed"
+          ]
+        },
+        "integration_evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "fingerprint": {
+                "$ref": "#/$defs/integration_fingerprint"
+              },
+              "evidence": {
+                "$ref": "#/$defs/artifact_ref"
+              }
+            },
+            "required": [
+              "component",
+              "fingerprint",
+              "evidence"
+            ]
+          },
+          "minItems": 0
+        },
+        "production_configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "pending",
+                "verified"
+              ]
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/artifact_ref"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "evidence"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "policy_version",
+        "document_type",
+        "repository",
+        "components",
+        "release_binding",
+        "integration_evidence",
+        "production_configuration"
+      ]
+    },
+    "pr_security_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "policy_version": {
+          "const": "gate-assurance-1"
+        },
+        "document_type": {
+          "const": "pr-security-evidence"
+        },
+        "evidence_mode": {
+          "enum": [
+            "fixture",
+            "live"
+          ]
+        },
+        "repository": {
+          "$ref": "#/$defs/repository_identity"
+        },
+        "context": {
+          "enum": [
+            "pull_request",
+            "merge_group"
+          ]
+        },
+        "pull_requests": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "run": {
+          "$ref": "#/$defs/run"
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "scanner_image": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"
+        },
+        "dataset_manifest_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/coverage"
+          },
+          "minItems": 1
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          },
+          "minItems": 0
+        },
+        "payload_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^reports/[a-zA-Z0-9_-]+\\.json$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ]
+          },
+          "minItems": 1
+        },
+        "outcome": {
+          "enum": [
+            "pass",
+            "blocked",
+            "incomplete"
+          ]
+        },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "scope": {
+                "enum": [
+                  "opaque-input",
+                  "unknown-input",
+                  "embedded-code"
+                ]
+              },
+              "side": {
+                "enum": [
+                  "base",
+                  "head"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[A-Za-z0-9._@+/-]+$"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "reason_id": {
+                "const": "approved_exclusion"
+              }
+            },
+            "required": [
+              "scope",
+              "side",
+              "path",
+              "source_sha256",
+              "reason_id"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "policy_version",
+        "document_type",
+        "evidence_mode",
+        "repository",
+        "context",
+        "pull_requests",
+        "base_sha",
+        "head_sha",
+        "run",
+        "policy_digest",
+        "scanner_image",
+        "dataset_manifest_digest",
+        "coverage",
+        "findings",
+        "payload_files",
+        "outcome",
+        "exclusions"
+      ]
+    },
+    "observability_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "policy_version": {
+          "const": "gate-assurance-1"
+        },
+        "document_type": {
+          "const": "observability-evidence"
+        },
+        "evidence_mode": {
+          "enum": [
+            "fixture",
+            "live"
+          ]
+        },
+        "repository": {
+          "$ref": "#/$defs/repository_identity"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "environment": {
+          "enum": [
+            "verification"
+          ]
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "integration_fingerprint": {
+          "$ref": "#/$defs/integration_fingerprint"
+        },
+        "sentry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "installation_uuid": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "project_id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "event_id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            }
+          },
+          "required": [
+            "installation_uuid",
+            "project_id",
+            "event_id"
+          ]
+        },
+        "heal_case_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "assertions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "correct_case_binding": {
+              "type": "boolean"
+            },
+            "source_and_frames": {
+              "type": "boolean"
+            },
+            "symbols": {
+              "type": "boolean"
+            },
+            "redaction": {
+              "type": "boolean"
+            },
+            "deduplication": {
+              "type": "boolean"
+            },
+            "retry_binding": {
+              "type": "boolean"
+            },
+            "invalid_webhook_rejected": {
+              "type": "boolean"
+            },
+            "wrong_project_rejected": {
+              "type": "boolean"
+            },
+            "conflict_review": {
+              "type": "boolean"
+            },
+            "missing_dsn_nonblocking": {
+              "type": "boolean"
+            },
+            "network_failure_nonblocking": {
+              "type": "boolean"
+            },
+            "bounded_offline_behavior": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "correct_case_binding",
+            "source_and_frames",
+            "symbols",
+            "redaction",
+            "deduplication",
+            "retry_binding",
+            "invalid_webhook_rejected",
+            "wrong_project_rejected",
+            "conflict_review",
+            "missing_dsn_nonblocking",
+            "network_failure_nonblocking",
+            "bounded_offline_behavior"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "outcome": {
+          "enum": [
+            "verified",
+            "incomplete"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "policy_version",
+        "document_type",
+        "evidence_mode",
+        "repository",
+        "component",
+        "environment",
+        "release",
+        "integration_fingerprint",
+        "sentry",
+        "heal_case_id",
+        "assertions",
+        "evidence",
+        "outcome"
+      ]
+    }
+  }
+}
