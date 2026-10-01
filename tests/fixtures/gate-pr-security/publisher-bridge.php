@@ -39,9 +39,11 @@ function localBytes(string $path, int $limit): string
 }
 
 try {
-    if (5 !== $argc || !in_array($argv[4], ['pass', 'blocked', 'incomplete'], true)) {
+    if (!in_array($argc, [5, 6], true) || !in_array($argv[4], ['pass', 'blocked', 'incomplete'], true)
+        || (6 === $argc && !in_array($argv[5], ['ordinary', 'exclusions'], true))) {
         emit(['ok' => false, 'reason' => 'bridge_invalid_arguments'], 2);
     }
+    $profile = 6 === $argc ? $argv[5] : 'ordinary';
     $backend = realpath($argv[1]);
     if (false === $backend || !is_file($backend.'/vendor/autoload.php')) {
         emit(['ok' => false, 'reason' => 'bridge_backend_unavailable'], 2);
@@ -67,11 +69,32 @@ try {
     $bundle = 'sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24';
     $policy = 'sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6';
     $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2';
+    // This is the trusted local Gate policy, pinned by the published scanner's
+    // exact digest. ZIP contents never select the server-side exclusion allowlist.
+    $policyBytes = localBytes($backend.'/ci-scanner/policy.json', 262_144);
+    if ('sha256:'.hash('sha256', $policyBytes) !== $policy) {
+        throw new PublisherFailure('bridge_policy_mismatch');
+    }
+    $policyData = json_decode($policyBytes, true, 128, JSON_THROW_ON_ERROR);
+    if (!is_array($policyData) || !is_array($policyData['excluded_inputs'] ?? null)
+        || !array_is_list($policyData['excluded_inputs'])) {
+        throw new PublisherFailure('bridge_policy_invalid');
+    }
+    $excludedInputs = [];
+    foreach ($policyData['excluded_inputs'] as $excluded) {
+        if (!is_array($excluded) || array_keys($excluded) !== ['scope', 'path', 'sha256', 'reason']) {
+            throw new PublisherFailure('bridge_policy_invalid');
+        }
+        $excludedInputs[] = ['scope' => $excluded['scope'], 'path' => $excluded['path'], 'sha256' => $excluded['sha256']];
+    }
+    if ('ordinary' === $profile) {
+        $excludedInputs = [];
+    }
     $sha = str_repeat('a', 40);
     $workflow = 'Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@'.$sha;
     // Fixed synthetic-fixture profile; never derive required coverage from the ZIP.
     $coverage = [];
-    foreach ([
+    $requiredCoverage = [
         ['osv', '2.3.8', 'composer', $bundle],
         ['semgrep', '1.136.0', 'javascript-typescript', null],
         ['osv', '2.3.8', 'npm', $bundle],
@@ -86,8 +109,16 @@ try {
         ['gate-text', '1', 'template', null],
         ['gate-text', '1', 'php-framework', null],
         ['gate-text', '1', 'build-configuration', null],
-
-    ] as [$scanner, $version, $scope, $advisory]) {
+    ];
+    if ('exclusions' === $profile) {
+        $requiredCoverage = [
+            ...$requiredCoverage,
+            ['policy-exclusion', '1', 'opaque-input', null],
+            ['policy-exclusion', '1', 'unknown-input', null],
+            ['policy-exclusion', '1', 'embedded-code', null],
+        ];
+    }
+    foreach ($requiredCoverage as [$scanner, $version, $scope, $advisory]) {
         $coverage[] = ['scanner' => $scanner, 'version' => $version, 'scope' => $scope,
             'rules_digest' => $bundle, 'advisory_digest' => $advisory];
     }
@@ -96,6 +127,7 @@ try {
         workflowRef: $workflow, workflowSha: $sha, audience: 'https://gate.tuinstra.dev/pr-security',
         policyDigest: $policy, scannerImage: $image, bundleDigest: $bundle, datasetManifestDigest: $bundle,
         requiredJobs: ['gate-pr-security'], coverage: $coverage, eventName: 'pull_request_target',
+        assuranceVersion: '1.1', excludedInputs: $excludedInputs,
     );
     $identity = new ActionsIdentity(
         repositoryId: '42', ownerId: '12', runId: '900', runAttempt: 2, checkRunId: '80',
@@ -111,7 +143,9 @@ try {
         // Preserve the verifier's known verified_absence behavior unchanged.
         throw new PublisherFailure('bridge_expected_'.$argv[4].'_got_'.$verified->outcome);
     }
-    emit(['ok' => true, 'outcome' => $verified->outcome], 0);
+    emit(['ok' => true, 'outcome' => $verified->outcome,
+        'scannedInputCount' => $verified->scannedInputCount,
+        'excludedInputCount' => $verified->excludedInputCount], 0);
 } catch (PublisherFailure $failure) {
     $reason = 1 === preg_match('/^[a-z][a-z0-9_]{0,95}$/D', $failure->reason) ? $failure->reason : 'bridge_verification_failed';
     emit(['ok' => false, 'reason' => $reason], 1);

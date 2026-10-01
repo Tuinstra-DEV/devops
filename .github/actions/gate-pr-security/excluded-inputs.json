@@ -1,0 +1,90 @@
+{
+  "excluded_inputs": [
+    {
+      "path": "backend/tests/Fixtures/pr-security-artifacts/compression-ratio.zip",
+      "scope": "opaque-input",
+      "sha256": "sha256:c432b1730d26063fb248745e78bd6d0842ac3be0dfa703d05c68f7a66c2e776a"
+    },
+    {
+      "path": "backend/tests/Fixtures/pr-security-artifacts/duplicate-entry.zip",
+      "scope": "opaque-input",
+      "sha256": "sha256:30131cd740add6fe3251263b2e077e944b0cbbd8b6a61fe79ec5f350e0834ae3"
+    },
+    {
+      "path": "backend/tests/Fixtures/pr-security-artifacts/symlink-entry.zip",
+      "scope": "opaque-input",
+      "sha256": "sha256:f8bd72dfb26b38c08bcd931f636d06ad8ead74d0b73f42ca095c5f1a47ce2903"
+    },
+    {
+      "path": "frontend/public/apple-touch-icon.png",
+      "scope": "opaque-input",
+      "sha256": "sha256:35ded3ff269b769a834052e409711344b2db4ae688febc8861450f1444a18140"
+    },
+    {
+      "path": "frontend/public/favicon-16x16.png",
+      "scope": "opaque-input",
+      "sha256": "sha256:ce85477a8b2d738d44a3b1bf6b97fc15201b59bdfe11f31389565d283bcf81d9"
+    },
+    {
+      "path": "frontend/public/favicon-32x32.png",
+      "scope": "opaque-input",
+      "sha256": "sha256:ed7097dccc5994f9b3d2fe7232d98bd3a7982ccccc9d2825bbb2ab8b9889391a"
+    },
+    {
+      "path": "frontend/public/favicon.ico",
+      "scope": "opaque-input",
+      "sha256": "sha256:cbf6f449ecaf843811b3a1562bc3dc1679e726a951be1428148178a20ceb790a"
+    },
+    {
+      "path": "frontend/public/gate-logo.png",
+      "scope": "opaque-input",
+      "sha256": "sha256:47ac5f65579041ed6a663308a747ff6120a2a48276a87f26fc343cce13255cba"
+    },
+    {
+      "path": "backend/src/Controller/.placeholder",
+      "scope": "unknown-input",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/src/Form/.placeholder",
+      "scope": "unknown-input",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docker/heal/disabled-private-key.pem",
+      "scope": "unknown-input",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/evidence/IN-25/blocked/result.sha256",
+      "scope": "unknown-input",
+      "sha256": "sha256:3a5dcbc50811263dc0b3b6c90f93526d2f344b746185ee0b934ed17a4992e1b3"
+    },
+    {
+      "path": "docs/evidence/IN-25/clean/result.sha256",
+      "scope": "unknown-input",
+      "sha256": "sha256:d5d8d577c5dfb511cd75af00e3443b92bcedca475ec50b079f76a014e103b515"
+    },
+    {
+      "path": "docs/evidence/IN-25/unavailable-tool/result.sha256",
+      "scope": "unknown-input",
+      "sha256": "sha256:d264f853c91e40e90c51caebfb7b2dea7fbf4b1eaad2c80a72a5af6c23e30a7a"
+    },
+    {
+      "path": "backend/ci-scanner/verify-local.sh",
+      "scope": "embedded-code",
+      "sha256": "sha256:94a0dbc35580abbc0f2913f4f73e0dd8fd54dac464adf3975d2a9f76b4eb70a7"
+    },
+    {
+      "path": "backend/ci-scanner/verify-local.sh",
+      "scope": "embedded-code",
+      "sha256": "sha256:61f4dbc10f2a9d79135efd1625fdedd90d202de39832cf08c6ee7ab9c412aa3a"
+    },
+    {
+      "path": "scripts/test-php-runtime.sh",
+      "scope": "embedded-code",
+      "sha256": "sha256:8385bb8e82129e3e381bcf33f7159158373c8ce8355b8300da7173ab7d175516"
+    }
+  ],
+  "policy_digest": "sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6"
+}

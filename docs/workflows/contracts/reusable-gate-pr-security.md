@@ -86,14 +86,14 @@ with both results `unsupported`; that exact row is retained only for an incomple
 report and never advertised as supported coverage. The report must name exactly the pinned tool/rule/data
 identities, and trusted execution state must name the pinned scanner image.
 
-**Gate full-source enrollment prerequisite (IN-29):** the image's exact hash-bound
-policy exclusions currently use `approved_exclusion` in the raw input rows. The
-producer refuses to package those rows as complete analysis, and the existing PHP
-publisher also treats them as incomplete. Exclusions cannot be relabeled as scanned
-or have their reasons stripped. IN-29 must provide a reviewed shared representation
-that preserves the source/hash binding and explicitly separates exclusions from
-actual scan coverage before a full Gate repository can pass. DEV-49's synthetic
-ordinary-scope proof does not claim that enrollment has happened.
+**Gate exact exclusions (IN-29):** outer assurance 1.1 adds an explicit exclusion
+list while preserving the published scanner's raw 1.0 bytes. The immutable
+helper hashes regular blobs from the exact base/head Git trees and accepts only
+its reviewed scope/path/hash entries. The publisher independently checks its
+registered allowlist. Missing or changed source proof is nonpassing; reasons
+are never stripped and excluded paths never count as analyzed inputs. See
+[assurance 1.1](gate-assurance-v1.1.md). This prerequisite does not itself enroll
+a repository or enforce a merge gate.
 
 ## Artifact and receipt
 

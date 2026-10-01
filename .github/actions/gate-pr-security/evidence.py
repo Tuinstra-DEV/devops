@@ -20,6 +20,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import constants
+import source
 
 
 MAX_REPORT_BYTES = 8 * 1024 * 1024
@@ -27,6 +28,8 @@ MAX_HTTP_RESPONSE_BYTES = 64 * 1024
 MAX_ARCHIVE_DIGEST_BYTES = 128
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 ZIP_OVERHEAD_RESERVE = 4096
+MAX_EXCLUDED_INPUTS_BYTES = 256 * 1024
+MAX_EXCLUSION_BLOB_BYTES = 4 * 1024 * 1024
 SHA_RE = re.compile(r"\A[a-f0-9]{40}\Z")
 DIGEST_RE = re.compile(r"\Asha256:[a-f0-9]{64}\Z")
 POSITIVE_RE = re.compile(r"\A[1-9][0-9]{0,18}\Z")
@@ -284,12 +287,149 @@ def _inputs(report: dict[str, Any], coverage: list[dict[str, Any]], complete_out
                 raise EvidenceError("invalid_inputs")
             if any(not isinstance(reason, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,80}", reason) is None for reason in reasons):
                 raise EvidenceError("invalid_inputs")
-            if complete_outcome:
-                verified_absence = not discovered and not scanned and reasons == ["verified_absence"]
-                excluded = coverage_by_scope[entry["scope"]]["scanner"] == "policy-exclusion"
-                if ((excluded and not verified_absence) or not discovered and not verified_absence
-                    or discovered != scanned or (reasons and not verified_absence)):
-                    raise EvidenceError("outcome_input_mismatch")
+            verified_absence = not discovered and not scanned and reasons == ["verified_absence"]
+            policy_exclusion = coverage_by_scope[entry["scope"]]["scanner"] == "policy-exclusion"
+            approved_exclusion = (policy_exclusion and bool(discovered) and discovered == scanned
+                                  and reasons == ["approved_exclusion"])
+            if "approved_exclusion" in reasons and not approved_exclusion:
+                raise EvidenceError("outcome_input_mismatch")
+            if (policy_exclusion and coverage_by_scope[entry["scope"]][side + "_result"] == "complete"
+                and not verified_absence and not approved_exclusion):
+                raise EvidenceError("outcome_input_mismatch")
+            if complete_outcome and (not discovered and not verified_absence
+                                     or discovered != scanned
+                                     or reasons and not verified_absence and not approved_exclusion):
+                raise EvidenceError("outcome_input_mismatch")
+
+
+def _trusted_exclusions() -> dict[tuple[str, str], set[str]]:
+    path = Path(__file__).with_name("excluded-inputs.json")
+    raw = _read_regular(path, MAX_EXCLUDED_INPUTS_BYTES, "exclusion_allowlist_unavailable")
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != constants.EXCLUDED_INPUTS_DIGEST:
+        raise EvidenceError("exclusion_allowlist_mismatch")
+    document = _decode_json(raw, "exclusion_allowlist_invalid")
+    if set(document) != {"policy_digest", "excluded_inputs"} or document["policy_digest"] != constants.POLICY_DIGEST:
+        raise EvidenceError("exclusion_allowlist_invalid")
+    entries = document["excluded_inputs"]
+    if not isinstance(entries, list) or len(entries) > 1000:
+        raise EvidenceError("exclusion_allowlist_invalid")
+    allowlist: dict[tuple[str, str], set[str]] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"scope", "path", "sha256"}:
+            raise EvidenceError("exclusion_allowlist_invalid")
+        scope, path, digest = entry["scope"], entry["path"], entry["sha256"]
+        if (not isinstance(scope, str) or scope not in {"opaque-input", "unknown-input", "embedded-code"}
+            or not isinstance(path, str) or re.fullmatch(r"[A-Za-z0-9._@+/-]{1,512}", path) is None
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None):
+            raise EvidenceError("exclusion_allowlist_invalid")
+        key = (scope, path, digest)
+        if key in seen:
+            raise EvidenceError("exclusion_allowlist_invalid")
+        seen.add(key)
+        allowlist.setdefault((scope, path), set()).add(digest)
+    return allowlist
+
+
+def _source_exclusions(root: Path, state: dict[str, Any], report: dict[str, Any]) -> list[dict[str, str]]:
+    """Bind every approved policy exclusion to exact base/head Git blobs."""
+    candidates: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    coverage = {row["scope"]: row for row in report["coverage"]}
+    for entry in report["inputs"]:
+        scope = entry["scope"]
+        if coverage[scope]["scanner"] != "policy-exclusion":
+            for side in ("base", "head"):
+                if "approved_exclusion" in entry[side]["reasons"]:
+                    raise EvidenceError("untrusted_exclusion_scope")
+            continue
+        for side in ("base", "head"):
+            data = entry[side]
+            discovered, scanned, reasons = data["discovered"], data["scanned"], data["reasons"]
+            if not discovered and not scanned and reasons == ["verified_absence"]:
+                continue
+            if coverage[scope][side + "_result"] != "complete" and "approved_exclusion" not in reasons:
+                continue
+            if not discovered or discovered != scanned or reasons != ["approved_exclusion"]:
+                raise EvidenceError("untrusted_exclusion_reason")
+            for path in discovered:
+                candidate = (scope, side, path)
+                if candidate in seen:
+                    raise EvidenceError("duplicate_exclusion_input")
+                seen.add(candidate)
+                candidates.append(candidate)
+                if len(candidates) > 1000:
+                    raise EvidenceError("exclusion_count_limit")
+    if not candidates:
+        return []
+
+    allowlist = _trusted_exclusions()
+    for scope, _, path in candidates:
+        if (scope, path) not in allowlist:
+            raise EvidenceError("unregistered_exclusion")
+
+    store = root / "objects.git"
+    try:
+        store_metadata = store.lstat()
+    except OSError:
+        raise EvidenceError("exclusion_source_unavailable") from None
+    if store.is_symlink() or not store.is_dir() or not store_metadata.st_mode:
+        raise EvidenceError("exclusion_source_unavailable")
+    try:
+        if any(path.is_symlink() for path in store.rglob("*")):
+            raise EvidenceError("exclusion_source_unavailable")
+    except OSError:
+        raise EvidenceError("exclusion_source_unavailable") from None
+    for name in ("alternates", "http-alternates"):
+        if (store / "objects" / "info" / name).exists():
+            raise EvidenceError("exclusion_source_unavailable")
+    if source.storage_bytes(store) > source.MAX_OBJECT_STORE:
+        raise EvidenceError("exclusion_source_unavailable")
+
+    trees: dict[str, str] = {}
+    for side in ("base", "head"):
+        commit = state[side + "_sha"]
+        try:
+            object_type = source.git(store, ["cat-file", "-t", commit], max_bytes=128).strip()
+            tree = source.git(store, ["rev-parse", "--verify", commit + "^{tree}"]).decode("ascii").strip()
+        except (source.Failure, UnicodeError):
+            raise EvidenceError("exclusion_source_unavailable") from None
+        if object_type != b"commit" or SHA_RE.fullmatch(tree) is None or tree != state[side + "_tree"]:
+            raise EvidenceError("exclusion_tree_mismatch")
+        trees[side] = tree
+
+    exclusions: list[dict[str, str]] = []
+    for scope, side, path in sorted(candidates, key=lambda item: (item[0], item[1] != "base", item[2])):
+        try:
+            listing = source.git(store, ["ls-tree", "-rlz", trees[side], "--", path], max_bytes=64 * 1024)
+        except source.Failure:
+            raise EvidenceError("exclusion_source_unavailable") from None
+        match = re.fullmatch(rb"(100644|100755) blob ([a-f0-9]{40}) +([0-9]+)\t([^\x00]+)\x00", listing)
+        if match is None or match[4].decode("utf-8", "strict") != path:
+            raise EvidenceError("exclusion_blob_mismatch")
+        object_id = match[2].decode("ascii")
+        size = int(match[3])
+        if size > MAX_EXCLUSION_BLOB_BYTES:
+            raise EvidenceError("exclusion_blob_too_large")
+        try:
+            contents = source.git(store, ["cat-file", "blob", object_id], max_bytes=MAX_EXCLUSION_BLOB_BYTES + 1)
+        except source.Failure:
+            raise EvidenceError("exclusion_source_unavailable") from None
+        if (len(contents) != size
+            or hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + contents).hexdigest() != object_id):
+            raise EvidenceError("exclusion_blob_mismatch")
+        digest = "sha256:" + hashlib.sha256(contents).hexdigest()
+        if digest not in allowlist[(scope, path)]:
+            raise EvidenceError("untrusted_exclusion_blob")
+        exclusions.append({
+            "scope": scope,
+            "side": side,
+            "path": path,
+            "source_sha256": digest,
+            "reason_id": "approved_exclusion",
+        })
+    return exclusions
 
 
 def _validate_report(state: dict[str, Any], report: dict[str, Any]) -> None:
@@ -367,9 +507,9 @@ def _load_context(environment: dict[str, str]) -> dict[str, str]:
     return context
 
 
-def _outer_evidence(state: dict[str, Any], report_raw: bytes, report: dict[str, Any], context: dict[str, str]) -> bytes:
+def _outer_evidence(state: dict[str, Any], report_raw: bytes, report: dict[str, Any], context: dict[str, str], exclusions: list[dict[str, str]]) -> bytes:
     evidence = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "policy_version": "gate-assurance-1",
         "document_type": "pr-security-evidence",
         "evidence_mode": "live",
@@ -393,6 +533,7 @@ def _outer_evidence(state: dict[str, Any], report_raw: bytes, report: dict[str, 
         "dataset_manifest_digest": constants.DATASET_DIGEST,
         "coverage": report["coverage"],
         "findings": report["findings"],
+        "exclusions": exclusions,
         "payload_files": [{
             "path": "reports/result.json",
             "sha256": "sha256:" + hashlib.sha256(report_raw).hexdigest(),
@@ -407,11 +548,12 @@ def package(work_dir: str | Path, environment: dict[str, str] | None = None) -> 
     root = _safe_work_dir(work_dir)
     state, report_raw, report = _load_inputs(root)
     _validate_report(state, report)
+    exclusions = _source_exclusions(root, state, report)
     context = _load_context(environment)
     staging = root / "staging"
     if staging.exists() or staging.is_symlink():
         raise EvidenceError("staging_already_exists")
-    evidence_raw = _outer_evidence(state, report_raw, report, context)
+    evidence_raw = _outer_evidence(state, report_raw, report, context, exclusions)
     if len(report_raw) + len(evidence_raw) + ZIP_OVERHEAD_RESERVE > MAX_PACKAGE_BYTES:
         raise EvidenceError("package_size_limit")
     staging.mkdir(mode=0o700)
@@ -563,6 +705,7 @@ def submit(work_dir: str | Path, environment: dict[str, str] | None = None) -> N
     root = _safe_work_dir(work_dir)
     state, report_raw, report = _load_inputs(root)
     _validate_report(state, report)
+    exclusions = _source_exclusions(root, state, report)
     context = _load_context(environment)
     staging = root / "staging"
     if staging.is_symlink() or not staging.is_dir():
@@ -573,7 +716,7 @@ def submit(work_dir: str | Path, environment: dict[str, str] | None = None) -> N
     if packaged_result != report_raw:
         raise EvidenceError("staging_report_changed")
     evidence = _decode_json(evidence_raw, "staging_evidence_invalid")
-    expected_evidence = _outer_evidence(state, report_raw, report, context)
+    expected_evidence = _outer_evidence(state, report_raw, report, context, exclusions)
     if evidence_raw != expected_evidence:
         raise EvidenceError("staging_evidence_changed")
     artifact_id = _text(environment.get("GATE_ARTIFACT_ID"), POSITIVE_RE, "artifact_identity_invalid")
