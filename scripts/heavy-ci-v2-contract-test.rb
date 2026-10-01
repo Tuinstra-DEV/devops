@@ -20,7 +20,7 @@ check = lambda do |condition, message|
 end
 
 text = File.read(WORKFLOW)
-required_inputs = %w[contract-id execution-class cache-policy cache-path cache-schema toolchain lockfile entrypoint artifact-path run-unit run-integration run-browser run-live-smoke artifact-retention-days]
+required_inputs = %w[contract-id execution-class cache-policy cache-path cache-schema toolchain lockfile entrypoint artifact-path run-unit run-integration run-browser browser-coverage run-live-smoke artifact-retention-days]
 required_outputs = %w[contract-version artifact-name artifact-id artifact-digest payload-sha256 effective-execution-class cache-key cache-hit metrics-artifact preflight-decision preflight-reason-category preflight-evidence planned-expensive-jobs avoided-expensive-jobs]
 required_stages = %w[bootstrap build unit integration e2e-prepare browser live-smoke]
 
@@ -39,6 +39,10 @@ check.call(text.include?("github.event.pull_request.head.repo.fork || false"), "
 check.call(text.include?("*'[bot]'"), "dependency-bot boundary is missing")
 check.call(text.include?("github.event.pull_request.user.type || ''"), "immutable bot-author boundary is missing")
 check.call(text.include?("pull_request_target"), "pull_request_target boundary is missing")
+check.call(text.include?("BASE_REF") && text.include?("HEAD_REF") && text.include?("HEAD_REPOSITORY"), "develop-to-main release browser context is incomplete")
+check.call(text.include?("release-browser-sanctuary") && text.include?("trusted-release-required"), "release browser routing/verdict categories are missing")
+check.call(text.include?("matrix.stage == 'browser'") && text.include?("runs-on: ubuntu-24.04"), "routine Heavy CI stages are not hosted independently of browser stages")
+check.call(text.include?("BROWSER_COVERAGE") && text.include?("browser-coverage must be required or not-applicable"), "release browser expectation is not independent of run-browser")
 check.call(text.include?("EVENT_NAME\" = push") && text.include?("REF_NAME\" = \"$DEFAULT_BRANCH"), "canonical cache write is not restricted to default-branch pushes")
 check.call(text.include?("actions/cache/restore@") && text.include?("actions/cache/save@"), "split restore/save cache actions are required")
 check.call(!text.include?("restore-keys:"), "broad cache restore prefixes are prohibited")
@@ -129,6 +133,9 @@ if preflight_step
         "RETENTION_DAYS" => "14",
         "EVENT_NAME" => "push",
         "IS_FORK" => "false",
+        "BASE_REF" => "",
+        "HEAD_REF" => "",
+        "HEAD_REPOSITORY" => "consumer/app",
         "ACTOR" => "maintainer",
         "TRIGGERING_ACTOR" => "maintainer",
         "DEFAULT_BRANCH" => "main",
@@ -136,6 +143,7 @@ if preflight_step
         "RUN_UNIT" => "true",
         "RUN_INTEGRATION" => "false",
         "RUN_BROWSER" => "false",
+        "BROWSER_COVERAGE" => "not-applicable",
         "RUN_LIVE_SMOKE" => "false",
         "CALLER_WORKFLOW_REF" => "consumer/app/.github/workflows/ci.yml@refs/heads/main",
         "CALLER_WORKFLOW_SHA" => "1" * 40,
@@ -171,7 +179,71 @@ if preflight_step
   check.call(invalid_execution[:evidence]["requested_execution_class"] == "invalid", "invalid execution class leaked raw input into preflight evidence")
 
   trusted = run_preflight.call("EXECUTION_CLASS" => "trusted-heavy")
-  check.call(trusted[:status].success? && trusted[:outputs]["effective-execution-class"] == "trusted-heavy", "trusted push cannot select trusted-heavy")
+  check.call(trusted[:status].success? && trusted[:outputs]["effective-execution-class"] == "hosted", "routine Heavy CI escaped the hosted runner policy")
+  check.call(trusted[:outputs]["runner"] == '"ubuntu-24.04"', "routine Heavy CI preflight selected a self-hosted runner")
+
+  release_browser = run_preflight.call(
+    "EVENT_NAME" => "pull_request",
+    "BASE_REF" => "main",
+    "HEAD_REF" => "develop",
+    "HEAD_REPOSITORY" => "consumer/app",
+    "IS_FORK" => "false",
+    "PR_AUTHOR_TYPE" => "User",
+    "ACTOR" => "maintainer",
+    "TRIGGERING_ACTOR" => "maintainer",
+    "EXECUTION_CLASS" => "hosted",
+    "RUN_BROWSER" => "false",
+    "BROWSER_COVERAGE" => "required"
+  )
+  check.call(release_browser[:status].success?, "trusted develop-to-main release preflight failed: #{release_browser[:stderr]}")
+  check.call(release_browser[:outputs]["reason-category"] == "release-browser-sanctuary", "release browser routing reason changed")
+  check.call(release_browser[:outputs]["runner"] == '"ubuntu-24.04"', "release browser moved routine build work to Sanctuary")
+  check.call(release_browser[:outputs]["matrix"].include?('"stage":"browser"'), "eligible release PR omitted its requested browser stage")
+
+  explicitly_not_applicable = run_preflight.call(
+    "EVENT_NAME" => "pull_request",
+    "BASE_REF" => "main",
+    "HEAD_REF" => "develop",
+    "HEAD_REPOSITORY" => "consumer/app",
+    "IS_FORK" => "false",
+    "PR_AUTHOR_TYPE" => "User",
+    "ACTOR" => "maintainer",
+    "TRIGGERING_ACTOR" => "maintainer",
+    "RUN_BROWSER" => "true",
+    "BROWSER_COVERAGE" => "not-applicable"
+  )
+  check.call(explicitly_not_applicable[:status].success? && !explicitly_not_applicable[:outputs]["matrix"].include?('"stage":"browser"'), "explicitly not-applicable fixture unexpectedly ran browser stage")
+
+  ordinary_pr_browser = run_preflight.call(
+    "EVENT_NAME" => "pull_request",
+    "BASE_REF" => "develop",
+    "HEAD_REF" => "feature/change",
+    "HEAD_REPOSITORY" => "consumer/app",
+    "IS_FORK" => "false",
+    "PR_AUTHOR_TYPE" => "User",
+    "ACTOR" => "maintainer",
+    "TRIGGERING_ACTOR" => "maintainer",
+    "RUN_BROWSER" => "true"
+  )
+  check.call(ordinary_pr_browser[:status].success?, "ordinary PR preflight failed while skipping browser")
+  check.call(!ordinary_pr_browser[:outputs]["matrix"].include?('"stage":"browser"'), "ordinary PR ran the browser stage")
+
+  dispatch_browser = run_preflight.call("EVENT_NAME" => "workflow_dispatch", "RUN_BROWSER" => "true")
+  check.call(dispatch_browser[:status].success? && !dispatch_browser[:outputs]["matrix"].include?('"stage":"browser"'), "manual dispatch ran the browser stage")
+
+  bot_release_browser = run_preflight.call(
+    "EVENT_NAME" => "pull_request",
+    "BASE_REF" => "main",
+    "HEAD_REF" => "develop",
+    "HEAD_REPOSITORY" => "consumer/app",
+    "IS_FORK" => "false",
+    "PR_AUTHOR_TYPE" => "Bot",
+    "ACTOR" => "release-bot[bot]",
+    "TRIGGERING_ACTOR" => "release-bot[bot]",
+    "RUN_BROWSER" => "true"
+  )
+  check.call(!bot_release_browser[:status].success?, "bot-created release PR did not fail closed")
+  check.call(bot_release_browser[:outputs]["decision"] == "blocked" && bot_release_browser[:outputs]["reason-category"] == "trusted-release-required", "untrusted release did not emit the stable blocked verdict")
 
   same_repository = run_preflight.call(
     "GITHUB_REPOSITORY" => "Tuinstra-DEV/devops",
@@ -195,6 +267,7 @@ if preflight_step
 
   blocked_cases = [
     ["invalid execution class", { "EXECUTION_CLASS" => "arbitrary-runner" }, nil, "invalid-contract"],
+    ["invalid browser coverage declaration", { "BROWSER_COVERAGE" => "optional" }, nil, "invalid-contract"],
     ["unsupported event", { "EVENT_NAME" => "deployment" }, nil, "unsupported-event"],
     ["missing actor", { "ACTOR" => "" }, nil, "invalid-context"],
     ["short caller SHA", { "CALLER_WORKFLOW_SHA" => "1234567" }, nil, "invalid-context"],
@@ -215,8 +288,95 @@ if preflight_step
   end
 end
 
+browser_workflow = YAML.safe_load(File.read(".github/workflows/reusable-browser-quality.yml"), aliases: true)
+policy_step = browser_workflow.fetch("jobs").fetch("release-policy").fetch("steps").find { |step| step["id"] == "policy" }
+check.call(!policy_step.nil?, "browser release policy step is missing")
+check.call(browser_workflow.fetch("jobs").fetch("browser-quality").fetch("if").include?("github.event.pull_request.head.ref == 'develop'"), "Sanctuary browser job is missing its direct release-source guard")
+check.call(browser_workflow.fetch("jobs").fetch("browser-quality").fetch("if").include?("github.event.pull_request.head.repo.full_name == github.repository"), "Sanctuary browser job is missing its direct same-repository guard")
+check.call(browser_workflow.fetch("jobs").fetch("release-verdict").fetch("if") == "${{ always() }}", "independent hosted release verdict must always run")
+if policy_step
+  browser_policy = policy_step.fetch("run")
+  run_browser_policy = lambda do |overrides = {}|
+    Dir.mktmpdir("browser-release-policy") do |workspace|
+      output = File.join(workspace, "github-output")
+      env = {
+        "EVENT_NAME" => "pull_request",
+        "BASE_REF" => "main",
+        "HEAD_REF" => "develop",
+        "HEAD_REPOSITORY" => "consumer/app",
+        "REPOSITORY" => "consumer/app",
+        "IS_FORK" => "false",
+        "ACTOR" => "maintainer",
+        "TRIGGERING_ACTOR" => "maintainer",
+        "PR_AUTHOR_TYPE" => "User",
+        "GITHUB_OUTPUT" => output
+      }.merge(overrides)
+      stdout, stderr, status = Open3.capture3(env, "bash", "-c", browser_policy, chdir: workspace)
+      values = File.exist?(output) ? File.readlines(output, chomp: true).to_h { |line| line.split("=", 2) } : {}
+      { status: status, stdout: stdout, stderr: stderr, outputs: values }
+    end
+  end
+
+  valid_release = run_browser_policy.call
+  check.call(valid_release[:status].success? && valid_release[:outputs]["run-browser"] == "true", "trusted release PR did not enable browser suite")
+  [
+    { "EVENT_NAME" => "pull_request", "BASE_REF" => "develop", "HEAD_REF" => "feature/x" },
+    { "EVENT_NAME" => "push" }
+  ].each do |context|
+    skipped = run_browser_policy.call(context)
+    check.call(skipped[:status].success? && skipped[:outputs]["run-browser"] == "false", "non-release event did not skip browser suite: #{context}")
+  end
+  [
+    { "IS_FORK" => "true", "HEAD_REPOSITORY" => "contributor/consumer" },
+    { "ACTOR" => "dependabot[bot]", "TRIGGERING_ACTOR" => "dependabot[bot]" },
+    { "PR_AUTHOR_TYPE" => "Bot" }
+  ].each do |context|
+    rejected = run_browser_policy.call(context)
+    check.call(!rejected[:status].success? && rejected[:outputs]["run-browser"] == "false", "untrusted release candidate did not fail closed: #{context}")
+  end
+end
+
+verdict_step = browser_workflow.fetch("jobs").fetch("release-verdict").fetch("steps").find { |step| step["name"] == "Require the expected trusted release browser result" }
+check.call(!verdict_step.nil?, "independent release browser verdict step is missing")
+if verdict_step
+  verdict_script = verdict_step.fetch("run")
+  run_release_verdict = lambda do |overrides = {}|
+    env = {
+      "EVENT_NAME" => "pull_request",
+      "BASE_REF" => "main",
+      "HEAD_REF" => "develop",
+      "HEAD_REPOSITORY" => "consumer/app",
+      "REPOSITORY" => "consumer/app",
+      "IS_FORK" => "false",
+      "ACTOR" => "maintainer",
+      "TRIGGERING_ACTOR" => "maintainer",
+      "PR_AUTHOR_TYPE" => "User",
+      "POLICY_RESULT" => "success",
+      "POLICY_RUN_BROWSER" => "true",
+      "BROWSER_RESULT" => "success"
+    }.merge(overrides)
+    stdout, stderr, status = Open3.capture3(env, "bash", "-c", verdict_script)
+    { stdout: stdout, stderr: stderr, status: status }
+  end
+
+  check.call(run_release_verdict.call[:status].success?, "complete trusted release browser verdict failed")
+  [
+    { "POLICY_RESULT" => "failure" },
+    { "POLICY_RUN_BROWSER" => "false" },
+    { "BROWSER_RESULT" => "skipped" },
+    { "BROWSER_RESULT" => "failure" },
+    { "IS_FORK" => "true", "HEAD_REPOSITORY" => "contributor/consumer" },
+    { "ACTOR" => "release-bot[bot]", "TRIGGERING_ACTOR" => "release-bot[bot]" }
+  ].each do |context|
+    result = run_release_verdict.call(context)
+    check.call(!result[:status].success?, "release browser verdict incorrectly passed missing/failed/untrusted result: #{context}")
+  end
+  nonrelease = run_release_verdict.call("HEAD_REF" => "feature/x")
+  check.call(nonrelease[:status].success?, "non-release browser verdict should not require browser execution")
+end
+
 contract_doc = File.read(CONTRACT_DOC)
-%w[blocked skip proceed hosted-requested trusted-heavy-approved untrusted-hosted untrusted-hosted-fallback invalid-contract invalid-context unsupported-event immutable-reference-required missing-entrypoint missing-lockfile unsafe-input input-path-conflict].each do |term|
+%w[blocked skip proceed hosted-requested trusted-heavy-approved untrusted-hosted untrusted-hosted-fallback release-browser-sanctuary trusted-release-required invalid-contract invalid-context unsupported-event immutable-reference-required missing-entrypoint missing-lockfile unsafe-input input-path-conflict].each do |term|
   check.call(contract_doc.include?("`#{term}`"), "#{CONTRACT_DOC} does not document preflight term #{term}")
 end
 check.call(contract_doc.include?("planned-expensive-jobs") && contract_doc.include?("avoided-expensive-jobs"), "#{CONTRACT_DOC} does not document quantified preflight evidence")

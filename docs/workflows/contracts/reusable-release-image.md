@@ -37,5 +37,4 @@ GHCR uses `github.actor` and the job-scoped `github.token` by default. Callers m
 
 Only `linux/amd64` and `linux/arm64` are accepted. `build-args` are the sole build-argument source and must never contain credentials or sensitive values; use BuildKit secret mounts in a separately reviewed contract if a build truly requires secrets.
 
-The execution trust boundary and caller fallback are identical to [reusable-browser-quality](reusable-browser-quality.md). Release jobs should run from a protected branch or approved manual workflow, never from untrusted pull-request code.
-
+The default runner is GitHub-hosted. A caller that explicitly requests `trusted-heavy` uses Sanctuary only for a human-triggered push to `main`, a tag push, or a published GitHub release, and only from the existing app runner allowlist (Gate, WODIQ, Tracker, Notify, Console, wodiq-site, marcel-site, and tuinstra-site). The DevOps control plane is excluded. Pull requests, pushes to `develop` or other branches, manual dispatches, schedules, and bot-triggered events always use the hosted runner.
