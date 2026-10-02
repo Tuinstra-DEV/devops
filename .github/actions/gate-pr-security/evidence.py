@@ -44,7 +44,7 @@ PUBLICATION_MAX_WAIT_SECONDS = 180
 PUBLICATION_POLL_INTERVAL_SECONDS = 1.5
 PUBLICATION_MAX_ATTEMPTS = 120
 TRANSIENT_RETRY_LIMIT = 3
-TOOL_VERSIONS = {"semgrep": "1.136.0", "gitleaks": "8.30.1", "osv": "2.3.8", "gate-text": "1", "policy-exclusion": "1"}
+TOOL_VERSIONS = {"semgrep": "1.178.0", "gitleaks": "8.30.1", "osv": "2.3.8", "gate-text": "1", "policy-exclusion": "1"}
 SCOPE_SCANNERS = {
     "secrets": "gitleaks",
     "php": "semgrep",
