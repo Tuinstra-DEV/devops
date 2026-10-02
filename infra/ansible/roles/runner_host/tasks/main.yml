@@ -315,8 +315,6 @@
     mode: '0640'
     backup: true
   notify: Restart runner manager
-  tags:
-    - runner_manager_config
 
 - name: Remove obsolete runner manager sudo policy
   ansible.builtin.file:

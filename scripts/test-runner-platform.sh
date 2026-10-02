@@ -97,9 +97,7 @@ grep -q 'packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112bea
 grep -q 'qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87' infra/packer/toolchain.lock
 grep -q 'Tuinstra-DEV/tuinstra-site' runner/config/manager.toml
 grep -q 'runner_allowed_repositories | to_json' infra/ansible/roles/runner_host/templates/manager.toml.j2
-grep -q 'runner_manager_config' infra/ansible/roles/runner_host/tasks/main.yml
 grep -q 'backup: true' infra/ansible/roles/runner_host/tasks/main.yml
-grep -q 'runner_manager_config' infra/ansible/roles/runner_host/handlers/main.yml
 python3 - <<'PY'
 from pathlib import Path
 import re

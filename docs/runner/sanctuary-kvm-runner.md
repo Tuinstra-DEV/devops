@@ -2,8 +2,9 @@
 
 ## Decision
 
-Sanctuary runs at most two untrusted CI jobs concurrently in separate ephemeral
-Ubuntu 24.04 KVM guests. The host is provisioned with Ansible, each guest root
+Sanctuary runs one `trusted-heavy` CI job at a time in an isolated ephemeral
+Ubuntu 24.04 KVM guest, following the [DEV-23 single-runner profile](../evidence/DEV-23-permanent-single-runner-2026-09-23.md).
+The host is provisioned with Ansible, the guest root
 disk is a qcow2 overlay backed by a checksum-pinned immutable Packer image, and
 each VM is deleted after its single JIT job.
 
@@ -38,8 +39,8 @@ serial ephemeral jobs while retaining completed-job runner metadata.
 After runner cleanup, the manager keeps a durable handoff tombstone, waits for
 API consistency, and retries a still-queued trigger with exponential cooldown
 capped at one hour. Pending handoffs block
-duplicate dispatch even if history is absent. Each poll fills all available
-slots, up to two VMs, and removes an offline GitHub runner record if VM launch
+duplicate dispatch even if history is absent. The manager uses the single
+configured runner slot and removes an offline GitHub runner record if VM launch
 fails. Any malformed API
 response, permission error, transport failure, or rate limit fails closed;
 rate-limit responses honor a bounded retry interval.
@@ -90,28 +91,33 @@ credentials to pull request code.
 
 ### Narrow allowlist activation
 
-The Ansible role keeps the repository set in
-`infra/ansible/roles/runner_host/defaults/main.yml`; its manager configuration
-task can be applied independently of host provisioning. Before applying an
-allowlist change, verify the repository's fork setting and release PR branch
-protection, then let all active `trusted-heavy` jobs finish and ensure there is
-no queued heavy work.
+The checked-in Ansible defaults and template include WODIQ Platform for future
+provisioning. For the live host, use the one-purpose helper so every existing
+manager setting stays byte-for-byte unchanged. Before running it, verify the
+repository's fork setting, required release PR checks, and that the manager's
+GitHub credential has Actions read plus repository runner-administration write
+access. The helper safely checks Actions read and runner-administration read;
+the first release canary verifies write access without printing or copying the
+credential.
 
-From the reviewed DevOps checkout, apply only the manager configuration task:
+Copy the helper from the reviewed DevOps checkout, then run it on Sanctuary:
 
 ```sh
-cd infra/ansible
-ansible-playbook -i sanctuary-inventory.yml site.yml \
-  --limit sanctuary --tags runner_manager_config --diff
+scp scripts/activate_runner_platform_admission.py \
+  mtuinstra@sanctuary.tuinstra.dev:/tmp/activate_runner_platform_admission.py
+ssh -t mtuinstra@sanctuary.tuinstra.dev \
+  'sudo python3 /tmp/activate_runner_platform_admission.py'
 ```
 
-The task backs up the current file, installs the rendered configuration
-atomically, and restarts only `ci-runner-manager.service`. Confirm the service is
-active and its journal has no configuration or GitHub API errors before queuing
-one non-production `trusted-heavy` canary. For rollback, use a normal revert
-commit and the same limited Ansible command after draining jobs; do not edit the
-host configuration by hand or rerun full host provisioning for an allowlist
-change.
+It checks the existing allowlist, required config fields, API access, and runner
+state; pauses dispatch; refuses active domains, leases, cleanup work, or
+overlays; writes a timestamped byte-identical backup; then atomically adds only
+WODIQ Platform and starts the manager. It prints backup and config SHA-256
+values. A permission `403` or unsafe state leaves the config unchanged. Confirm
+the manager is active and queue one non-production `trusted-heavy` canary. If
+the canary reports missing write permission, drain it and restore with the same
+helper using `--rollback /etc/ci-runner/manager.toml.bak.<timestamp>.<pid>.<id>`.
+Remove the temporary helper from `/tmp` after activation or rollback.
 
 ## Resource and admission policy
 
@@ -131,7 +137,7 @@ change.
   runner CPU sets provide the CPU slots, and the helper checks live libvirt
   allocations before launch. The helper also requires the live WoW CPU set to
   match the reviewed allocation. Ansible refuses hosts that cannot fit both
-  guests plus the reserve. Manager and helper independently enforce the exact
+  guest plus the reserve. Manager and helper independently enforce the exact
   concurrency and VM resource contract, so a configuration mismatch fails
   closed.
 - The base image is root-owned and mode `0444`. The overlay root and per-job
