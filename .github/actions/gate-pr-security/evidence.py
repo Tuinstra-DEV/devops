@@ -585,7 +585,7 @@ class _NoRedirect(HTTPRedirectHandler):
 def _oidc_url(raw_url: str) -> str:
     try:
         parsed = urlsplit(raw_url)
-        allowed_hosts = {"pipelines.actions.githubusercontent.com", "run-actions-1-azure-eastus.actions.githubusercontent.com"}
+        allowed_hosts = {"pipelines.actions.githubusercontent.com", "run-actions-1-azure-eastus.actions.githubusercontent.com", "run-actions-3-azure-eastus.actions.githubusercontent.com"}
         if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts
                 or parsed.netloc != parsed.hostname or "#" in raw_url
                 or parsed.username or parsed.password or parsed.port):

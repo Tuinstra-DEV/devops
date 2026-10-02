@@ -770,7 +770,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
 
 
 class OriginRegression(unittest.TestCase):
-    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com')
+    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com','run-actions-3-azure-eastus.actions.githubusercontent.com')
     def test_old_and_observed_host(self):
         from urllib.parse import parse_qsl,urlsplit
         for host in self.HOSTS:
