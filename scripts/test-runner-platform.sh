@@ -96,6 +96,45 @@ assert_absent 'passwd --lock packer' infra/packer/scripts/seal-image.sh
 grep -q 'packer_linux_amd64_sha256=15f97a6a99645c7d5308c609973b5280837b38e112beac413ccbce80da927cf1' infra/packer/toolchain.lock
 grep -q 'qemu_plugin_linux_amd64_sha256=3f735539fbdd0368785babda272b85738866f736415dce59d04b4cb550c4db87' infra/packer/toolchain.lock
 grep -q 'Tuinstra-DEV/tuinstra-site' runner/config/manager.toml
+grep -q 'runner_allowed_repositories | to_json' infra/ansible/roles/runner_host/templates/manager.toml.j2
+grep -q 'runner_manager_config' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'backup: true' infra/ansible/roles/runner_host/tasks/main.yml
+grep -q 'runner_manager_config' infra/ansible/roles/runner_host/handlers/main.yml
+python3 - <<'PY'
+from pathlib import Path
+import re
+import tomllib
+
+config = tomllib.loads(Path("runner/config/manager.toml").read_text())
+defaults = Path("infra/ansible/roles/runner_host/defaults/main.yml").read_text()
+match = re.search(
+    r"(?m)^runner_allowed_repositories:\n((?:^[ \t]+-[ \t]+[A-Za-z0-9_/-]+\n)+)",
+    defaults,
+)
+if match is None:
+    raise SystemExit("runner_allowed_repositories is missing or malformed")
+ansible_repositories = re.findall(r"(?m)^\s+-\s+([A-Za-z0-9_/-]+)$", match.group(1))
+manager_repositories = config.get("repositories")
+if ansible_repositories != manager_repositories:
+    raise SystemExit("Ansible and local manager repository allowlists differ")
+if len(ansible_repositories) != len(set(ansible_repositories)):
+    raise SystemExit("runner repository allowlist contains duplicates")
+expected_repositories = {
+    "Tuinstra-DEV/gate",
+    "Tuinstra-DEV/wodiq-app",
+    "Tuinstra-DEV/wodiq-platform",
+    "Tuinstra-DEV/tracker",
+    "Tuinstra-DEV/notify",
+    "Tuinstra-DEV/console",
+    "Tuinstra-DEV/wodiq-site",
+    "Tuinstra-DEV/marcel-site",
+    "Tuinstra-DEV/tuinstra-site",
+}
+if set(ansible_repositories) != expected_repositories:
+    raise SystemExit("runner repository allowlist changed outside the reviewed scope")
+if config.get("max_concurrency") != 1 or config.get("runner_label") != "trusted-heavy":
+    raise SystemExit("runner admission resources or label changed unexpectedly")
+PY
 assert_absent 'Tuinstra-DEV/devops' runner/config/manager.toml
 assert_absent 'ops-billing' runner/config/manager.toml
 assert_absent 'ci-billing-report' runner/config/manager.toml

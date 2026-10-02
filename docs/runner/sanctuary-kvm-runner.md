@@ -14,10 +14,10 @@ allowlist, selects only queued jobs whose labels include `trusted-heavy`, and
 requests a repository JIT configuration. `runner_group_id` is configurable and
 defaults to the verified repository runner group ID `1`.
 
-The deployed allowlist is Gate, WODIQ, Tracker, Notify, Console, wodiq-site,
-marcel-site, and tuinstra-site. This DevOps repository remains hosted-only and
-is intentionally excluded to prevent the runner control plane from executing
-its own changes.
+The configured allowlist is Gate, WODIQ App, WODIQ Platform, Tracker, Notify,
+Console, wodiq-site, marcel-site, and tuinstra-site. This DevOps repository
+remains hosted-only and is intentionally excluded to prevent the runner control
+plane from executing its own changes.
 
 The adapter deduplicates completed job IDs for 24 hours. Repository JIT runners
 are label-scoped, so GitHub may assign a different queued heavy job than the one
@@ -80,9 +80,42 @@ restricted runner group. Reusable workflows target `[self-hosted,
 trusted-heavy]`. Do not add a generic route that lets arbitrary workflows or
 fork pull requests select this machine.
 
+Admission is limited by repository and runner label; the manager does not
+inspect the event, source branch, workflow name, or actor. Before enabling the
+WODIQ Platform route, verify that repository forks are disabled and that the
+`develop` to `main` release PR has protected, required checks before its image
+build requests `trusted-heavy`. Keep ordinary pull request checks on GitHub
+hosted runners. The release workflow must not expose deployment or package-write
+credentials to pull request code.
+
+### Narrow allowlist activation
+
+The Ansible role keeps the repository set in
+`infra/ansible/roles/runner_host/defaults/main.yml`; its manager configuration
+task can be applied independently of host provisioning. Before applying an
+allowlist change, verify the repository's fork setting and release PR branch
+protection, then let all active `trusted-heavy` jobs finish and ensure there is
+no queued heavy work.
+
+From the reviewed DevOps checkout, apply only the manager configuration task:
+
+```sh
+cd infra/ansible
+ansible-playbook -i sanctuary-inventory.yml site.yml \
+  --limit sanctuary --tags runner_manager_config --diff
+```
+
+The task backs up the current file, installs the rendered configuration
+atomically, and restarts only `ci-runner-manager.service`. Confirm the service is
+active and its journal has no configuration or GitHub API errors before queuing
+one non-production `trusted-heavy` canary. For rollback, use a normal revert
+commit and the same limited Ansible command after draining jobs; do not edit the
+host configuration by hand or rerun full host provisioning for an allowlist
+change.
+
 ## Resource and admission policy
 
-- Maximum concurrency is 2. The manager keeps one global lifecycle filesystem
+- Maximum concurrency is 1. The manager keeps one global lifecycle filesystem
   lock, and the root helper independently serializes libvirt mutations.
 - Each guest receives exactly 4 vCPU, 4,096 MiB RAM, and a 120 GiB
   grow-on-write disk.

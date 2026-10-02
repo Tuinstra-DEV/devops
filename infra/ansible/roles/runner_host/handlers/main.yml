@@ -14,6 +14,8 @@
     name: ci-runner-manager.service
     state: restarted
     daemon_reload: true
+  tags:
+    - runner_manager_config
 
 - name: Apply sanctuary firewall transaction
   ansible.builtin.shell: |

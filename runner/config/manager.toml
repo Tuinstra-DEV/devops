@@ -16,6 +16,7 @@ allowed_owner = "Tuinstra-DEV"
 repositories = [
   "Tuinstra-DEV/gate",
   "Tuinstra-DEV/wodiq-app",
+  "Tuinstra-DEV/wodiq-platform",
   "Tuinstra-DEV/tracker",
   "Tuinstra-DEV/notify",
   "Tuinstra-DEV/console",
