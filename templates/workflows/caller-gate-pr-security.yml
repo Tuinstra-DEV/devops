@@ -16,4 +16,4 @@ jobs:
       actions: read
       packages: read
       id-token: write
-    uses: Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@95881b753040561dc39fd3ca4c3e1e17eab01341
+    uses: Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@9620ecf8817aa02c005455d8bcbbbf89b156b5a4
