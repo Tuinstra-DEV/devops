@@ -585,7 +585,10 @@ class _NoRedirect(HTTPRedirectHandler):
 def _oidc_url(raw_url: str) -> str:
     try:
         parsed = urlsplit(raw_url)
-        if parsed.scheme != "https" or parsed.hostname != "pipelines.actions.githubusercontent.com" or parsed.username or parsed.password or parsed.port:
+        allowed_hosts = {"pipelines.actions.githubusercontent.com", "run-actions-1-azure-eastus.actions.githubusercontent.com"}
+        if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts
+                or parsed.netloc != parsed.hostname or "#" in raw_url
+                or parsed.username or parsed.password or parsed.port):
             raise EvidenceError("oidc_url_rejected")
         query = parse_qsl(parsed.query, keep_blank_values=True)
         if any(key == "audience" for key, _ in query):

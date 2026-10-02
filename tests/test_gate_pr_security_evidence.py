@@ -769,5 +769,22 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                         evidence.submit(work, env)
 
 
+class OriginRegression(unittest.TestCase):
+    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com')
+    def test_old_and_observed_host(self):
+        from urllib.parse import parse_qsl,urlsplit
+        for host in self.HOSTS:
+            with self.subTest(host=host):
+                value=urlsplit(evidence._oidc_url('https://'+host+'/run?api-version=2.0'))
+                self.assertEqual(value.netloc,host)
+                self.assertEqual(parse_qsl(value.query),[('api-version','2.0'),('audience',evidence.constants.AUDIENCE)])
+    def test_guards_remain_exact(self):
+        for host in self.HOSTS:
+            for raw in ('http://'+host+'/run','https://'+host+'.attacker.invalid/run','https://x.'+host+'/run','https://'+host+'./run','https://user@'+host+'/run','https://'+host+':443/run','https://'+host+':/run','https://'+host+'/run#fragment','https://'+host+'/run#','https://'+host+'/run?audience=other','https://'+host+'/run?%61udience=other','https://run-actions-2-azure-westus.actions.githubusercontent.com/run'):
+                with self.subTest(raw=raw),self.assertRaisesRegex(evidence.EvidenceError,'oidc_url_rejected'):
+                    evidence._oidc_url(raw)
+
+
+
 if __name__ == "__main__":
     unittest.main()
