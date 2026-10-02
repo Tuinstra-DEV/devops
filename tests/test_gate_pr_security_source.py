@@ -133,8 +133,15 @@ class SourceTests(unittest.TestCase):
         destination = self.root / "snapshot"
         self.assertEqual(tree, source.materialize(store, commit, destination))
         self.assertEqual(b"#!/bin/sh\ntouch NEVER_EXECUTE\n", (destination / "payload.sh").read_bytes())
-        self.assertEqual(0o444, (destination / "payload.sh").stat().st_mode & 0o777)
+        self.assertEqual(0o555, (destination / "payload.sh").stat().st_mode & 0o777)
         self.assertFalse((self.root / "NEVER_EXECUTE").exists())
+
+    def test_nonexecutable_source_remains_readonly_without_execute_bits(self):
+        store, commit, tree = self.synthetic_store("plain.php", b"<?php echo 'synthetic';", "100644")
+        destination = self.root / "snapshot"
+        self.assertEqual(tree, source.materialize(store, commit, destination))
+        self.assertEqual(0o444, (destination / "plain.php").stat().st_mode & 0o777)
+        self.assertEqual(0o555, destination.stat().st_mode & 0o777)
 
     def test_symlink_and_lfs_are_rejected(self):
         for mode, content in (("120000", b"/etc/passwd"), ("100644", b"version https://git-lfs.github.com/spec/v1\n")):

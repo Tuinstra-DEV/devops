@@ -76,6 +76,9 @@ placeholder is used in the delivered caller.
 
 ## Source and execution boundary
 
+Git executable metadata is preserved as read-only `0555` for `100755` entries; ordinary blobs use `0444`. This lets deterministic scanners recognize extensionless interpreter entrypoints. Materialization never executes source, and the scanner invokes only its fixed code-owned commands.
+
+
 Preparation reads the fixed GitHub API and creates a fresh bare object store.
 Only verified regular Git blobs are materialized. Paths, modes, source sizes,
 object identities, symlinks, submodules and LFS pointers are checked against the

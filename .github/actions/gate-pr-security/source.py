@@ -226,13 +226,13 @@ def materialize(store, commit, destination):
         size = int(match[3])
         total += size
         require(size <= MAX_FILE and total <= MAX_SOURCE and len(files) < MAX_FILES, "source_limit")
-        files.append((path, match[2].decode(), size))
+        files.append((path, match[2].decode(), size, match[1] == b"100755"))
     # One bounded batch avoids a separate subprocess per application file.
-    batch = git(store, ["cat-file", "--batch"], data=b"".join(blob.encode() + b"\n" for _, blob, _ in files),
+    batch = git(store, ["cat-file", "--batch"], data=b"".join(blob.encode() + b"\n" for _, blob, _, _ in files),
                 max_bytes=MAX_SOURCE + MAX_FILES * 100, timeout=120) if files else b""
     destination.mkdir(mode=0o755)
     offset = 0
-    for path, blob, size in files:
+    for path, blob, size, executable in files:
         end = batch.find(b"\n", offset)
         require(end >= offset and batch[offset:end] == f"{blob} blob {size}".encode(), "source_blob_mismatch")
         contents = batch[end + 1:end + 1 + size]
@@ -245,7 +245,7 @@ def materialize(store, commit, destination):
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
         with target.open("xb") as output:
             output.write(contents)
-        target.chmod(0o444)
+        target.chmod(0o555 if executable else 0o444)
     require(offset == len(batch), "source_blob_mismatch")
     for directory in destination.rglob("*"):
         if directory.is_dir():
