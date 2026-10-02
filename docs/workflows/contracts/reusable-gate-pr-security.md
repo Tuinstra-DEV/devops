@@ -11,7 +11,7 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 
 This delivery supplies the reviewed producer for the Gate-only pilot. Server
 enrollment and App-specific branch enforcement are separate operational steps.
-The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:b6a805ea9570188a65c2af54dbf9bf8683bb7f18bd5247c8161d93efdf8bdf7c`.
+The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:64dd14c6d5d1b56dec146105312ded9ce11bbad1571322bea04145ba2acb4487`.
 IN-29 published and verified it through protected Gate run `37018917742`, source
 `a93f888518bacbc0952397f90935d57aa75b72c7`, including exact OCI provenance,
 read-only digest pull and anonymous access refusal. Its policy is
