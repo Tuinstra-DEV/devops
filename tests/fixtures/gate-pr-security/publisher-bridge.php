@@ -66,9 +66,9 @@ try {
     }
 
     // Reviewed DevOps constants.py literals; never derive policy from the ZIP.
-    $bundle = 'sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24';
-    $policy = 'sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6';
-    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2';
+    $bundle = 'sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169';
+    $policy = 'sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be';
+    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:b6a805ea9570188a65c2af54dbf9bf8683bb7f18bd5247c8161d93efdf8bdf7c';
     // This is the trusted local Gate policy, pinned by the published scanner's
     // exact digest. ZIP contents never select the server-side exclusion allowlist.
     $policyBytes = localBytes($backend.'/ci-scanner/policy.json', 262_144);
@@ -96,12 +96,12 @@ try {
     $coverage = [];
     $requiredCoverage = [
         ['osv', '2.3.8', 'composer', $bundle],
-        ['semgrep', '1.136.0', 'javascript-typescript', null],
+        ['semgrep', '1.178.0', 'javascript-typescript', null],
         ['osv', '2.3.8', 'npm', $bundle],
-        ['semgrep', '1.136.0', 'php', null],
+        ['semgrep', '1.178.0', 'php', null],
         ['gitleaks', '8.30.1', 'secrets', null],
         ['osv', '2.3.8', 'pnpm', $bundle],
-        ['semgrep', '1.136.0', 'embedded-web', null],
+        ['semgrep', '1.178.0', 'embedded-web', null],
         ['gate-text', '1', 'configuration', null],
         ['gate-text', '1', 'shell-infrastructure', null],
         ['gate-text', '1', 'dockerfile', null],

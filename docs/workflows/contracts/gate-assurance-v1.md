@@ -168,10 +168,11 @@ Checks write, Pull requests read, Actions read and mandatory Metadata read. Its 
 stays server-side. The Heal App remains separate and retains its current access.
 Bind required status checks to this App, not merely the check name or Actions App.
 
-The handoff is asynchronous: authenticated receipt may return `202 Accepted` and
-publish an in-progress check; it is never approval. Only after the trusted run/jobs
-finish can bounded verification finalize a result. This avoids waiting inside a run
-for that same run's completion. Retry safely, bind receipts to PR/base/head/policy
+The handoff is asynchronous: authenticated receipt may return `202 Accepted`;
+it is never approval. The producer waits only for fenced `admissionReady: true`
+for that receipt, confirming verified initial nonpassing publication. The final
+security result waits for trusted run/jobs completion, avoiding a circular wait.
+Retry safely within the finite token-bound admission deadline, bind receipts to PR/base/head/policy
 and run attempt, and prevent older deliveries from superseding a newer verdict.
 Re-check base/head immediately before final publication. A changed base invalidates
 previous evidence even if the head is unchanged; enqueue a replacement and ensure

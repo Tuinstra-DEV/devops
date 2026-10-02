@@ -9,8 +9,21 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 
 ## Review and enrollment
 
-This delivery is preparation for the Gate/DevOps pilot. It does not enroll a
-consumer, create an App, alter branch rules or increase a budget. The reviewed private image is
+This delivery supplies the reviewed producer for the Gate-only pilot. Server
+enrollment and App-specific branch enforcement are separate operational steps.
+The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:b6a805ea9570188a65c2af54dbf9bf8683bb7f18bd5247c8161d93efdf8bdf7c`.
+IN-29 published and verified it through protected Gate run `37018917742`, source
+`a93f888518bacbc0952397f90935d57aa75b72c7`, including exact OCI provenance,
+read-only digest pull and anonymous access refusal. Its policy is
+`sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be` and bundle/dataset `sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169`.
+Only Gate currently has package Actions access. No mutable image override is accepted.
+Another consumer requires its own approved enrollment.
+
+### Historical DEV-49 / IN-28 profile
+
+The earlier reviewed profile remains attributable to its original evidence:
+
+The previously reviewed private image was
 `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ff504c164b4d715e40f101d7273fb604798137199ccb8664bfa60005783cb0f2`.
 IN-28 published it from protected Gate run `36829949775`, source
 `299d1f99722cfca78ec34119b4293b283bbbffd2`, and proved authenticated pull plus
@@ -22,6 +35,8 @@ and bundle/dataset
 `sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24`;
 both hashes were read back from the loaded image. No mutable image override is accepted.
 Package access for another consumer needs separate approved enrollment.
+
+### Current enrollment prerequisites
 
 Before enrollment, verify all of:
 
@@ -119,11 +134,23 @@ repository, event and immutable workflow claims before sending the six-field
 receipt to the fixed HTTPS endpoint. Gate verifies the signature independently.
 
 A valid scanner exit `0`, `1` or `2` corresponds to pass, blocked or incomplete
-semantic evidence. After successful upload and durable 202 receipt, the producer
-job finishes successfully for all three: Gate interprets evidence once that job
-has completed. It does not wait on its own check. Scanner crashes, malformed or
-missing reports, stale identities, upload failure or exhausted receipt retries
-fail the producer; they never manufacture a clean report.
+semantic evidence. After upload, the producer repeats the same authenticated
+receipt until `202` includes the same receipt UUID and strict boolean
+`admissionReady: true`. That acknowledgement means the worker verified the
+current execution identity and confirmed its initial nonpassing App check under
+the current receipt/generation fence. Mere persistence is not acknowledgement.
+The producer may then finish successfully for all three outcomes; only after
+run/jobs complete does Gate inspect the artifact and publish the final verdict.
+It never waits for its own final security verdict.
+
+Polling is limited to 180 seconds, 120 attempts and the OIDC token's remaining
+expiry/accepted-age window, with finite request timeouts and three consecutive
+transient retries. Missing/nonboolean acknowledgement, a changed receipt UUID,
+expiry, outage or timeout fail the producer. Scanner crashes, malformed or
+missing reports, stale identities and upload failures also fail it; no clean
+report is manufactured. App check plus producer enforcement still requires the
+live protected-merge and same-name workflow collision tests; acknowledgement
+alone does not prove that an older same-head success cannot be reused.
 
 ## Operations and cost
 
@@ -162,10 +189,13 @@ make lint
 make test
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/gate-pr-security-local-integration.py \
   --gate-backend /absolute/path/to/existing/gate/backend \
-  --output-dir /absolute/path/to/new/temporary/probe-output
+  --output-dir /absolute/path/to/new/temporary/probe-output \
+  --scanner-oci-archive /absolute/path/to/verified/scanner.oci.tar \
+  --scanner-build-receipt /absolute/path/to/verified/scanner-receipt.json
 ```
 
-The ordinary suite includes 39 producer unit tests and a workflow contract check.
+The ordinary suite includes 53 producer unit tests, 17 local OCI identity tests and
+a workflow contract check.
 It tests source identities, fork bindings, stale attempts, unsafe paths, output
 limits, Docker isolation, cleanup, malformed/unsupported evidence, verified
 absence, OIDC binding, artifact submission and bounded retries.
@@ -179,8 +209,13 @@ It creates only synthetic Git objects and regular source fixtures, never another
 application checkout. The scanner runs with the production restrictions and its
 actual report is packaged and verified by Gate's real PHP artifact verifier.
 
-The local adapter requires Docker to inspect the exact already loaded OCI manifest
-identity, then maps the fixed registry reference to that digest. It never uses a tag. Thus it proves the scanner/helper/publisher data contract,
+With both optional archive/receipt arguments, the local adapter verifies the full archive
+checksum and immutable manifest/config/layers. It validates the receipt's declared
+clean source and ARM64 platform; authenticating its source commit against the
+protected build run remains an independent operator check. It checks the already
+loaded immutable Docker identity (classic config or containerd platform
+manifest) and maps only the fixed registry reference to that identity. Without those
+arguments it requires the exact canonical registry RepoDigest. It never uses a tag. Thus it proves the scanner/helper/publisher data contract,
 without claiming registry distribution, live OIDC authentication or App checks.
 Synthetic identities are explicit; generated ZIPs and results stay in the
 chosen local output directory, which must be shared with the local Docker host. Any unexpected outcome exits nonzero.

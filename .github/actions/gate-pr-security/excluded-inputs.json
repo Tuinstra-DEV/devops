@@ -84,7 +84,17 @@
       "path": "scripts/test-php-runtime.sh",
       "scope": "embedded-code",
       "sha256": "sha256:8385bb8e82129e3e381bcf33f7159158373c8ce8355b8300da7173ab7d175516"
+    },
+    {
+      "path": "backend/ci-scanner/verify-local.sh",
+      "scope": "embedded-code",
+      "sha256": "sha256:e795a49b52d6e3dc35c5a19fccc7ce14207097ad439bb18c87a27b9c99e62dbf"
+    },
+    {
+      "path": "frontend/patches/node-forge@1.4.0.patch",
+      "scope": "unknown-input",
+      "sha256": "sha256:73bb958e0bdabb94f7111c7b5e19cd0ebba41437654061af739e9f73fa7ba699"
     }
   ],
-  "policy_digest": "sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6"
+  "policy_digest": "sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be"
 }

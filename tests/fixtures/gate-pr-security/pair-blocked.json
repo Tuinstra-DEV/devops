@@ -6,16 +6,16 @@
   "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "base_tree": "cccccccccccccccccccccccccccccccccccccccc",
   "head_tree": "dddddddddddddddddddddddddddddddddddddddd",
-  "bundle_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
-  "policy_digest": "sha256:6288f3a9d7b463d2104bb31d44043b6df667bca2f486c450b7d2a2b376a77db6",
-  "dataset_manifest_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
+  "bundle_digest": "sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169",
+  "policy_digest": "sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be",
+  "dataset_manifest_digest": "sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169",
   "outcome": "blocked",
   "coverage": [
     {
       "scanner": "gitleaks",
       "version": "8.30.1",
       "scope": "secrets",
-      "rules_digest": "sha256:7506052c4055bf90c79a083f160ef3f381f2b75d21faa088c1f5000601116f24",
+      "rules_digest": "sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169",
       "advisory_digest": null,
       "base_result": "complete",
       "head_result": "complete"

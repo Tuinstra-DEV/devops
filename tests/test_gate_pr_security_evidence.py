@@ -177,7 +177,7 @@ class FakeResponse:
 class FakeOpener:
     def __init__(self, token, submit_responses=None):
         self.token = token
-        self.submit_responses = list(submit_responses or [FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000"}')])
+        self.submit_responses = list(submit_responses or [FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":true}')])
         self.requests = []
 
     def open(self, request, timeout):
@@ -190,9 +190,14 @@ class FakeOpener:
         return response
 
 
+FIXED_NOW = 1_800_000_000
+
+
 def fake_token(claim_changes=None):
     claims = {
         "iss": "https://token.actions.githubusercontent.com",
+        "iat": FIXED_NOW - 30,
+        "exp": FIXED_NOW + 240,
         "aud": evidence.constants.AUDIENCE,
         "repository": "Tuinstra-DEV/gate",
         "repository_id": "100100",
@@ -216,6 +221,17 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
         raw, report = setup_work(work, fixture)
         staging = evidence.package(work, environment() if env is None else env)
         return raw, report, staging
+
+    def prepare_submit(self, work, responses=None, claim_changes=None):
+        self.package_fixture(work, "pair-pass.json")
+        env = environment()
+        env.update({
+            "GATE_ARTIFACT_ID": "8675309", "GATE_ARTIFACT_DIGEST": "sha256:" + "1" * 64,
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/run?api-version=2.0",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-request-token",
+        })
+        opener = FakeOpener(fake_token(claim_changes), responses)
+        return env, opener
 
     def test_packages_pass_blocked_and_incomplete_bytes_unchanged(self):
         for fixture in ("pair-pass.json", "pair-blocked.json", "pair-incomplete.json", "pair-unsupported.json"):
@@ -566,10 +582,11 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-request-token",
             })
             token = fake_token()
-            opener = FakeOpener(token, [URLError("private network detail"), FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000"}')])
-            with patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+            opener = FakeOpener(token, [URLError("private network detail"), FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":true}')])
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
                 evidence.submit(work, env)
             self.assertEqual(len(opener.requests), 3)  # token request, transient submit, exact retry
+            self.assertEqual([request.get_method() for request, _ in opener.requests], ["GET", "POST", "POST"])
             posted = [request for request, _ in opener.requests if request.get_method() == "POST"]
             self.assertEqual(len(posted), 2)
             self.assertEqual(posted[0].data, posted[1].data)
@@ -579,6 +596,121 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 "repositoryId": "100100", "pullRequest": 73, "baseSha": "a" * 40,
                 "headSha": "b" * 40, "artifactId": artifact_id, "artifactDigest": artifact_digest,
             })
+
+    def test_submit_waits_for_durable_admission_with_same_body_and_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            receipt_id = "123e4567-e89b-42d3-a456-426614174000"
+            responses = [
+                FakeResponse(202, json.dumps({"status": "accepted", "receiptId": receipt_id, "admissionReady": False}).encode()),
+                FakeResponse(202, json.dumps({"status": "accepted", "receiptId": receipt_id, "admissionReady": True}).encode()),
+            ]
+            env, opener = self.prepare_submit(work, responses)
+            token = opener.token
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep") as sleep:
+                evidence.submit(work, env)
+            self.assertEqual([request.get_method() for request, _ in opener.requests], ["GET", "POST", "POST"])
+            posted = [request for request, _ in opener.requests if request.get_method() == "POST"]
+            self.assertEqual(posted[0].data, posted[1].data)
+            self.assertEqual(posted[0].get_header("Authorization"), "Bearer " + token)
+            self.assertEqual(posted[1].get_header("Authorization"), "Bearer " + token)
+            self.assertTrue(all(timeout > 0 for _, timeout in opener.requests))
+            sleep.assert_called_once()
+
+    def test_submit_rejects_missing_or_non_boolean_admission_flag(self):
+        responses = [
+            b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000"}',
+            b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":"true"}',
+            b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":1}',
+        ]
+        for body in responses:
+            with self.subTest(body_shape=len(body)), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                env, opener = self.prepare_submit(work, [FakeResponse(202, body)])
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
+                    with self.assertRaisesRegex(evidence.EvidenceError, "receipt_response_invalid"):
+                        evidence.submit(work, env)
+                self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 1)
+
+    def test_submit_rejects_receipt_identity_change_while_polling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            responses = [
+                FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":false}'),
+                FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174001","admissionReady":true}'),
+            ]
+            env, opener = self.prepare_submit(work, responses)
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                with self.assertRaisesRegex(evidence.EvidenceError, "receipt_identity_changed"):
+                    evidence.submit(work, env)
+            self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 2)
+
+    def test_submit_stops_polling_at_monotonic_admission_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            response = FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":false}')
+            env, opener = self.prepare_submit(work, [response])
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence.time, "monotonic", side_effect=[0.0, 0.0, 181.0]), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                with self.assertRaisesRegex(evidence.EvidenceError, "publication_admission_timeout"):
+                    evidence.submit(work, env)
+            self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 1)
+
+    def test_submit_has_finite_poll_attempt_cap_when_clock_does_not_advance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            pending = FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":false}')
+            env, opener = self.prepare_submit(work, [pending, pending])
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence.time, "monotonic", return_value=0.0), patch.object(evidence, "PUBLICATION_MAX_ATTEMPTS", 2), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                with self.assertRaisesRegex(evidence.EvidenceError, "publication_admission_timeout"):
+                    evidence.submit(work, env)
+            self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 2)
+
+    def test_submit_rejects_expired_or_future_oidc_times_before_post(self):
+        invalid_claims = (
+            {"exp": FIXED_NOW},
+            {"iat": FIXED_NOW + 61},
+            {"iat": FIXED_NOW - 301},
+            {"iat": True},
+            {"exp": FIXED_NOW + 1000},
+        )
+        for changes in invalid_claims:
+            with self.subTest(claims=tuple(changes)), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                env, opener = self.prepare_submit(work, claim_changes=changes)
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
+                    with self.assertRaisesRegex(evidence.EvidenceError, "oidc_token_time_invalid"):
+                        evidence.submit(work, env)
+                self.assertFalse(any(request.get_method() == "POST" for request, _ in opener.requests))
+
+    def test_submit_rejects_expiry_while_polling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            response = FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":false}')
+            env, opener = self.prepare_submit(work, [response])
+            wall_times = [FIXED_NOW, FIXED_NOW, FIXED_NOW, FIXED_NOW + 241]
+            with patch.object(evidence.time, "time", side_effect=wall_times), patch.object(evidence.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 1.6]), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                with self.assertRaisesRegex(evidence.EvidenceError, "oidc_token_time_invalid"):
+                    evidence.submit(work, env)
+            self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 1)
+
+    def test_submit_rejects_forbidden_or_replay_response(self):
+        for status in (403, 409):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                env, opener = self.prepare_submit(work, [FakeResponse(status, b"{}")])
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
+                    with self.assertRaisesRegex(evidence.EvidenceError, "receipt_rejected"):
+                        evidence.submit(work, env)
+                self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 1)
+
+    def test_submit_retries_service_unavailable_only_three_times(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            env, opener = self.prepare_submit(work, [FakeResponse(503, b"{}") for _ in range(3)])
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                with self.assertRaisesRegex(evidence.EvidenceError, "publisher_temporarily_unavailable"):
+                    evidence.submit(work, env)
+            self.assertEqual(sum(request.get_method() == "POST" for request, _ in opener.requests), 3)
 
     def test_submit_rechecks_exclusion_git_objects_before_oidc_or_http(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -613,7 +745,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                     "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-request-token",
                 })
                 opener = FakeOpener(fake_token(claim_changes))
-                with patch.object(evidence, "build_opener", return_value=opener):
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
                     with self.assertRaises(evidence.EvidenceError):
                         evidence.submit(work, env)
                 self.assertFalse(any(request.get_method() == "POST" for request, _ in opener.requests))
@@ -632,9 +764,26 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                     "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "synthetic-request-token",
                 })
                 opener = FakeOpener(fake_token(), [FakeResponse(status, response)])
-                with patch.object(evidence, "build_opener", return_value=opener):
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
                     with self.assertRaisesRegex(evidence.EvidenceError, reason):
                         evidence.submit(work, env)
+
+
+class OriginRegression(unittest.TestCase):
+    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com')
+    def test_old_and_observed_host(self):
+        from urllib.parse import parse_qsl,urlsplit
+        for host in self.HOSTS:
+            with self.subTest(host=host):
+                value=urlsplit(evidence._oidc_url('https://'+host+'/run?api-version=2.0'))
+                self.assertEqual(value.netloc,host)
+                self.assertEqual(parse_qsl(value.query),[('api-version','2.0'),('audience',evidence.constants.AUDIENCE)])
+    def test_guards_remain_exact(self):
+        for host in self.HOSTS:
+            for raw in ('http://'+host+'/run','https://'+host+'.attacker.invalid/run','https://x.'+host+'/run','https://'+host+'./run','https://user@'+host+'/run','https://'+host+':443/run','https://'+host+':/run','https://'+host+'/run#fragment','https://'+host+'/run#','https://'+host+'/run?audience=other','https://'+host+'/run?%61udience=other','https://run-actions-2-azure-westus.actions.githubusercontent.com/run'):
+                with self.subTest(raw=raw),self.assertRaisesRegex(evidence.EvidenceError,'oidc_url_rejected'):
+                    evidence._oidc_url(raw)
+
 
 
 if __name__ == "__main__":
