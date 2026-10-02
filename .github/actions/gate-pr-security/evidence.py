@@ -585,7 +585,7 @@ class _NoRedirect(HTTPRedirectHandler):
 def _oidc_url(raw_url: str) -> str:
     try:
         parsed = urlsplit(raw_url)
-        allowed_hosts = {"pipelines.actions.githubusercontent.com", "run-actions-1-azure-eastus.actions.githubusercontent.com", "run-actions-3-azure-eastus.actions.githubusercontent.com"}
+        allowed_hosts = {"pipelines.actions.githubusercontent.com", "run-actions-1-azure-eastus.actions.githubusercontent.com", "run-actions-2-azure-eastus.actions.githubusercontent.com", "run-actions-3-azure-eastus.actions.githubusercontent.com"}
         if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts
                 or parsed.netloc != parsed.hostname or "#" in raw_url
                 or parsed.username or parsed.password or parsed.port):
@@ -678,6 +678,27 @@ def _fetch_oidc_token(environment: dict[str, str], opener: Any | None = None) ->
     return value
 
 
+def _receipt_denial(raw: bytes) -> str:
+    # Only fixed public machine codes may leave this boundary. Never echo a
+    # remote detail/title/body or an arbitrary token-looking string.
+    codes = {
+        "oidc_unsupported_algorithm_or_key", "oidc_invalid_x5t",
+        "oidc_invalid_identity_claim", "oidc_unapproved_event",
+        "oidc_unapproved_workflow", "oidc_invalid_signature",
+        "oidc_token_outside_time_window", "oidc_repository_not_enrolled",
+        "oidc_invalid_issuer_audience_or_id", "publisher_not_enrolled",
+    }
+    try:
+        if len(raw) > 8192:
+            return "receipt_rejected"
+        value = json.loads(raw)
+        if isinstance(value, dict) and isinstance(value.get("code"), str) and value["code"] in codes:
+            return "receipt_rejected_" + value["code"]
+    except (ValueError, UnicodeError):
+        pass
+    return "receipt_rejected"
+
+
 def _post_receipt(body: bytes, token: str, opener: Any, issued_at: int, expires_at: int) -> None:
     parsed = urlsplit(constants.ENDPOINT)
     if parsed.scheme != "https" or parsed.netloc != "gate.tuinstra.dev" or parsed.path != "/integrations/github/pr-security/receipts" or parsed.query or parsed.fragment:
@@ -726,11 +747,17 @@ def _post_receipt(body: bytes, token: str, opener: Any, issued_at: int, expires_
                 response_body = _read_http_body(response)
         except HTTPError as error:
             status = error.code
-            error.close()
             if status in {408, 425, 429} or 500 <= status <= 599:
+                error.close()
                 retry_transient()
                 continue
-            raise EvidenceError("receipt_rejected") from None
+            try:
+                rejection = _receipt_denial(error.read(8193))
+            except Exception:
+                rejection = "receipt_rejected"
+            finally:
+                error.close()
+            raise EvidenceError(rejection) from None
         except (URLError, TimeoutError, OSError):
             retry_transient()
             continue
@@ -739,7 +766,7 @@ def _post_receipt(body: bytes, token: str, opener: Any, issued_at: int, expires_
             if status in {408, 425, 429} or 500 <= status <= 599:
                 retry_transient()
                 continue
-            raise EvidenceError("receipt_rejected")
+            raise EvidenceError(_receipt_denial(response_body))
 
         receipt = _decode_json(response_body, "receipt_response_invalid")
         current_receipt_id = receipt.get("receiptId")

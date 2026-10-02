@@ -750,6 +750,58 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                         evidence.submit(work, env)
                 self.assertFalse(any(request.get_method() == "POST" for request, _ in opener.requests))
 
+    def test_submit_exposes_only_known_bounded_receipt_denial_codes(self):
+        cases = (
+            (b'{"code":"oidc_unsupported_algorithm_or_key","detail":"synthetic-private-marker"}', "receipt_rejected_oidc_unsupported_algorithm_or_key"),
+            (b'{"code":"synthetic_private_token","detail":"synthetic-private-marker"}', "receipt_rejected"),
+            (b'<html>synthetic-private-marker</html>', "receipt_rejected"),
+            (b'{"code":"oidc_unapproved_workflow"}' + b' ' * 8193, "receipt_rejected"),
+        )
+        for body, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                env, opener = self.prepare_submit(work, [FakeResponse(403, body)])
+                with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
+                    with self.assertRaises(evidence.EvidenceError) as raised:
+                        evidence.submit(work, env)
+                self.assertEqual(expected, raised.exception.reason)
+                self.assertNotIn("synthetic-private-marker", str(raised.exception))
+                self.assertEqual(1, sum(request.get_method() == "POST" for request, _ in opener.requests))
+
+    def test_submit_known_http_error_closes_stream_and_redacts_detail(self):
+        import io
+        from urllib.error import HTTPError
+        stream = io.BytesIO(b'{"code":"oidc_unapproved_workflow","detail":"synthetic-private-marker"}')
+        error = HTTPError(evidence.constants.ENDPOINT, 403, "Forbidden", {}, stream)
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            env, opener = self.prepare_submit(work, [error])
+            with patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener):
+                with self.assertRaises(evidence.EvidenceError) as raised:
+                    evidence.submit(work, env)
+            self.assertEqual("receipt_rejected_oidc_unapproved_workflow", raised.exception.reason)
+            self.assertNotIn("synthetic-private-marker", str(raised.exception))
+            self.assertTrue(stream.closed)
+            self.assertEqual(1, sum(request.get_method() == "POST" for request, _ in opener.requests))
+
+    def test_transient_http_error_is_closed_without_reading_its_body(self):
+        import io
+        from urllib.error import HTTPError
+        class UnreadableTransientBody(io.BytesIO):
+            def read(self, *args):
+                raise AssertionError("transient response body must not be read")
+        stream = UnreadableTransientBody(b"synthetic-private-marker")
+        error = HTTPError(evidence.constants.ENDPOINT, 503, "Unavailable", {}, stream)
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            ready = FakeResponse(202, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000","admissionReady":true}')
+            env, opener = self.prepare_submit(work, [error, ready])
+            with patch.object(stream, "read", wraps=stream.read) as read_body, patch.object(evidence.time, "time", return_value=FIXED_NOW), patch.object(evidence, "build_opener", return_value=opener), patch.object(evidence.time, "sleep"):
+                evidence.submit(work, env)
+                read_body.assert_not_called()
+            self.assertTrue(stream.closed)
+            self.assertEqual(2, sum(request.get_method() == "POST" for request, _ in opener.requests))
+
     def test_submit_only_accepts_202(self):
         cases = ((200, b'{"status":"accepted","receiptId":"123e4567-e89b-42d3-a456-426614174000"}', "receipt_rejected"),
                  (202, b'{"status":"accepted","receiptId":"not-a-uuid"}', "receipt_response_invalid"))
@@ -770,7 +822,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
 
 
 class OriginRegression(unittest.TestCase):
-    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com','run-actions-3-azure-eastus.actions.githubusercontent.com')
+    HOSTS=('pipelines.actions.githubusercontent.com','run-actions-1-azure-eastus.actions.githubusercontent.com','run-actions-2-azure-eastus.actions.githubusercontent.com','run-actions-3-azure-eastus.actions.githubusercontent.com')
     def test_old_and_observed_host(self):
         from urllib.parse import parse_qsl,urlsplit
         for host in self.HOSTS:
