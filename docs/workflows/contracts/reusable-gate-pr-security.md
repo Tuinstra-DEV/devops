@@ -273,8 +273,7 @@ execution, not a live OIDC/App/required-check probe. Full Gate source with polic
 exclusions is still a separately stated IN-29 prerequisite.
 
 The DEV-49 helper pin is `99ee0df4a14877fae2327ea29d293b0187ef3271`;
-the consumer workflow pin is `598636f8f0f4290be95427a0f7670a6b515a2cc5`. Enrollment
-must register that exact workflow ref/SHA and the fixed image/profile above.
+the consumer workflow pin is `598636f8f0f4290be95427a0f7670a6b515a2cc5`. That historical enrollment used its own workflow/profile pair; it is not the current IN-29 enrollment.
 
 The [four-persona scorecard](../../evidence/DEV-49-persona-verification-2026-10-01.md)
 records fresh CLI journeys on the fixed DEV-49 candidate and their explicit limits.
@@ -282,3 +281,5 @@ records fresh CLI journeys on the fixed DEV-49 candidate and their explicit limi
 ### Exact braces addition, IN-29 (4 October 2026)
 
 The current profile was built and verified in Gate run [37227722419](https://github.com/Tuinstra-DEV/gate/actions/runs/37227722419), from protected source `c2faed94053b449948242fedf0950c7a9763fbf1`. The source, OCI bytes/config, runner manifest, private digest publication, read-only pull and anonymous refusal passed verification. The 20-entry exclusion table preserves the prior 19 entries and adds only `frontend/patches/braces@3.0.3.patch` at `sha256:ef55a5662ef89adeb3665748fcbe04127f72694fdf796c5072b68d023b538e19`. Patch hunks have independently reviewed bounded regression evidence and no Semgrep coverage; changed bytes fail closed. Both exact audit mitigations expire at 9 October 2026, 00:00 Europe/Amsterdam. This is not a global dependency ignore, App-right/repository/host expansion or Heal activation.
+
+The current IN-29 helper is `6c8bdae8fdaf08a64993d4368588efa29cfeadab`; its immutable reusable workflow is `cb06caf042b13ae06bb7a9d4a951fbd71afcd402`. The caller template pins this workflow. Gate registration must bind that exact workflow ref/SHA to the current image, policy and bundle above before live verification.

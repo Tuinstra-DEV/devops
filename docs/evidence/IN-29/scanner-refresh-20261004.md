@@ -47,3 +47,9 @@ The first attempted integration output location failed safely because Colima doe
 The helper is committed before its immutable workflow pin; the workflow is committed before the caller template pin. No mutable tags or self-referential SHA placeholders are used.
 
 Gate application production is currently healthy at `85a127453cda9743371c06f5eefd28a07b8b14a7`, deployed by run 37228860188. Its existing publisher registration is still the previous profile. This producer refresh does **not** establish live enrollment, App-owned positive/negative verdicts, required merge checks, four-persona acceptance or completion of IN-29. Those remain separate attributable Gate-pilot steps. There is no UI change; screenshots are N/A.
+
+## Committed pin chain
+
+- Helper: `6c8bdae8fdaf08a64993d4368588efa29cfeadab`.
+- Reusable workflow: `cb06caf042b13ae06bb7a9d4a951fbd71afcd402`.
+- The caller template consumes that exact workflow SHA.
