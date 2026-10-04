@@ -11,11 +11,11 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 
 This delivery supplies the reviewed producer for the Gate-only pilot. Server
 enrollment and App-specific branch enforcement are separate operational steps.
-The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:64dd14c6d5d1b56dec146105312ded9ce11bbad1571322bea04145ba2acb4487`.
-IN-29 published and verified it through protected Gate run `37018917742`, source
-`a93f888518bacbc0952397f90935d57aa75b72c7`, including exact OCI provenance,
+The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:3fcdefee1936f3e973209fd8f7ed1cb476935f6b0ee6cd7f7d591c0084481355`.
+IN-29 published and verified it through protected Gate run `37227722419`, source
+`c2faed94053b449948242fedf0950c7a9763fbf1`, including exact OCI provenance,
 read-only digest pull and anonymous access refusal. Its policy is
-`sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be` and bundle/dataset `sha256:b0d3535458f977a26942a1fc8382ee17df3c215fd027165f6c0c9dc95e850169`.
+`sha256:eb75f555e8d08280cbb658c9317020c24196e67148267bc6a957a16f45374a0b` and bundle/dataset `sha256:baede296ee579f2a6b7a171816641b2584cf4915ca2e314cd092cb298f327bf9`.
 Only Gate currently has package Actions access. No mutable image override is accepted.
 Another consumer requires its own approved enrollment.
 
@@ -278,3 +278,7 @@ must register that exact workflow ref/SHA and the fixed image/profile above.
 
 The [four-persona scorecard](../../evidence/DEV-49-persona-verification-2026-10-01.md)
 records fresh CLI journeys on the fixed DEV-49 candidate and their explicit limits.
+
+### Exact braces addition, IN-29 (4 October 2026)
+
+The current profile was built and verified in Gate run [37227722419](https://github.com/Tuinstra-DEV/gate/actions/runs/37227722419), from protected source `c2faed94053b449948242fedf0950c7a9763fbf1`. The source, OCI bytes/config, runner manifest, private digest publication, read-only pull and anonymous refusal passed verification. The 20-entry exclusion table preserves the prior 19 entries and adds only `frontend/patches/braces@3.0.3.patch` at `sha256:ef55a5662ef89adeb3665748fcbe04127f72694fdf796c5072b68d023b538e19`. Patch hunks have independently reviewed bounded regression evidence and no Semgrep coverage; changed bytes fail closed. Both exact audit mitigations expire at 9 October 2026, 00:00 Europe/Amsterdam. This is not a global dependency ignore, App-right/repository/host expansion or Heal activation.
