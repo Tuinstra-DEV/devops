@@ -251,5 +251,10 @@ manager account, monitor rotation, and include the mount in capacity alerts.
 The GitHub token is provisioned separately at `/etc/ci-runner/github.token` as
 root mode `0600`. systemd exposes it to the unprivileged service through
 `LoadCredential`; it never appears in TOML, argv, logs, or repository content.
+The one-time platform-admission helper verifies the effective `LoadCredential`
+binding through systemd and the root-controlled, unit-private runtime path before
+using the credential. Readable file mode bits are accepted only when the
+containing unit directory remains inaccessible to other users. The helper does
+not print token contents or change credential permissions.
 Grant only repository-level Actions read and self-hosted-runner write access for
 allowlisted repositories and rotate it through the normal secret-management process.
