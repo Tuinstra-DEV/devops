@@ -94,7 +94,12 @@
       "path": "frontend/patches/node-forge@1.4.0.patch",
       "scope": "unknown-input",
       "sha256": "sha256:73bb958e0bdabb94f7111c7b5e19cd0ebba41437654061af739e9f73fa7ba699"
+    },
+    {
+      "path": "frontend/patches/braces@3.0.3.patch",
+      "scope": "unknown-input",
+      "sha256": "sha256:ef55a5662ef89adeb3665748fcbe04127f72694fdf796c5072b68d023b538e19"
     }
   ],
-  "policy_digest": "sha256:bca9dae69e5a93f4f72b3941328abf3e3ab49ab05f9bd99c77c5e96dd3ca19be"
+  "policy_digest": "sha256:eb75f555e8d08280cbb658c9317020c24196e67148267bc6a957a16f45374a0b"
 }

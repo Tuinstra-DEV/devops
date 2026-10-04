@@ -37,7 +37,7 @@ CONTEXT = {
     "GATE_EVENT_NAME": "pull_request_target", "GATE_EXECUTION_REF": "refs/heads/main",
     "GATE_EXECUTION_SHA": "d" * 40,
 }
-EXCLUSION_CASES = {"approved-exclusions", "changed-exclusion", "removed-exclusions", "blocked-with-exclusions"}
+EXCLUSION_CASES = {"approved-exclusions", "changed-exclusion", "changed-braces-exclusion", "removed-exclusions", "blocked-with-exclusions"}
 OCI_ARCHIVE_MAX_BYTES = 4 * 1024 * 1024 * 1024
 OCI_RECEIPT_MAX_BYTES = 64 * 1024
 OCI_METADATA_MAX_BYTES = 4 * 1024 * 1024
@@ -471,6 +471,7 @@ def main():
             "backend/src/Controller/.placeholder": b"",
             "frontend/public/favicon-16x16.png": (backend.parent / "frontend/public/favicon-16x16.png").read_bytes(),
             "scripts/test-php-runtime.sh": (backend.parent / "scripts/test-php-runtime.sh").read_bytes(),
+            "frontend/patches/braces@3.0.3.patch": (backend.parent / "frontend/patches/braces@3.0.3.patch").read_bytes(),
         })
         cases = [
             ("pass", "pass", dict(BASE_FILES), BASE_FILES),
@@ -482,6 +483,7 @@ def main():
             ("unknown-input", "incomplete", dict(BASE_FILES, **{"unclassified.payload": b"Synthetic unknown input.\n"}), BASE_FILES),
             ("approved-exclusions", "pass", dict(excluded), excluded),
             ("changed-exclusion", "incomplete", dict(excluded, **{"frontend/public/favicon-16x16.png": excluded["frontend/public/favicon-16x16.png"] + b"changed"}), excluded),
+            ("changed-braces-exclusion", "incomplete", dict(excluded, **{"frontend/patches/braces@3.0.3.patch": excluded["frontend/patches/braces@3.0.3.patch"] + b"changed"}), excluded),
             ("removed-exclusions", "pass", dict(BASE_FILES), excluded),
             ("blocked-with-exclusions", "blocked", dict(excluded, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'}), excluded),
         ]
