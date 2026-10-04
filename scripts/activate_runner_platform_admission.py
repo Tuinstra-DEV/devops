@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,10 @@ STATE_DIR = Path("/var/lib/ci-runner-manager/state")
 OVERLAY_ROOT = Path("/var/lib/ci-runner/overlay")
 LOCK_PATH = Path("/run/lock/ci-runner-platform-admission.lock")
 SERVICE = "ci-runner-manager.service"
+SYSTEMD_CREDENTIAL_PATH = Path("/run/credentials/ci-runner-manager.service/github_token")
+SYSTEMD_CREDENTIAL_DIRECTORY = SYSTEMD_CREDENTIAL_PATH.parent
+SYSTEMD_CREDENTIAL_BINDING = ("github_token", "/etc/ci-runner/github.token")
+SYSTEMD_UNIT_OBJECT = "/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice"
 OWNER = "Tuinstra-DEV"
 TARGET_REPOSITORY = "Tuinstra-DEV/wodiq-platform"
 RUNNER_LABEL = "trusted-heavy"
@@ -100,8 +105,8 @@ def _parse_config(data: bytes) -> tuple[dict, list[str], tuple[int, int]]:
         raise ActivationError("manager owner, runner label, or concurrency is unexpected")
     if config["state_dir"] != str(STATE_DIR) or config["overlay_root"] != str(OVERLAY_ROOT):
         raise ActivationError("manager state or overlay path is unexpected")
-    if not isinstance(config["github_token_file"], str) or not config["github_token_file"]:
-        raise ActivationError("manager credential path is malformed")
+    if config["github_token_file"] != str(SYSTEMD_CREDENTIAL_PATH):
+        raise ActivationError("manager credential path differs from the reviewed systemd credential")
     if not isinstance(config["github_api_url"], str):
         raise ActivationError("manager API URL is malformed")
     if config["github_api_url"] != "https://api.github.com":
@@ -232,29 +237,115 @@ def _manager_was_active(command: Command) -> bool:
     return True
 
 
-def _check_repository_access(config: dict, *, opener=None) -> None:
-    """Check repository Actions and runner-list access without exposing credentials."""
-    token_path = Path(config["github_token_file"])
-    token_fd = None
+def _metadata_description(path: Path, metadata: os.stat_result) -> str:
+    file_type = "regular" if stat.S_ISREG(metadata.st_mode) else "directory" if stat.S_ISDIR(metadata.st_mode) else "other"
+    return (
+        f"path={path} type={file_type} uid={metadata.st_uid} gid={metadata.st_gid} "
+        f"mode={stat.S_IMODE(metadata.st_mode):04o}"
+    )
+
+
+def _systemd_credential_binding(command: Command) -> None:
+    result = _run(command, [
+        "busctl", "--json=short", "get-property", "org.freedesktop.systemd1",
+        SYSTEMD_UNIT_OBJECT, "org.freedesktop.systemd1.Service", "LoadCredential",
+    ])
     try:
-        token_fd = os.open(
-            token_path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        document = json.loads(result.stdout.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ActivationError("cannot verify the effective manager credential binding") from exc
+    if document != {"type": "a(ss)", "data": [[*SYSTEMD_CREDENTIAL_BINDING]]}:
+        raise ActivationError("effective manager credential binding differs from the reviewed root store")
+
+
+def _read_systemd_credential(path: Path, *, credential_directory: Path | None = None,
+                              expected_owner: tuple[int, int] = (0, 0)) -> str:
+    if credential_directory is None:
+        if path != SYSTEMD_CREDENTIAL_PATH:
+            raise ActivationError("manager systemd credential path is not canonical")
+        directories = (Path("/run"), Path("/run/credentials"), SYSTEMD_CREDENTIAL_DIRECTORY)
+    else:
+        # Unit tests map the fixed systemd path onto an isolated private fixture.
+        if path.parent != credential_directory or path.name != SYSTEMD_CREDENTIAL_PATH.name:
+            raise ActivationError("manager systemd credential path is not canonical")
+        directories = (credential_directory,)
+
+    for directory in directories:
+        try:
+            metadata = directory.lstat()
+        except OSError as exc:
+            raise ActivationError("cannot inspect systemd credential directory metadata") from exc
+        protected = (
+            stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_uid == expected_owner[0]
+            and metadata.st_gid == expected_owner[1]
+            and stat.S_IMODE(metadata.st_mode) & 0o022 == 0
         )
-        token_stat = os.fstat(token_fd)
-        if not stat.S_ISREG(token_stat.st_mode) or stat.S_IMODE(token_stat.st_mode) & 0o077:
-            raise ActivationError("manager credential file is not a private regular file")
-        token_bytes = os.read(token_fd, 4097)
-        if len(token_bytes) > 4096:
-            raise ActivationError("manager credential file is unexpectedly large")
+        if directory == directories[-1]:
+            mode = stat.S_IMODE(metadata.st_mode)
+            # systemd's unit credential directory must be private from other
+            # users. Group access is acceptable only for root:root; there must
+            # be no group/world write and no world read/traverse.
+            protected = protected and mode & 0o007 == 0
+        if not protected:
+            raise ActivationError(
+                "systemd credential directory violates the protected owner/mode contract ("
+                f"{_metadata_description(directory, metadata)})"
+            )
+
+    try:
+        before = path.lstat()
+        before_mode = stat.S_IMODE(before.st_mode)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != expected_owner[0] \
+                or before.st_gid != expected_owner[1] or before.st_nlink != 1 \
+                or before_mode not in (0o400, 0o440, 0o444):
+            raise ActivationError(
+                "systemd credential file violates the root-owned read-only contract ("
+                f"{_metadata_description(path, before)})"
+            )
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise ActivationError("systemd credential changed while being inspected")
+            mode = stat.S_IMODE(metadata.st_mode)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != expected_owner[0] \
+                    or metadata.st_gid != expected_owner[1] or metadata.st_nlink != 1 \
+                    or mode not in (0o400, 0o440, 0o444):
+                raise ActivationError(
+                    "systemd credential file violates the root-owned read-only contract ("
+                    f"{_metadata_description(path, metadata)})"
+                )
+            token_bytes = stream.read(4097)
+    except ActivationError:
+        raise
+    except OSError as exc:
+        raise ActivationError("manager systemd credential is unavailable") from exc
+    if len(token_bytes) > 4096:
+        raise ActivationError("manager credential is unexpectedly large")
+    try:
         token = token_bytes.decode("ascii").strip()
-    except (OSError, UnicodeError) as exc:
-        raise ActivationError("manager credential is unavailable for repository access check") from exc
-    finally:
-        if token_fd is not None:
-            os.close(token_fd)
+    except UnicodeError as exc:
+        raise ActivationError("manager credential is malformed") from exc
     if not token or "\n" in token or "\r" in token:
         raise ActivationError("manager credential is empty or malformed")
+    return token
+
+
+def _check_repository_access(config: dict, *, command: Command = subprocess.run,
+                             opener=None, credential_file: Path | None = None,
+                             credential_directory: Path | None = None,
+                             credential_owner: tuple[int, int] = (0, 0)) -> None:
+    """Check repository Actions and runner-list access without exposing credentials."""
+    token_path = Path(config["github_token_file"])
+    if token_path != SYSTEMD_CREDENTIAL_PATH:
+        raise ActivationError("manager credential path is not the reviewed systemd credential")
+    _systemd_credential_binding(command)
+    token = _read_systemd_credential(
+        credential_file or token_path,
+        credential_directory=credential_directory,
+        expected_owner=credential_owner,
+    )
 
     if opener is None:
         opener = urllib.request.build_opener(_NoRedirect())
@@ -384,7 +475,10 @@ def _rollback_after_failure(path: Path, backup: Path, metadata: os.stat_result,
 
 def activate(config_path: Path = CONFIG, *, command: Command = subprocess.run,
              lock_path: Path = LOCK_PATH, state_dir: Path = STATE_DIR,
-             overlay_root: Path = OVERLAY_ROOT, opener=None) -> str:
+             overlay_root: Path = OVERLAY_ROOT, opener=None,
+             credential_file: Path | None = None,
+             credential_directory: Path | None = None,
+             credential_owner: tuple[int, int] = (0, 0)) -> str:
     lock_fd = _acquire_lock(lock_path)
     was_stopped = False
     backup = None
@@ -395,7 +489,14 @@ def activate(config_path: Path = CONFIG, *, command: Command = subprocess.run,
         if repositories == EXPECTED_REPOSITORIES:
             return "WODIQ Platform is already in the runner allowlist; no changes made"
         candidate = _add_repository(original)
-        _check_repository_access(_parsed, opener=opener)
+        _check_repository_access(
+            _parsed,
+            command=command,
+            opener=opener,
+            credential_file=credential_file,
+            credential_directory=credential_directory,
+            credential_owner=credential_owner,
+        )
         _pause_and_drain(command, state_dir, overlay_root)
         was_stopped = True
 

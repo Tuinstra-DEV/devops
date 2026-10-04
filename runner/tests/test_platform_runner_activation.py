@@ -1,25 +1,32 @@
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 import activate_runner_platform_admission as activation
 
 
 class FakeCommands:
-    def __init__(self, *, domains="", on_virsh=None, fail_start=False):
+    def __init__(self, *, domains="", on_virsh=None, fail_start=False,
+                 credential_binding=("github_token", "/etc/ci-runner/github.token")):
         self.active = True
         self.domains = domains
         self.on_virsh = on_virsh
         self.fail_start = fail_start
+        self.credential_binding = credential_binding
         self.calls = []
 
     def __call__(self, argv, **_kwargs):
         self.calls.append(list(argv))
+        if argv[:2] == ["busctl", "--json=short"]:
+            stdout = json.dumps({"type": "a(ss)", "data": [list(self.credential_binding)]}).encode()
+            return subprocess.CompletedProcess(argv, 0, stdout, b"")
         if argv[:2] == ["systemctl", "is-active"]:
             stdout = b"active\n" if self.active else b"inactive\n"
             return subprocess.CompletedProcess(argv, 0 if self.active else 3, stdout, b"")
@@ -68,21 +75,22 @@ class RunnerAdmissionActivationTests(unittest.TestCase):
         self.lock = root / "admission.lock"
         self.state = root / "state"
         self.overlay = root / "overlay"
-        self.token = root / "synthetic-token"
+        self.credentials = root / "credentials"
+        self.credentials.mkdir(mode=0o700)
+        self.token = self.credentials / "github_token"
         self.state.mkdir()
         self.overlay.mkdir()
         self.token.write_text("synthetic-token-value\n")
-        self.token.chmod(0o600)
+        self.token.chmod(0o440)
+        self.credentials.chmod(0o550)
         source = (Path(__file__).parents[2] / "runner/config/manager.toml").read_text()
         source = source.replace('  "Tuinstra-DEV/wodiq-platform",\n', "")
-        source = source.replace(
-            '/run/credentials/ci-runner-manager.service/github_token', str(self.token)
-        )
         self.base_bytes = source.encode()
         self.config.write_bytes(self.base_bytes)
         self.config.chmod(0o640)
 
     def tearDown(self):
+        self.credentials.chmod(0o700)
         self.temp.cleanup()
 
     def activate(self, commands, opener=None):
@@ -93,6 +101,9 @@ class RunnerAdmissionActivationTests(unittest.TestCase):
             state_dir=self.state,
             overlay_root=self.overlay,
             opener=opener or FakeOpener(),
+            credential_file=self.token,
+            credential_directory=self.credentials,
+            credential_owner=(os.geteuid(), os.getegid()),
         )
 
     def test_happy_path_only_adds_repository_and_keeps_backup_metadata(self):
@@ -169,7 +180,8 @@ class RunnerAdmissionActivationTests(unittest.TestCase):
         with self.assertRaisesRegex(activation.ActivationError, "HTTP 403.*configuration unchanged") as raised:
             self.activate(commands, opener)
         self.assertNotIn("synthetic-token-value", str(raised.exception))
-        self.assertEqual(commands.calls, [])
+        self.assertEqual(commands.calls[0][:2], ["busctl", "--json=short"])
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
         self.assertEqual(self.config.read_bytes(), self.base_bytes)
         self.assertFalse(list(self.config.parent.glob("manager.toml.bak.*")))
 
@@ -181,10 +193,102 @@ class RunnerAdmissionActivationTests(unittest.TestCase):
         self.assertIn("/actions/runs?status=queued", opener.requests[0][0].full_url)
         self.assertIn("/actions/runners", opener.requests[1][0].full_url)
         self.assertEqual(opener.requests[0][1], 15)
+        self.assertEqual(commands.calls[0], [
+            "busctl", "--json=short", "get-property", "org.freedesktop.systemd1",
+            activation.SYSTEMD_UNIT_OBJECT, "org.freedesktop.systemd1.Service", "LoadCredential",
+        ])
         self.assertTrue(all(
             request.get_header("Authorization") == "Bearer synthetic-token-value"
             for request, _ in opener.requests
         ))
+
+    def test_systemd_readonly_credential_accepts_modes_inside_private_runtime_directory(self):
+        # Read bits are accepted only while the exact unit-private directory
+        # and root-owned group keep the credential inaccessible to others.
+        for mode in (0o400, 0o440, 0o444):
+            with self.subTest(mode=oct(mode)):
+                self.token.chmod(mode)
+                result = self.activate(FakeCommands())
+                self.assertIn("WODIQ Platform admitted", result)
+                self.config.write_bytes(self.base_bytes)
+
+    def test_systemd_readonly_credential_rejects_other_accessible_runtime_directory(self):
+        self.credentials.chmod(0o755)
+        commands = FakeCommands()
+        with self.assertRaisesRegex(activation.ActivationError, "directory violates"):
+            self.activate(commands)
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+
+    def test_systemd_credential_rejects_unexpected_effective_unit_binding(self):
+        commands = FakeCommands(credential_binding=("other", "/etc/other.token"))
+        with self.assertRaisesRegex(activation.ActivationError, "binding differs"):
+            self.activate(commands)
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+        self.assertEqual(self.config.read_bytes(), self.base_bytes)
+
+    def test_systemd_credential_rejects_symlink(self):
+        self.credentials.chmod(0o700)
+        self.token.unlink()
+        secret = self.credentials / "other"
+        secret.write_text("synthetic-token-value\n")
+        secret.chmod(0o440)
+        self.token.symlink_to(secret)
+        commands = FakeCommands()
+        with self.assertRaises(activation.ActivationError):
+            self.activate(commands)
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+
+    def test_systemd_credential_rejects_wrong_file_uid_or_gid(self):
+        expected = (os.geteuid(), os.getegid())
+        original_fstat = os.fstat
+        for field, value in ((4, expected[0] + 1), (5, expected[1] + 1)):
+            with self.subTest(field=field):
+                def changed_owner(fd, *, _field=field, _value=value):
+                    current = original_fstat(fd)
+                    values = list(current)
+                    values[_field] = _value
+                    return os.stat_result(values)
+
+                with mock.patch.object(activation.os, "fstat", side_effect=changed_owner):
+                    with self.assertRaisesRegex(activation.ActivationError, "file violates"):
+                        activation._read_systemd_credential(
+                            self.token,
+                            credential_directory=self.credentials,
+                            expected_owner=expected,
+                        )
+
+    def test_systemd_credential_rejects_nonreadable_or_executable_modes(self):
+        for mode in (0o000, 0o111, 0o555):
+            with self.subTest(mode=oct(mode)):
+                self.token.chmod(mode)
+                commands = FakeCommands()
+                with self.assertRaisesRegex(activation.ActivationError, "file violates"):
+                    self.activate(commands)
+                self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+
+    def test_systemd_credential_rejects_writable_parent_and_file(self):
+        self.credentials.chmod(0o770)
+        commands = FakeCommands()
+        with self.assertRaisesRegex(activation.ActivationError, "directory violates"):
+            self.activate(commands)
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+        self.credentials.chmod(0o700)
+
+        self.token.chmod(0o600)
+        commands = FakeCommands()
+        with self.assertRaisesRegex(activation.ActivationError, "file violates"):
+            self.activate(commands)
+        self.assertFalse(any(call[:2] == ["systemctl", "stop"] for call in commands.calls))
+
+    def test_manager_config_rejects_noncanonical_credential_path(self):
+        self.config.write_bytes(self.base_bytes.replace(
+            b'/run/credentials/ci-runner-manager.service/github_token',
+            b'/etc/ci-runner/github.token',
+        ))
+        commands = FakeCommands()
+        with self.assertRaisesRegex(activation.ActivationError, "differs from the reviewed"):
+            self.activate(commands)
+        self.assertEqual(commands.calls, [])
 
     def test_active_sanctuary_domain_refuses_change_and_restarts_manager(self):
         commands = FakeCommands(domains="sanctuary-ci-active-job\n")
