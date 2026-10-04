@@ -313,6 +313,7 @@
     owner: root
     group: ci-runner-manager
     mode: '0640'
+    backup: true
   notify: Restart runner manager
 
 - name: Remove obsolete runner manager sudo policy

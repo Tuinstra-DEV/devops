@@ -2,6 +2,16 @@
 runner_base_image_source: ""
 runner_base_image_sha256: ""
 runner_manager_source_root: "{{ playbook_dir }}/../.."
+runner_allowed_repositories:
+  - Tuinstra-DEV/gate
+  - Tuinstra-DEV/wodiq-app
+  - Tuinstra-DEV/wodiq-platform
+  - Tuinstra-DEV/tracker
+  - Tuinstra-DEV/notify
+  - Tuinstra-DEV/console
+  - Tuinstra-DEV/wodiq-site
+  - Tuinstra-DEV/marcel-site
+  - Tuinstra-DEV/tuinstra-site
 runner_max_concurrency: 1
 runner_vcpus: 4
 runner_memory_mib: 6144

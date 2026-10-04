@@ -2,8 +2,9 @@
 
 ## Decision
 
-Sanctuary runs at most two untrusted CI jobs concurrently in separate ephemeral
-Ubuntu 24.04 KVM guests. The host is provisioned with Ansible, each guest root
+Sanctuary runs one `trusted-heavy` CI job at a time in an isolated ephemeral
+Ubuntu 24.04 KVM guest, following the [DEV-23 single-runner profile](../evidence/DEV-23-permanent-single-runner-2026-09-23.md).
+The host is provisioned with Ansible, the guest root
 disk is a qcow2 overlay backed by a checksum-pinned immutable Packer image, and
 each VM is deleted after its single JIT job.
 
@@ -14,10 +15,10 @@ allowlist, selects only queued jobs whose labels include `trusted-heavy`, and
 requests a repository JIT configuration. `runner_group_id` is configurable and
 defaults to the verified repository runner group ID `1`.
 
-The deployed allowlist is Gate, WODIQ, Tracker, Notify, Console, wodiq-site,
-marcel-site, and tuinstra-site. This DevOps repository remains hosted-only and
-is intentionally excluded to prevent the runner control plane from executing
-its own changes.
+The configured allowlist is Gate, WODIQ App, WODIQ Platform, Tracker, Notify,
+Console, wodiq-site, marcel-site, and tuinstra-site. This DevOps repository
+remains hosted-only and is intentionally excluded to prevent the runner control
+plane from executing its own changes.
 
 The adapter deduplicates completed job IDs for 24 hours. Repository JIT runners
 are label-scoped, so GitHub may assign a different queued heavy job than the one
@@ -38,8 +39,8 @@ serial ephemeral jobs while retaining completed-job runner metadata.
 After runner cleanup, the manager keeps a durable handoff tombstone, waits for
 API consistency, and retries a still-queued trigger with exponential cooldown
 capped at one hour. Pending handoffs block
-duplicate dispatch even if history is absent. Each poll fills all available
-slots, up to two VMs, and removes an offline GitHub runner record if VM launch
+duplicate dispatch even if history is absent. The manager uses the single
+configured runner slot and removes an offline GitHub runner record if VM launch
 fails. Any malformed API
 response, permission error, transport failure, or rate limit fails closed;
 rate-limit responses honor a bounded retry interval.
@@ -80,9 +81,47 @@ restricted runner group. Reusable workflows target `[self-hosted,
 trusted-heavy]`. Do not add a generic route that lets arbitrary workflows or
 fork pull requests select this machine.
 
+Admission is limited by repository and runner label; the manager does not
+inspect the event, source branch, workflow name, or actor. Before enabling the
+WODIQ Platform route, verify that repository forks are disabled and that the
+`develop` to `main` release PR has protected, required checks before its image
+build requests `trusted-heavy`. Keep ordinary pull request checks on GitHub
+hosted runners. The release workflow must not expose deployment or package-write
+credentials to pull request code.
+
+### Narrow allowlist activation
+
+The checked-in Ansible defaults and template include WODIQ Platform for future
+provisioning. For the live host, use the one-purpose helper so every existing
+manager setting stays byte-for-byte unchanged. Before running it, verify the
+repository's fork setting, required release PR checks, and that the manager's
+GitHub credential has Actions read plus repository runner-administration write
+access. The helper safely checks Actions read and runner-administration read;
+the first release canary verifies write access without printing or copying the
+credential.
+
+Copy the helper from the reviewed DevOps checkout, then run it on Sanctuary:
+
+```sh
+scp scripts/activate_runner_platform_admission.py \
+  mtuinstra@sanctuary.tuinstra.dev:/tmp/activate_runner_platform_admission.py
+ssh -t mtuinstra@sanctuary.tuinstra.dev \
+  'sudo python3 /tmp/activate_runner_platform_admission.py'
+```
+
+It checks the existing allowlist, required config fields, API access, and runner
+state; pauses dispatch; refuses active domains, leases, cleanup work, or
+overlays; writes a timestamped byte-identical backup; then atomically adds only
+WODIQ Platform and starts the manager. It prints backup and config SHA-256
+values. A permission `403` or unsafe state leaves the config unchanged. Confirm
+the manager is active and queue one non-production `trusted-heavy` canary. If
+the canary reports missing write permission, drain it and restore with the same
+helper using `--rollback /etc/ci-runner/manager.toml.bak.<timestamp>.<pid>.<id>`.
+Remove the temporary helper from `/tmp` after activation or rollback.
+
 ## Resource and admission policy
 
-- Maximum concurrency is 2. The manager keeps one global lifecycle filesystem
+- Maximum concurrency is 1. The manager keeps one global lifecycle filesystem
   lock, and the root helper independently serializes libvirt mutations.
 - Each guest receives exactly 4 vCPU, 4,096 MiB RAM, and a 120 GiB
   grow-on-write disk.
@@ -98,7 +137,7 @@ fork pull requests select this machine.
   runner CPU sets provide the CPU slots, and the helper checks live libvirt
   allocations before launch. The helper also requires the live WoW CPU set to
   match the reviewed allocation. Ansible refuses hosts that cannot fit both
-  guests plus the reserve. Manager and helper independently enforce the exact
+  guest plus the reserve. Manager and helper independently enforce the exact
   concurrency and VM resource contract, so a configuration mismatch fails
   closed.
 - The base image is root-owned and mode `0444`. The overlay root and per-job
