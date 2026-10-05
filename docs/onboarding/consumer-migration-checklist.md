@@ -61,7 +61,8 @@ The reusable CD workflow reads SSH configuration directly from the production en
 | Type | Name | Value |
 |---|---|---|
 | Secret | `SSH_PRIVATE_KEY` | SSH private key for the production server |
-| Variable | `SSH_HOST` | Hostname or IP of the production server |
+| Variable | `SSH_HOST` | DNS hostname of the production server |
+| Variable (PHP DEV-51 contract) | `SSH_HOST_ED25519_FINGERPRINT` | Independently approved ED25519 `SHA256:` fingerprint; mandatory when adopting the revised PHP workflow |
 
 > **Important:** These must be configured at the **environment level**, not repository level. The workflow sets `environment: production` on the deploy job, and GitHub resolves the vars/secrets from that environment context.
 
@@ -80,6 +81,18 @@ cp <devops-repo>/templates/workflows/caller-cd-nuxt-production.yml .github/workf
 Replace all `<YOUR-...>` placeholders with actual values for your project.
 
 Note: The caller workflows do NOT pass SSH host or private key — these are read automatically from the environment configuration you set in step 4.
+
+### PHP deployment host identity (DEV-51)
+
+The revised PHP workflow also reads `SSH_HOST_ED25519_FINGERPRINT` from its selected protected Environment. Vite/Nuxt workflows are outside DEV-51 and do not gain this check from this documentation. Missing or invalid fingerprint, failed/empty/ambiguous scan, or a key mismatch blocks PHP deployment before remote actions.
+
+1. Obtain the public ED25519 fingerprint through an independently trusted server console or already verified administrative session (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`). Never use an unverified scan as the source of the expected fingerprint.
+2. Review and configure the protected Environment variable. Preserve the configured DNS hostname and SSH port; do not substitute an internal IP.
+3. Validate the reviewed immutable workflow SHA in a safe hosted canary, including a rejected mismatched pin. Local synthetic harness results do not prove hosted permissions or production access.
+4. Update the consumer workflow to the approved full SHA in a separate reviewed consumer change. Notify's owning Story is NTF-2.
+5. Treat the mandatory variable as a breaking contract migration requiring the next immutable major release. Do not move an existing tag or silently update consumers.
+
+If deployment rejects host identity, stop and investigate the expected DNS/port, protected variable and independently confirmed host-key changes. Keep strict checking enabled. Preserve deployed images, schema and data while correcting the configuration or adopting a reviewed forward fix; an older workflow without this check is not evidence of restored host trust.
 
 For CI (lint + typecheck + build):
 

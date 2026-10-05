@@ -23,6 +23,7 @@ if ! grep -q "Auth0" "README.md"; then
 fi
 
 ./scripts/workflow-contract-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/php-deploy-hostkey-test.py
 ruby ./scripts/heavy-ci-v2-contract-test.rb
 ./scripts/heavy-ci-rollout-docs-test.sh
 ./scripts/heavy-ci-baseline-test.sh
