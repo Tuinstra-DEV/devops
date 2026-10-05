@@ -1199,6 +1199,76 @@ class BackupTests(unittest.TestCase):
                 backup.run(["ssh", "fixed-host", "export"])
         self.assertEqual(backup.failure_code(failure.exception), "source_unreachable")
 
+    def test_source_spool_status_measures_real_quota_and_complete_pair_age_without_hashing(self):
+        config = self.producer()
+        self.ready_artifact(config)
+        (Path(config["spool_dir"]) / "partial.age").write_bytes(b"partial")
+        output = io.BytesIO()
+        with mock.patch.object(backup, "sha256", side_effect=AssertionError("health must not read payload bytes")):
+            backup.dispatch(config, "spool-status umami", output)
+        value = json.loads(output.getvalue())
+        self.assertEqual(value["status"], "known")
+        self.assertEqual(value["quota_bytes"], config["spool_quota_bytes"])
+        self.assertEqual(value["used_bytes"], backup.spool_usage(Path(config["spool_dir"])))
+        self.assertEqual(value["ready_count"], 1)
+        self.assertEqual(value["oldest_ready_at"], "2026-09-12T00:00:00Z")
+        self.assertNotIn("artifact_id", json.dumps(value))
+        self.assertNotIn("PASSWORD", json.dumps(value))
+
+    def test_source_spool_status_rejects_symlinks_corruption_and_unknown_app(self):
+        config = self.producer()
+        artifact, manifest = self.ready_artifact(config)
+        with self.assertRaises(backup.BackupError):
+            backup.dispatch(config, "spool-status not-enabled", io.BytesIO())
+        payload = Path(config["spool_dir"]) / f"{artifact}.age"
+        payload.write_bytes(b"corrupt")
+        with self.assertRaises(backup.BackupError):
+            backup.source_spool_status(config, "umami")
+        payload.unlink()
+        payload.symlink_to(self.root / "secret.env")
+        with self.assertRaises(backup.BackupError):
+            backup.source_spool_status(config, "umami")
+
+    def test_destination_probe_distinguishes_missing_mount_from_unknown_failures(self):
+        mount = self.root / "destination"
+        mount.mkdir()
+        config = {"repository_root": str(mount / "repos"), "repository_mount": str(mount)}
+        self.assertEqual(backup.destination_health(config, "tuinstra-prod-01", "umami")["status"], "unknown")
+        approved = mock.patch.object(backup, "APPROVED_REPOSITORY_MOUNT", mount)
+        approved.start()
+        self.addCleanup(approved.stop)
+        with mock.patch.object(backup.os.path, "ismount", return_value=False):
+            self.assertEqual(backup.destination_health(config, "tuinstra-prod-01", "umami")["status"], "offline")
+        with mock.patch.object(backup.os.path, "ismount", return_value=True):
+            self.assertEqual(backup.destination_health(config, "tuinstra-prod-01", "umami")["status"], "unknown")
+        env = {"RESTIC_REPOSITORY": str(mount / "repos" / "tuinstra-prod-01" / "umami")}
+        with mock.patch.object(backup.os.path, "ismount", return_value=True), \
+                mock.patch.object(backup, "restic_env", return_value=(env, Path(env["RESTIC_REPOSITORY"]))), \
+                mock.patch.object(backup, "health_command", return_value={"id": "a" * 64, "version": 2}) as run:
+            self.assertEqual(backup.destination_health(config, "tuinstra-prod-01", "umami")["status"], "reachable")
+            self.assertEqual(run.call_args.args[0], ["restic", "--no-cache", "--no-lock", "cat", "config"])
+        for failure in (backup.BackupError("authentication secret"), TimeoutError(), PermissionError()):
+            with mock.patch.object(backup.os.path, "ismount", return_value=True), \
+                    mock.patch.object(backup, "restic_env", side_effect=failure):
+                value = backup.destination_health(config, "tuinstra-prod-01", "umami")
+                self.assertEqual(value["status"], "unknown")
+                self.assertNotIn("secret", json.dumps(value))
+
+    def test_health_probe_output_limit_stops_oversized_child(self):
+        with self.assertRaises(backup.BackupError):
+            backup.health_command([__import__("sys").executable, "-c", "import os; os.write(1,b'x'*1000000)"])
+        self.assertEqual(backup.health_command([__import__("sys").executable, "-c", "print('{\"value\":1}')"]), {"value": 1})
+
+    def test_catalog_attaches_probes_without_replacing_durable_evidence(self):
+        config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,
+                  "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}]}
+        with mock.patch.object(backup, "operational_health", return_value={"schema_version": 1}) as probe:
+            result = backup.observed_catalog(config, "tuinstra-prod-01", "umami")
+            self.assertEqual(result["operational_health"], {"schema_version": 1})
+            self.assertEqual(result["recovery_points"], [])
+            probe.assert_called_once_with(config, "tuinstra-prod-01", "umami")
+        self.assertNotIn("operational_health", backup.load_catalog(config, "tuinstra-prod-01", "umami"))
+
     def test_attempt_failure_updates_status_without_removing_last_good_point(self):
         config = {"catalog_root": str(self.root / "catalog"), "max_artifact_bytes": 1024,
                   "hosts": [{"host_slug": "tuinstra-prod-01", "applications": ["umami"]}]}

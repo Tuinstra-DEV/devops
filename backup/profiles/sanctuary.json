@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "repository_mount": "/mnt/hdd1000-01",
+  "backlog_after_seconds": 86400,
   "repository_root": "/mnt/hdd1000-01/backups/production",
   "password_root": "/etc/tuinstra-backup/restic-passwords",
   "work_dir": "/var/lib/tuinstra-backup/work",

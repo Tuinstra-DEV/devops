@@ -309,3 +309,54 @@ status schrijven zonder een exact, volledig gecontroleerd Restic-snapshot voor d
 Het versleutelde interne manifest bevat de werkelijk draaiende image-digests, de PostgreSQL-serverversie
 en de gebruikte `pg_dump`-versie. Export stopt wanneer een draaiende container niet overeenkomt met de
 root-owned allowlist van goedgekeurde digests.
+
+
+## DEV-32 read-only operational observation
+
+The Console catalog CLI attaches a private `operational_health` v1 observation.
+The publisher validates it and removes it before the existing schema-1 catalog
+is sent. Source fields are never written into the Console publication spool's
+2 MiB quota fields. Existing schema-2 health carries bounded incident codes only.
+
+`spool-status APP` is an exact forced-SSH allowlisted command. Under the export
+lock it measures host-wide regular-file bytes against the source's configured
+quota, plus app-scoped complete, size-matched exports and their oldest creation time.
+Incomplete pairs consume bytes but do not count as ready; corrupt pairs, unsafe
+entries and invalid timestamps produce unknown measurements. The response has
+no paths, artifact identities, raw diagnostics or secrets.
+
+The explicit `backlog_after_seconds` observation policy is 86400 in the
+Sanctuary profile: a ready export untransferred for a full daily backup interval
+opens a backlog incident. This is an alarm threshold, not a transfer SLA or time
+estimate. A fresh zero/recent-ready measurement clears it; missing, malformed,
+stale or unknown measurements never clear an existing incident. Source quota
+opens at measured usage >= configured source quota, independently of publisher
+metadata capacity.
+
+The explicitly configured backing `repository_mount` must contain
+`repository_root`. Confirmed absence of that approved mount opens destination
+offline. On a mounted target, a 30-second read-only `restic --no-cache --no-lock cat config` probe
+confirms reachability only after successful authentication and valid repository
+configuration. Missing credentials, permission/configuration/format errors,
+locks and timeouts are unknown, never invented offline or recovered states.
+Child probe file output and decoding are capped at 16 KiB and stderr is discarded. Source SSH
+uses existing fixed credentials, DNS host and strict host-key verification;
+there is no interactive credential flow or arbitrary user-supplied command.
+
+Existing internal cached catalog consumers do not perform probes; the external
+`catalog` command does. The publisher still probes during a hub outage while
+retaining its exact pending catalog and health envelopes. Health acknowledgment,
+immutable incident identity, and deferred-interval recovery are unchanged.
+Unknown probes raise a bounded actionable probe-unavailable incident. An absent
+legacy optional observation is not a healthy measurement and does not clear
+operational incidents. Absence of an incident is not proof of backup integrity
+or successful restore.
+
+Rollout remains a separate operation: install the compatible Console hub first,
+then exporter/CLI and catalog publisher. Old forced-SSH exporters rejecting the
+new command remain unknown until upgraded. No production release or deployment
+is performed by the DEV-32 implementation checks.
+
+Restic read-only flags follow the [official CLI manual](https://restic.readthedocs.io/en/stable/manual_rest.html).
+
+Health inspection counts complete manifest/payload pairs by validated metadata and matching file size; it does not hash payload bytes or prove their integrity. Transfer still verifies each digest. The query inspects at most 2,000 regular spool entries and 64 KiB per manifest under the existing nonblocking export lock. An invalid, missing or busy source produces unknown health. Only the installer-approved `/mnt/hdd1000-01` mount may produce a confirmed destination-offline signal; a different configured mount is a configuration failure and remains unknown.

@@ -17,6 +17,7 @@ import math
 import os
 import pwd
 import re
+import resource
 import shutil
 import stat
 import subprocess
@@ -40,6 +41,7 @@ POLICY_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
 ROOT_UID = 0
 STATUS_BACKUP_GID = 82
 PUBLIC_MANIFEST_RESERVE = 64 * 1024
+APPROVED_REPOSITORY_MOUNT = Path("/mnt/hdd1000-01")
 PUBLIC_MANIFEST_KEYS = {"schema_version", "artifact_id", "host_slug", "app_id", "adapter",
                         "created_at", "payload_sha256", "payload_bytes"}
 CATALOG_LIMIT = 500
@@ -1268,6 +1270,126 @@ def ready_manifests(config: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def source_spool_status(config: dict[str, Any], app_id: str) -> dict[str, Any]:
+    """Measure quota and app-scoped complete pairs; payload integrity belongs to transfer."""
+    application(config, app_id)
+    spool = Path(config["spool_dir"])
+    reject_symlink_components(spool)
+    quota = config["spool_quota_bytes"]
+    if not isinstance(quota, int) or isinstance(quota, bool) or not 0 < quota <= 2**53 - 1:
+        raise BackupError("source spool policy is invalid")
+    with lock(Path(config["lock_file"])):
+        entries = []
+        for path in spool.iterdir():
+            if len(entries) >= 2000 or not stat.S_ISREG(path.lstat().st_mode):
+                raise BackupError("source spool inspection is unsafe")
+            entries.append(path)
+        used = sum(p.lstat().st_size for p in entries)
+        if used > 2**53 - 1:
+            raise BackupError("source spool measurement is outside bounds")
+        ready = []
+        for path in entries:
+            if path.suffix != ".json" or path.name.endswith(".receipt.json"):
+                continue
+            if path.stat().st_size > PUBLIC_MANIFEST_RESERVE:
+                raise BackupError("source manifest is outside bounds")
+            value = validate_public_manifest(json.loads(path.read_text(encoding="utf-8")), quota)
+            if path.stem != value["artifact_id"] or value["host_slug"] != config["host_slug"]:
+                raise BackupError("source manifest identity is invalid")
+            payload = spool / f'{value["artifact_id"]}.age'
+            if not payload.exists():
+                continue  # An incomplete pair is not a ready export; its bytes still consume quota.
+            # Do not hash potentially GiB-sized payloads while holding the export lock.
+            # Transfer verifies their digest; health measures bounded manifest metadata.
+            if (not stat.S_ISREG(payload.lstat().st_mode) or payload.stat().st_size != value["payload_bytes"]):
+                raise BackupError("source ready export is invalid")
+            timestamp = dt.datetime.strptime(value["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+            if timestamp > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+                raise BackupError("source export timestamp is invalid")
+            if value["app_id"] == app_id:
+                ready.append(value["created_at"])
+        return {"status": "known", "host_slug": config["host_slug"], "app_id": app_id,
+                "observed_at": now(), "used_bytes": used, "quota_bytes": quota,
+                "ready_count": len(ready), "oldest_ready_at": min(ready) if ready else None}
+
+
+def health_command(argv: list[str], env: dict[str, str] | None = None) -> Any:
+    """Bound both time and decoded output; never return command diagnostics."""
+    with tempfile.TemporaryFile() as output:
+        try:
+            subprocess.run(argv, stdout=output, stderr=subprocess.DEVNULL, env=env,
+                           timeout=30, check=True,
+                           preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (16384, 16384)))
+            output.seek(0)
+            raw = output.read(16385)
+            if len(raw) > 16384:
+                raise BackupError("health probe output exceeds bounds")
+            return json.loads(raw)
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            raise BackupError("health probe unavailable") from exc
+
+
+def destination_health(config: dict[str, Any], host_slug: str, app_id: str) -> dict[str, Any]:
+    state = "unknown"
+    try:
+        mount = Path(config["repository_mount"])
+        repository_root = Path(config["repository_root"])
+        if mount != APPROVED_REPOSITORY_MOUNT or repository_root == mount or not repository_root.is_relative_to(mount):
+            raise BackupError("destination mount policy is invalid")
+        reject_symlink_components(mount)
+        if not os.path.ismount(mount):
+            state = "offline"  # Positive evidence: the explicitly approved backing mount is absent.
+        else:
+            env, _ = restic_env(config, host_slug, app_id)
+            value = health_command(["restic", "--no-cache", "--no-lock", "cat", "config"], env)
+            if (isinstance(value, dict) and value.get("version") in {1, 2}
+                    and isinstance(value.get("id"), str) and SHA_RE.fullmatch(value["id"])):
+                state = "reachable"
+    except (BackupError, KeyError, OSError, ValueError, TypeError):
+        pass  # Credentials, config, auth, locks, malformed output and timeout remain unknown.
+    return {"status": state, "observed_at": now()}
+
+
+def operational_health(config: dict[str, Any], host_slug: str, app_id: str) -> dict[str, Any]:
+    host = assert_allowlisted_target(config, host_slug, app_id)
+    source: dict[str, Any] = {"status": "unknown"}
+    threshold = config.get("backlog_after_seconds", 86400)
+    if not isinstance(threshold, int) or isinstance(threshold, bool) or not 60 <= threshold <= 604800:
+        raise BackupError("backlog observation policy is invalid")
+    try:
+        identity = ssh_identity(host)
+        argv = ["ssh", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=10",
+                "-o", f'UserKnownHostsFile={host["known_hosts_file"]}', "-i", identity,
+                f'{host["ssh_user"]}@{host["ssh_host"]}', f"spool-status {app_id}"]
+        measured = health_command(argv)
+        if (not isinstance(measured, dict) or measured.get("host_slug") != host_slug
+                or measured.get("app_id") != app_id):
+            raise BackupError("source health target is invalid")
+        expected = {"status", "host_slug", "app_id", "observed_at", "used_bytes", "quota_bytes", "ready_count", "oldest_ready_at"}
+        if set(measured) != expected or measured["status"] != "known":
+            raise BackupError("source health schema is invalid")
+        for key, maximum in (("used_bytes", 2**53 - 1), ("quota_bytes", 2**53 - 1), ("ready_count", 1000)):
+            if type(measured[key]) is not int or not 0 <= measured[key] <= maximum:
+                raise BackupError("source health measurement is invalid")
+        if measured["quota_bytes"] == 0:
+            raise BackupError("source health quota is invalid")
+        observed = dt.datetime.strptime(measured["observed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+        current = dt.datetime.now(dt.timezone.utc)
+        if not current - dt.timedelta(minutes=5) <= observed <= current + dt.timedelta(minutes=5):
+            raise BackupError("source health timestamp is invalid")
+        if measured["ready_count"] == 0 and measured["oldest_ready_at"] is not None:
+            raise BackupError("source health backlog is inconsistent")
+        if measured["ready_count"] > 0:
+            oldest = dt.datetime.strptime(measured["oldest_ready_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+            if oldest > observed + dt.timedelta(minutes=5):
+                raise BackupError("source health backlog is invalid")
+        source = measured
+    except (BackupError, KeyError, OSError, ValueError, TypeError):
+        pass
+    return {"schema_version": 1, "backlog_after_seconds": threshold,
+            "source_spool": source, "destination": destination_health(config, host_slug, app_id)}
+
+
 def validate_receipt(value: Any, artifact_id: str, payload_sha256: str,
                      receipt_id: str, maximum_bytes: int) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != PUBLIC_MANIFEST_KEYS | {"received_at", "receipt_id"}:
@@ -1293,6 +1415,10 @@ def remove_published_export(spool: Path, manifest_path: Path, payload_path: Path
 
 def dispatch(config: dict[str, Any], original: str, output: BinaryIO) -> None:
     parts = original.split()
+    if len(parts) == 2 and parts[0] == "spool-status":
+        value = source_spool_status(config, parts[1])
+        output.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+        return
     if parts == ["list"]:
         with lock(Path(config["lock_file"])):
             values = ready_manifests(config)
@@ -1573,6 +1699,12 @@ def catalog(config: dict[str, Any], host_slug: str, app_id: str) -> dict[str, An
         if dt.datetime.now(dt.timezone.utc) - started > dt.timedelta(hours=4):
             value["latest_attempt"] = {**attempt, "status": "uncertain", "finished_at": now(),
                                        "error_code": "interrupted"}
+    return value
+
+
+def observed_catalog(config: dict[str, Any], host_slug: str, app_id: str) -> dict[str, Any]:
+    value = catalog(config, host_slug, app_id)
+    value["operational_health"] = operational_health(config, host_slug, app_id)
     return value
 
 
@@ -2706,7 +2838,7 @@ def main(argv: list[str] | None = None) -> int:
             result = materialize_snapshot(config, args.host, args.app, args.snapshot,
                                           args.operation, args.purpose, args.inherited_host_lock_fd)
         elif args.command == "catalog":
-            result = catalog(config, args.host, args.app)
+            result = observed_catalog(config, args.host, args.app)
         else:
             if os.geteuid() != 0:
                 raise BackupError("inspection requires the privileged repository service")
