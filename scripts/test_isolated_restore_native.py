@@ -208,6 +208,20 @@ exit "$code"
     return wrapper
 
 
+def cleanup_owned_runtime(path: Path, created_by_this_run: bool,
+                          expected_parent: Path, expected_name: str) -> bool:
+    if not created_by_this_run:
+        return True
+    if path.parent != expected_parent or path.name != expected_name or path.is_symlink():
+        return False
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except OSError:
+        return False
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="DEVOPS repo; otherwise derive it from this script's parents")
@@ -250,6 +264,7 @@ def main() -> int:
     app_name = f"dev33-{run_id}-source-app"
     restore_run_root = Path("/run/tuinstra-backup") / f"dev33-native-{run_id}"
     created_containers: list[str] = []
+    owns_restore_run_root = False
     retain = args.keep_fixture
     results: list[dict[str, Any]] = []
     summary: dict[str, Any] | None = None
@@ -388,6 +403,7 @@ def main() -> int:
         if restore_run_root.parent.is_symlink() or not restore_run_root.parent.is_dir():
             raise HarnessError("restore runtime parent is not a real directory")
         restore_run_root.mkdir(mode=0o700, parents=False)
+        owns_restore_run_root = True
         restore_run_root.chmod(0o700)
         for directory in (Path(config["restore_work_dir"]), Path(config["restore_lock_file"]).parent,
                           Path(config["host_lock_root"]), Path(config["operation_lock_root"])):
@@ -588,15 +604,9 @@ def main() -> int:
                 remove_own_container(name)
             except HarnessError:
                 cleanup_errors.append(name)
-        if (restore_run_root.parent == Path("/run/tuinstra-backup")
-                and re.fullmatch(rf"dev33-native-{run_id}", restore_run_root.name)):
-            if restore_run_root.is_symlink():
-                cleanup_errors.append(restore_run_root.name)
-            elif restore_run_root.exists():
-                try:
-                    shutil.rmtree(restore_run_root)
-                except OSError:
-                    cleanup_errors.append(restore_run_root.name)
+        if not cleanup_owned_runtime(restore_run_root, owns_restore_run_root,
+                                     Path("/run/tuinstra-backup"), f"dev33-native-{run_id}"):
+            cleanup_errors.append(restore_run_root.name)
         if cleanup_errors:
             retain = True
             print(json.dumps({"suite": "DEV-33 fixture cleanup", "status": "BLOCKED",
