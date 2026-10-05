@@ -1,8 +1,10 @@
 # Workflow Contract: reusable-cd-php.yml
 
-**Version:** v1  
-**Status:** Stable  
-**Last Updated:** 2026-02-10
+**Version:** Unreleased DEV-51; requires the next immutable major contract
+
+**Status:** Review candidate; hosted canary and CODEOWNERS review required
+
+**Last Updated:** 2026-10-05
 
 ## Purpose
 
@@ -62,7 +64,12 @@ These must be configured in the GitHub Environment:
 
 | Variable | Description |
 |----------|-------------|
-| `SSH_HOST` | Target host for deployment |
+| `SSH_HOST` | Target DNS hostname for deployment |
+| `SSH_HOST_ED25519_FINGERPRINT` | Independently approved OpenSSH ED25519 fingerprint, exactly `SHA256:` plus the 43-character unpadded SHA-256 Base64 digest |
+
+The fingerprint is mandatory in the selected protected GitHub Environment. Obtain it from an independently trusted server console or an existing verified administrative connection; a fresh `ssh-keyscan` result cannot establish this trust. Review changes to this variable as a host-identity change. Never store the server's private host key in GitHub or the consumer repository.
+
+DEV-51 changes deployment behavior for PHP consumers without this variable: deployment stops before a remote SSH/SCP action. This is a compatibility break under the [versioning policy](../versioning-policy.md), requiring the next immutable major contract rather than a silent v10 patch or moving tag. Existing pinned callers are unchanged until their own reviewed migration. Notify adoption belongs to NTF-2.
 
 ## Required Permissions
 
@@ -98,13 +105,21 @@ permissions:
 
 ### deploy
 1. Checkout code
-2. Configure SSH with environment secrets
+2. Validate the DNS host, port and expected ED25519 fingerprint in this deploy job; scan the intended host and port and require one valid, matching ED25519 key before trusting it. Missing, malformed, empty, failed, ambiguous or mismatched verification stops the job.
 3. Upload compose file to remote host
 4. Create override file with pinned image digests for php, nginx, and worker services
 5. Pull and deploy using docker compose
 6. **Optionally run Doctrine migrations** (if `run-migrations: true`)
 7. **Optionally restart worker service** (if `restart-worker: true`)
 8. Run health check on localhost (via SSH tunnel)
+
+All remote commands use the same dedicated SSH configuration and verified trust file with strict host-key checking, including SCP and custom-port connections. No later step may rescan and replace that trust or fall back to a system/global known-hosts entry. A retry performs verification again against the independently approved fingerprint; it never adopts a changed scanned key.
+
+### Verification and rollout boundary
+
+The functional harness executes the actual workflow's extracted shell with generated synthetic ED25519 keys and local scan/SSH/SCP spies. It proves successful admission and zero remote actions on rejection; it does not contact production or prove GitHub Environment permissions. Four independent synthetic caller journeys and local `make lint`/`make test` supplement this evidence. Hosted canary, protected checks and CODEOWNERS review remain separate gates before publishing an immutable reviewed ref.
+
+For migration, configure and verify the protected variable first, validate the approved full 40-character workflow commit in a safe hosted canary, then update each consumer's pin in its owning Story. For a mismatch, stop deployment and investigate DNS, port or an independently confirmed host-key change. Do not overwrite the expected fingerprint from the scan, disable strict checking, move tags or force-push. Keep the deployed application's existing image/schema/data intact; restoring an older workflow that lacks this check does not resolve the trust defect.
 
 ## Dockerfile Requirements
 
