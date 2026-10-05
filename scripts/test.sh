@@ -58,6 +58,7 @@ node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
 ./scripts/production-umami-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_isolated_restore_harness.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_backup.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_restore.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_credential_bootstrap.py

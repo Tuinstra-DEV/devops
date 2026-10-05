@@ -360,3 +360,41 @@ is performed by the DEV-32 implementation checks.
 Restic read-only flags follow the [official CLI manual](https://restic.readthedocs.io/en/stable/manual_rest.html).
 
 Health inspection counts complete manifest/payload pairs by validated metadata and matching file size; it does not hash payload bytes or prove their integrity. Transfer still verifies each digest. The query inspects at most 2,000 regular spool entries and 64 KiB per manifest under the existing nonblocking export lock. An invalid, missing or busy source produces unknown health. Only the installer-approved `/mnt/hdd1000-01` mount may produce a confirmed destination-offline signal; a different configured mount is a configuration failure and remains unknown.
+
+## Herhaalbare geïsoleerde hersteltest (DEV-33)
+
+Voer de owning native test uit als root in een wegwerpbare Linux-runtime met
+reeds geïnstalleerde `age`, `age-keygen`, `restic`, `/usr/bin/docker` en de exacte
+PG15/Umami image-digests uit `backup/restore-umami`:
+
+```bash
+sudo python3 scripts/test_isolated_restore_native.py
+```
+
+De test haalt geen images/tools op en gebruikt geen productiedata, SSH of
+publieke routes. Hij maakt uitsluitend eigen UUID-benamde broncontainers met
+`network none` en eigen root-private fixturepaden. Via de echte lokale Umami-API
+wordt encrypted 2FA geactiveerd en getest. Een custom PostgreSQL dump,
+configuratie/geheimen, contentmarker en pinned image-metadata worden met age
+versleuteld, echt opgeslagen in een eigen Restic-repository en via de bestaande
+CLI + `backup/restore-umami` geïsoleerd hersteld.
+
+De zes scenario's controleren succes met exact snapshot/artifact/checksum/
+engine/versies, schema/data/gezondheid/2FA, duur en isolatie/cleanup; vervolgens
+verkeerde key, corrupte ciphertext-checksum, ongeldige database-dump,
+applicatie-healthfout en een expliciete eenmalige cleanup-fout aan de Docker-
+commandogrens. Deze laatste gebruikt een benoemde runtimekopie van de adapter,
+gevolgd door de echte EXIT-cleanupretry; de productieadapter verandert niet.
+Elke fout moet geen nieuw succesbewijs achterlaten, het laatste goede bewijs
+behouden en alleen eigen tijdelijke containers/werkruimte opruimen.
+
+`--keep-fixture` bewaart de lokale synthetische config, credentials en repository
+voor een afzonderlijke echte Console-workerketen. Bewaar deze paden beschermd;
+upload alleen de beperkte JSON-evidence en geïnspecteerde Console-beelden.
+De normale `make test` kan de native Linux/Docker/images-toolchain niet
+veronderstellen; deze integratietest is een afzonderlijke expliciete gate.
+Een ontbrekende tool/image of onvoldoende ruimte is BLOCKED, geen PASS.
+Er wordt nooit globaal gepruned of een bestaande repository/volume verwijderd.
+
+Deze test vervangt geen productie-uitrolbewijs en voert geen DEV-34
+productieherstel of data-/routewisseling uit.
