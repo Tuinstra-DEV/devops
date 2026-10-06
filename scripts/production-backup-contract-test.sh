@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Verification imports must not create runtime bytecode in scanned source paths.
+export PYTHONDONTWRITEBYTECODE=1
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 python3 -m json.tool "$repo_root/backup/profiles/prod01.json" >/dev/null

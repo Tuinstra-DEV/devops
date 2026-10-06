@@ -110,8 +110,22 @@ class ProductionRestoreTests(unittest.TestCase):
         result = restore.apply(self.config, request, store, transport, safety)
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["safety_snapshot_id"], "e" * 64)
+        self.assertEqual(result["validation"], {"health": "passed", "data": "passed"})
         self.assertEqual(events[0][0], "safety")
         self.assertEqual(transport.rpc.call_args_list[1].args[1], "apply")
+
+    def test_prepare_response_failure_cannot_claim_no_maintenance_effect(self):
+        request = restore.RestoreRequest.create(self.config, "tuinstra-prod-01", "umami", "a" * 64, "op-01", "b" * 64)
+        store = restore.JournalStore(Path(self.config["journal_root"]))
+        store.create(request, artifact_id="12345678-1234-4123-8123-123456789abc", manifest_sha256="c" * 64,
+                     stage_sha256="d" * 64, restore_evidence_id="evidence-01")
+        transport = mock.Mock()
+        transport.rpc.side_effect = restore.RestoreError("prepare command failed after possible maintenance")
+        with self.assertRaises(restore.RestoreError):
+            restore.apply(self.config, request, store, transport, mock.Mock())
+        result = store.load("op-01")
+        self.assertEqual(result["state"], "uncertain")
+        self.assertTrue(result["maintenance_expected"])
 
     def test_failed_safety_copy_never_calls_target_apply_and_keeps_maintenance(self):
         request = restore.RestoreRequest.create(
@@ -171,6 +185,61 @@ class ProductionRestoreTests(unittest.TestCase):
                                   lambda snapshot, purpose, lock: self.assertEqual(snapshot, "e" * 64))
         self.assertEqual(result["state"], "rolled-back")
         self.assertEqual(transport.rpc.call_args.args[2]["safety_snapshot_id"], "e" * 64)
+
+    def test_status_reconciles_crashed_mutating_states_only_with_bound_validation(self):
+        request = restore.RestoreRequest.create(self.config, "tuinstra-prod-01", "umami", "a" * 64, "op-01", "b" * 64)
+        store = restore.JournalStore(Path(self.config["journal_root"]))
+        store.create(request, artifact_id="12345678-1234-4123-8123-123456789abc",
+                     manifest_sha256="c" * 64, stage_sha256="d" * 64, restore_evidence_id="evidence-01")
+        transport = mock.Mock()
+        transport.rpc.return_value = {"status": "status", "operation_id": "op-01", "plan_hash": "b" * 64,
+                                      "state": "succeeded", "maintenance_active": False,
+                                      "safety_snapshot_id": "e" * 64, "target_state": "populated",
+                                      "validation": {"health": "passed", "data": "passed"}}
+        for state in sorted(restore.MUTATING_STATES | {"uncertain"}):
+            with self.subTest(state=state):
+                rollback = state == "rolling-back"
+                store.update("op-01", state=state, safety_snapshot_id="e" * 64, maintenance_active=True,
+                             rollback_plan_hash="f" * 64 if rollback else None)
+                transport.rpc.return_value["state"] = "rolled-back" if rollback else "succeeded"
+                transport.rpc.return_value["rollback_plan_hash"] = "f" * 64 if rollback else None
+                self.assertEqual(restore.status(self.config, request, store, transport)["state"],
+                                 "rolled-back" if rollback else "succeeded")
+
+    def test_status_rejects_success_without_validation_or_exact_safety_binding(self):
+        request = restore.RestoreRequest.create(self.config, "tuinstra-prod-01", "umami", "a" * 64, "op-01", "b" * 64)
+        store = restore.JournalStore(Path(self.config["journal_root"]))
+        store.create(request, artifact_id="12345678-1234-4123-8123-123456789abc",
+                     manifest_sha256="c" * 64, stage_sha256="d" * 64, restore_evidence_id="evidence-01")
+        valid = {"status": "status", "operation_id": "op-01", "plan_hash": "b" * 64,
+                 "state": "succeeded", "maintenance_active": False, "safety_snapshot_id": "e" * 64,
+                 "target_state": "populated", "validation": {"health": "passed", "data": "passed"}}
+        transport = mock.Mock()
+        for field, value in (("validation", None), ("safety_snapshot_id", "f" * 64),
+                             ("maintenance_active", True), ("operation_id", "op-02"),
+                             ("plan_hash", "f" * 64)):
+            with self.subTest(field=field):
+                store.update("op-01", state="applying", safety_snapshot_id="e" * 64, maintenance_active=True)
+                transport.rpc.return_value = {**valid, field: value}
+                with self.assertRaises(restore.RestoreError):
+                    restore.status(self.config, request, store, transport)
+                self.assertEqual(store.load("op-01")["state"], "uncertain")
+                self.assertTrue(store.load("op-01")["maintenance_active"])
+
+    def test_status_of_interrupted_prepare_blocks_replay_without_claiming_success(self):
+        request = restore.RestoreRequest.create(self.config, "tuinstra-prod-01", "umami", "a" * 64, "op-01", "b" * 64)
+        store = restore.JournalStore(Path(self.config["journal_root"]))
+        store.create(request, artifact_id="12345678-1234-4123-8123-123456789abc",
+                     manifest_sha256="c" * 64, stage_sha256="d" * 64, restore_evidence_id="evidence-01")
+        store.update("op-01", state="preparing")
+        transport = mock.Mock()
+        transport.rpc.return_value = {"status": "status", "operation_id": "op-01", "plan_hash": "b" * 64,
+                                      "state": "prepared", "maintenance_active": True}
+        result = restore.status(self.config, request, store, transport)
+        self.assertEqual(result["state"], "uncertain")
+        self.assertTrue(result["maintenance_active"])
+        with self.assertRaisesRegex(restore.RestoreError, "reconcile"):
+            restore.apply(self.config, request, store, transport, mock.Mock())
 
     def test_core_cli_inherits_the_authoritative_host_lock_descriptor(self):
         self.config.update({"executable": "/fixed/tuinstra-backup", "installed_config": "/fixed/worker.json"})
@@ -333,6 +402,53 @@ class TargetTests(unittest.TestCase):
         with self.assertRaisesRegex(target.TargetError, "checksum"):
             target.stage(self.config, "op-01", "a" * 64, "restore", "b" * 64, len(bundle), io.BytesIO(bundle))
 
+    def test_exact_stage_replay_recovers_response_loss_and_preserves_journal(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        first = target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        store = target.TargetJournalStore(self.config.journal_root)
+        store.update("op-01", state="prepared", maintenance_active=True)
+        self.assertEqual(target.stage(self.config, "op-01", "a" * 64, "restore", digest,
+                                      len(bundle), io.BytesIO(bundle)), first)
+        self.assertEqual(store.load("op-01")["state"], "prepared")
+        with self.assertRaises(target.TargetError):
+            target.stage(self.config, "op-01", "f" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        with self.assertRaisesRegex(target.TargetError, "checksum"):
+            target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(b"x" * len(bundle)))
+
+    def test_stage_crash_after_rename_can_repair_only_the_exact_receipt(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        with mock.patch.object(target.TargetJournalStore, "create", side_effect=RuntimeError("process loss")):
+            with self.assertRaisesRegex(RuntimeError, "process loss"):
+                target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        with self.assertRaises(target.TargetError):
+            target.stage(self.config, "op-01", "f" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        result = target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        self.assertEqual(result["status"], "staged")
+        self.assertEqual(target.TargetJournalStore(self.config.journal_root).load("op-01")["state"], "staged")
+
+    def test_stage_and_status_share_the_target_operation_lock(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        with target.host_lock(self.config):
+            for command in (f"stage op-01 {'a' * 64} restore {digest} {len(bundle)}",
+                            f"status op-01 {'a' * 64}"):
+                with self.subTest(command=command), self.assertRaisesRegex(target.TargetError, "another active"):
+                    target.dispatch(self.config, command, io.BytesIO(bundle), mock.Mock())
+
+    def test_status_observes_owned_marker_after_prepare_process_loss(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        adapter = target.UmamiAdapter(self.config, mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0)))
+        adapter.enable_maintenance("op-01")
+        result = target.dispatch(self.config, f"status op-01 {'a' * 64}", io.BytesIO(), adapter)
+        self.assertEqual(result["state"], "uncertain")
+        self.assertTrue(result["maintenance_expected"])
+        self.assertFalse(result["maintenance_active"])
+
     def test_dispatch_rejects_free_commands_paths_and_partial_digests(self):
         adapter = mock.Mock()
         for command in ("", "rm -rf anything", "apply op-01 deadbeef deadbeef",
@@ -403,6 +519,26 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "restored:op-01\n")
         self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
 
+    def test_database_marker_requires_exact_encrypted_content_before_resume(self):
+        payload = self.root / 'marker-payload'
+        payload.mkdir()
+        observed = b'synthetic encrypted database marker\n'
+        manifest = {'database': {'content_marker': {'algorithm': 'umami-admin-two-factor-v1',
+                    'sha256': hashlib.sha256(observed).hexdigest(), 'user_count': 1, 'two_factor_count': 1}}}
+        (payload / 'backup-manifest.json').write_text(json.dumps(manifest))
+        runner = mock.Mock(return_value=mock.Mock(stdout=observed))
+        adapter = target.UmamiAdapter(self.config, runner)
+        adapter._check_database_marker(payload, ['docker', 'exec', 'synthetic-db'])
+        runner.return_value.stdout = b'changed content\n'
+        with self.assertRaisesRegex(target.TargetError, 'content marker'):
+            adapter._check_database_marker(payload, ['docker', 'exec', 'synthetic-db'])
+        manifest['database']['content_marker'].pop('sha256')
+        (payload / 'backup-manifest.json').write_text(json.dumps(manifest))
+        runner.reset_mock()
+        with self.assertRaisesRegex(target.TargetError, 'content marker'):
+            adapter._check_database_marker(payload, ['docker', 'exec', 'synthetic-db'])
+        runner.assert_not_called()
+
     def test_target_preflight_runs_dump_and_capacity_validation(self):
         bundle = self.bundle()
         target.stage(self.config, "op-01", "a" * 64, "restore", hashlib.sha256(bundle).hexdigest(), len(bundle), io.BytesIO(bundle))
@@ -435,6 +571,63 @@ class TargetTests(unittest.TestCase):
         adapter.disable_maintenance("op-01")
         self.assertFalse(marker.exists())
         self.assertEqual(self.config.caddy_route.read_text(), original)
+
+    def test_rollback_after_success_reenters_maintenance_before_any_mutation(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        store = target.TargetJournalStore(self.config.journal_root)
+        store.update("op-01", state="succeeded", maintenance_active=False,
+                     target_state="populated", safety_snapshot_id="e" * 64)
+        target.stage(self.config, "op-01", "f" * 64, "rollback", digest, len(bundle), io.BytesIO(bundle))
+        events = []
+        adapter = mock.Mock()
+        adapter.enable_maintenance.side_effect = lambda *_: events.append("marker")
+        adapter.publish_maintenance_route.side_effect = lambda *_: events.append("route")
+        adapter.quiesce_writes.side_effect = lambda *_: events.append("quiesce")
+        adapter.apply.side_effect = lambda *_: events.append("apply") or {"health": "passed", "data": "passed"}
+        adapter.disable_maintenance.side_effect = lambda *_: events.append("resume")
+        target.rollback(self.config, "op-01", "a" * 64, "e" * 64, "f" * 64, adapter)
+        self.assertEqual(events, ["marker", "route", "quiesce", "apply", "resume"])
+        self.assertEqual(store.load("op-01")["state"], "rolled-back")
+
+    def test_rollback_maintenance_failure_never_mutates_the_live_target(self):
+        bundle = self.bundle()
+        digest = hashlib.sha256(bundle).hexdigest()
+        target.stage(self.config, "op-01", "a" * 64, "restore", digest, len(bundle), io.BytesIO(bundle))
+        store = target.TargetJournalStore(self.config.journal_root)
+        store.update("op-01", state="succeeded", maintenance_active=False,
+                     target_state="populated", safety_snapshot_id="e" * 64)
+        target.stage(self.config, "op-01", "f" * 64, "rollback", digest, len(bundle), io.BytesIO(bundle))
+        adapter = mock.Mock()
+        adapter.publish_maintenance_route.side_effect = RuntimeError("maintenance reload failed")
+        adapter.apply.return_value = {"health": "passed", "data": "passed"}
+        with self.assertRaisesRegex(RuntimeError, "maintenance"):
+            target.rollback(self.config, "op-01", "a" * 64, "e" * 64, "f" * 64, adapter)
+        adapter.apply.assert_not_called()
+        adapter.disable_maintenance.assert_not_called()
+
+    def test_same_operation_can_reassert_maintenance_without_overwriting_original_route(self):
+        runner = mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0))
+        adapter = target.UmamiAdapter(self.config, runner)
+        original = self.config.caddy_route.read_text()
+        adapter.enable_maintenance("op-01")
+        adapter.publish_maintenance_route("op-01")
+        adapter.enable_maintenance("op-01")
+        adapter.disable_maintenance("op-01")
+        self.assertEqual(self.config.caddy_route.read_text(), original)
+
+    def test_wrong_maintenance_owner_cannot_resume_traffic(self):
+        runner = mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0))
+        adapter = target.UmamiAdapter(self.config, runner)
+        adapter.enable_maintenance("op-01")
+        adapter.publish_maintenance_route("op-01")
+        runner.reset_mock()
+        (self.config.maintenance_root / "umami").write_text("op-02\n")
+        with self.assertRaisesRegex(target.TargetError, "another operation"):
+            adapter.disable_maintenance("op-01")
+        self.assertIn("503", self.config.caddy_route.read_text())
+        runner.assert_not_called()
 
     def test_apply_failure_keeps_maintenance_and_records_failed_state(self):
         bundle = self.bundle()

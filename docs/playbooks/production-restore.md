@@ -115,3 +115,36 @@ exact getypte doel `umami / tuinstra-prod-01 / production`; sudo vraagt bij
 iedere aanroep opnieuw om het besturingssysteemwachtwoord. De wrapper zet
 configuratie, host en applicatie vast en accepteert alleen volledige snapshot-
 en planhashes met een gevalideerde operation-ID.
+
+## Herstel na een onzekere respons
+
+Een onderbroken `staging` kan alleen met dezelfde operatie, planhash en
+byte-identieke bundle worden hervat. De private receipt is vóór de rename
+gefsynct; een verloren ontvangstbevestiging geeft geen tweede operatie.
+`preparing`, `safety-storing`, `applying` en `rolling-back` worden nooit blind
+herhaald. Ook een fout tijdens prepare kan al onderhoud hebben geactiveerd.
+Bewaar dan `uncertain` en controleer het doeljournal via `status`.
+
+Een terminale status wordt alleen overgenomen met dezelfde operatie/plan,
+exacte lokaal vastgelegde safety snapshot, geslaagde health/data-validatie en
+bevestigd beëindigd onderhoud. Een onderbroken rollback vereist bovendien zijn
+eigen rollback-planhash; een eerder geslaagde restore bewijst geen rollback.
+Ontbreekt de lokale safetybinding, blijft de uitkomst onzeker. Een bevoegde
+operator moet de duurzame, met `operation:<id>` gepinde snapshot en beide
+journals vergelijken en de afwijking vastleggen vóór verdere mutaties.
+Een leeg doel heeft expliciet geen safety artifact en gebruikt de nul-sentinel;
+daarvoor is rollback naar een niet-bestaande oude database onmogelijk.
+
+Bij een gevuld doel wordt Umami gestopt vóór de verse safety-export. Het
+begrensde `export --quiesced-operation <id>` controleert de private root-owned
+maintenance marker van die operatie, dat Umami daadwerkelijk gestopt is en de
+exact goedgekeurde containerdigest. PostgreSQL blijft actief. Normale exports
+blijven een draaiende applicatie vereisen. Geëxporteerde encrypted-contentmarkers
+worden vóór installatie én opnieuw vóór verkeershervatting byte-exact vergeleken.
+
+De native rehearsal gebruikt echte PostgreSQL/Umami, age, Restic en HTTPS via
+Caddy met een eigen vertrouwde test-CA. Hij doorloopt export + geïsoleerde
+herstelproef, gevuld doel + gepinde safetybackup, rollback na succes en het
+volledige lege-doelpad. Het forced-command transport is lokaal vervangen en
+bewijst geen echte SSH-keyprovisioning of Auth0-tenantbeleid. Productieactivatie
+vereist aanvullend de Console/worker-journey en aantoonbare verse Auth0-authenticatie.

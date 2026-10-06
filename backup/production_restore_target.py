@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -19,6 +20,9 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
+
+
+from tuinstra_backup import UMAMI_CONTENT_MARKER_ALGORITHM, UMAMI_CONTENT_MARKER_SQL
 
 
 ROOT_UID = 0
@@ -217,7 +221,7 @@ class TargetJournalStore:
                  "plan_hash": plan_hash, "purpose": purpose, "stage_sha256": stage_sha256,
                  "state": "staged", "maintenance_active": False, "target_state": None,
                  "safety_artifact_id": None, "safety_snapshot_id": None, "error_code": None,
-                 "rollback_plan_hash": None, "rollback_stage_sha256": None}
+                 "rollback_plan_hash": None, "rollback_stage_sha256": None, "validation": None, "restore_outcome": None}
         path = self._path(operation_id)
         if path.exists() or path.is_symlink():
             current = self.load(operation_id)
@@ -233,7 +237,7 @@ class TargetJournalStore:
         if immutable.intersection(changes):
             raise TargetError("target immutable operation binding cannot change")
         allowed = {"state", "maintenance_active", "target_state", "safety_artifact_id",
-                   "safety_snapshot_id", "error_code", "rollback_plan_hash", "rollback_stage_sha256"}
+                   "safety_snapshot_id", "error_code", "rollback_plan_hash", "rollback_stage_sha256", "validation", "restore_outcome"}
         if not set(changes).issubset(allowed):
             raise TargetError("target journal update is invalid")
         value = self.load(operation_id)
@@ -297,10 +301,47 @@ def stage(config: TargetConfig, operation_id: str, plan_hash: str, purpose: str,
     root = _stage_path(config, operation_id, purpose)
     _private_directory(config.stage_root)
     _private_directory(root.parent)
+    if root.is_symlink():
+        raise TargetError("staged restore path is unsafe")
+    receipt = {"operation_id": operation_id, "plan_hash": plan_hash, "purpose": purpose,
+               "stage_sha256": digest, "stage_bytes": size}
+    store = TargetJournalStore(config.journal_root)
+    if purpose == "rollback":
+        journal = store.load(operation_id)
+        if journal["state"] not in {"failed", "succeeded"}:
+            raise TargetError("target operation is not eligible for rollback staging")
+        safety = journal.get("safety_snapshot_id", "")
+        if not isinstance(safety, str) or not SHA_RE.fullmatch(safety) or safety == "0" * 64:
+            raise TargetError("rollback staging requires the recorded safety snapshot")
+        prior_plan = journal.get("rollback_plan_hash")
+        if prior_plan is not None and prior_plan != plan_hash:
+            raise TargetError("rollback stage binding changed")
+    if root.exists():
+        _reject_symlinks(root)
+        saved = root / "receipt.json"
+        if (saved.is_symlink() or not saved.is_file() or saved.stat().st_uid != os.geteuid()
+                or saved.stat().st_mode & 0o077
+                or json.loads(saved.read_text(encoding="utf-8")) != receipt):
+            raise TargetError("staged restore binding changed or receipt is unavailable")
+        _validate_payload(root / "extracted/payload")
+        copied = 0
+        checksum = hashlib.sha256()
+        while copied <= size:
+            chunk = source.read(min(1024 * 1024, size + 1 - copied))
+            if not chunk:
+                break
+            copied += len(chunk)
+            checksum.update(chunk)
+        if copied != size or checksum.hexdigest() != digest:
+            raise TargetError("staged restore checksum or size mismatch")
+        if purpose == "restore":
+            store.create(operation_id, plan_hash, purpose, digest)
+        else:
+            store.update(operation_id, rollback_plan_hash=plan_hash, rollback_stage_sha256=digest)
+        return {"status": "staged", "operation_id": operation_id, "purpose": purpose,
+                "stage_sha256": digest}
     if shutil.disk_usage(config.stage_root).free < size * 2:
         raise TargetError("production restore staging has insufficient free space")
-    if root.exists() or root.is_symlink():
-        raise TargetError("staged restore already exists")
     temporary = Path(tempfile.mkdtemp(prefix=f".{purpose}-", dir=root.parent))
     os.chmod(temporary, 0o700)
     archive = temporary / "bundle.tar"
@@ -340,7 +381,26 @@ def stage(config: TargetConfig, operation_id: str, plan_hash: str, purpose: str,
             os.chmod(extracted_file, 0o600)
         _validate_payload(payload)
         archive.unlink()
+        _atomic_json(temporary / "receipt.json", receipt)
+        for staged_file in (path for path in payload.rglob("*") if path.is_file()):
+            descriptor = os.open(staged_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        for directory in sorted((path for path in temporary.rglob("*") if path.is_dir()),
+                                key=lambda path: len(path.parts), reverse=True) + [temporary]:
+            descriptor = os.open(directory, os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         os.replace(temporary, root)
+        descriptor = os.open(root.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         store = TargetJournalStore(config.journal_root)
         if purpose == "restore":
             store.create(operation_id, plan_hash, purpose, digest)
@@ -392,14 +452,43 @@ class UmamiAdapter:
         operation = self._operation_root(operation_id)
         _private_directory(self.config.maintenance_root)
         marker = self.config.maintenance_root / "umami"
-        if marker.is_symlink() or marker.exists():
+        if marker.is_symlink():
             raise TargetError("another maintenance operation is active")
-        marker.write_text(f"{operation_id}\n", encoding="utf-8")
-        os.chmod(marker, 0o600)
+        if marker.exists():
+            if (not marker.is_file() or marker.stat().st_uid != ROOT_UID
+                    or marker.stat().st_mode & 0o077
+                    or marker.read_text(encoding="utf-8") != f"{operation_id}\n"):
+                raise TargetError("another maintenance operation is active")
+            saved = operation / "umami.caddy.original"
+            if saved.is_symlink() or not saved.is_file():
+                raise TargetError("original Umami Caddy route is unavailable")
+            return
         saved = operation / "umami.caddy.original"
+        if saved.is_symlink():
+            raise TargetError("original Umami Caddy route is unsafe")
         if not saved.exists():
-            shutil.copyfile(route, saved, follow_symlinks=False)
-            os.chmod(saved, 0o600)
+            descriptor = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                os.write(descriptor, route.read_bytes())
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            descriptor = os.open(operation, os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            os.write(descriptor, f"{operation_id}\n".encode())
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        descriptor = os.open(marker.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def publish_maintenance_route(self, operation_id: str) -> None:
         marker = self.config.maintenance_root / "umami"
@@ -414,8 +503,14 @@ class UmamiAdapter:
         self._reload_caddy()
 
     def disable_maintenance(self, operation_id: str) -> None:
+        marker = self.config.maintenance_root / "umami"
+        if marker.is_symlink() or not marker.is_file() or marker.stat().st_uid != ROOT_UID:
+            raise TargetError("maintenance marker is unavailable")
+        if marker.read_text(encoding="utf-8") != f"{operation_id}\n":
+            raise TargetError("maintenance marker belongs to another operation")
         saved = self._operation_root(operation_id) / "umami.caddy.original"
-        if saved.is_symlink() or not saved.is_file():
+        if (saved.is_symlink() or not saved.is_file() or saved.stat().st_uid != ROOT_UID
+                or saved.stat().st_mode & 0o077):
             raise TargetError("original Umami Caddy route is unavailable")
         temporary = self.config.caddy_route.with_name(f".{self.config.caddy_route.name}.{operation_id}.tmp")
         shutil.copyfile(saved, temporary, follow_symlinks=False)
@@ -438,9 +533,9 @@ class UmamiAdapter:
     def quiesce_writes(self) -> None:
         self.runner(self._compose("stop", "umami"))
 
-    def create_safety_export(self) -> str:
+    def create_safety_export(self, operation_id: str) -> str:
         result = self.runner([str(self.config.producer_engine), "--config", str(self.config.producer_config),
-                              "export", "--app", "umami"])
+                              "export", "--app", "umami", "--quiesced-operation", operation_id])
         try:
             value = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -485,6 +580,23 @@ class UmamiAdapter:
         finally:
             os.close(directory)
 
+    def _check_database_marker(self, payload: Path, exec_prefix: list[str]) -> None:
+        manifest = json.loads((payload / "backup-manifest.json").read_text(encoding="utf-8"))
+        database = manifest.get("database")
+        marker = database.get("content_marker") if isinstance(database, dict) else None
+        if (not isinstance(marker, dict) or marker.get("algorithm") != UMAMI_CONTENT_MARKER_ALGORITHM
+                or not isinstance(marker.get("sha256"), str) or not SHA_RE.fullmatch(marker["sha256"])
+                or not isinstance(marker.get("user_count"), int) or isinstance(marker["user_count"], bool)
+                or marker["user_count"] < 1 or not isinstance(marker.get("two_factor_count"), int)
+                or isinstance(marker["two_factor_count"], bool) or marker["two_factor_count"] < 1):
+            raise TargetError("restore database content marker evidence is invalid")
+        result = self.runner([*exec_prefix, "sh", "-eu", "-c",
+                              'exec psql -X --tuples-only --no-align --set=ON_ERROR_STOP=1 '
+                              '--username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command='
+                              + shlex.quote(UMAMI_CONTENT_MARKER_SQL)])
+        if hashlib.sha256(result.stdout).hexdigest() != marker["sha256"]:
+            raise TargetError("restored database content marker does not match the exact artifact")
+
     def _restore_database(self, payload: Path, operation_id: str) -> Path:
         work = self.config.data_root / f".restore-{operation_id}"
         if work.exists() or work.is_symlink():
@@ -517,6 +629,7 @@ class UmamiAdapter:
                                   'information_schema.tables where table_schema = \'public\'"'])
             if not re.fullmatch(rb"[1-9][0-9]*\s*", result.stdout):
                 raise TargetError("replacement database has no application tables")
+            self._check_database_marker(payload, [str(self.config.docker_bin), "exec", container])
         finally:
             subprocess.run([str(self.config.docker_bin), "rm", "--force", container], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
@@ -563,6 +676,7 @@ class UmamiAdapter:
                                                  'information_schema.tables where table_schema = \'public\'"'))
             if health.returncode != 0 or not re.fullmatch(rb"[1-9][0-9]*\s*", data.stdout):
                 raise TargetError("restored Umami health or data validation failed")
+            self._check_database_marker(payload, self._compose("exec", "-T", "db"))
             self._record_restored_admin_state(operation_id)
         except Exception:
             raise
@@ -593,12 +707,14 @@ def prepare(config: TargetConfig, operation_id: str, plan_hash: str,
     if journal["plan_hash"] != plan_hash or journal["purpose"] != "restore" or journal["state"] != "staged":
         raise TargetError("target prepare binding or state is invalid")
     state = adapter.target_state()
+    store.update(operation_id, state="preparing", target_state=state)
     try:
         adapter.enable_maintenance(operation_id)
+        store.update(operation_id, maintenance_active=True)
         adapter.publish_maintenance_route(operation_id)
         if state == "populated":
             adapter.quiesce_writes()
-        safety = adapter.create_safety_export() if state == "populated" else None
+        safety = adapter.create_safety_export(operation_id) if state == "populated" else None
         store.update(operation_id, state="prepared", maintenance_active=True,
                      target_state=state, safety_artifact_id=safety)
         return {"status": "prepared", "target_state": state, "safety_artifact_id": safety}
@@ -621,11 +737,14 @@ def apply(config: TargetConfig, operation_id: str, plan_hash: str, safety_snapsh
         raise TargetError("target apply binding or state is invalid")
     if journal["target_state"] == "populated" and safety_snapshot_id == "0" * 64:
         raise TargetError("populated target requires a durable safety snapshot")
-    store.update(operation_id, state="applying", safety_snapshot_id=safety_snapshot_id)
+    store.update(operation_id, state="applying", safety_snapshot_id=safety_snapshot_id, validation=None)
     try:
         evidence = adapter.apply(_payload(config, operation_id, "restore"), operation_id)
+        if evidence.get("health") != "passed" or evidence.get("data") != "passed":
+            raise TargetError("restored application validation did not pass")
+        store.update(operation_id, validation={"health": "passed", "data": "passed"})
         adapter.disable_maintenance(operation_id)
-        store.update(operation_id, state="succeeded", maintenance_active=False, error_code=None)
+        store.update(operation_id, state="succeeded", restore_outcome="succeeded", maintenance_active=False, error_code=None)
         return {"status": "succeeded", **evidence}
     except Exception:
         store.update(operation_id, state="failed", maintenance_active=True, error_code="apply-failed")
@@ -645,15 +764,26 @@ def rollback(config: TargetConfig, operation_id: str, original_plan_hash: str,
         raise TargetError("target rollback is not bound to the recorded safety snapshot")
     staged = _stage_path(config, operation_id, "rollback") / "extracted/payload"
     _validate_payload(staged)
-    store.update(operation_id, state="rolling-back", maintenance_active=True,
+    store.update(operation_id, state="rolling-back", validation=None,
                  rollback_plan_hash=rollback_plan_hash)
     try:
+        adapter.enable_maintenance(operation_id)
+        adapter.publish_maintenance_route(operation_id)
+        store.update(operation_id, maintenance_active=True)
+        adapter.quiesce_writes()
         evidence = adapter.apply(staged, f"{operation_id}-rollback")
+        if evidence.get("health") != "passed" or evidence.get("data") != "passed":
+            raise TargetError("rollback application validation did not pass")
+        store.update(operation_id, validation={"health": "passed", "data": "passed"})
         adapter.disable_maintenance(operation_id)
         store.update(operation_id, state="rolled-back", maintenance_active=False, error_code=None)
         return {"status": "rolled-back", **evidence}
     except Exception:
-        store.update(operation_id, state="failed", maintenance_active=True, error_code="rollback-failed")
+        marker = config.maintenance_root / "umami"
+        owned_marker = (not marker.is_symlink() and marker.is_file()
+                        and marker.read_text(encoding="utf-8") == f"{operation_id}\n")
+        store.update(operation_id, state="uncertain", maintenance_active=owned_marker,
+                     error_code="rollback-uncertain")
         raise
 
 
@@ -664,7 +794,8 @@ def dispatch(config: TargetConfig, original: str, source: BinaryIO, adapter: Uma
             size = int(parts[5])
         except ValueError as exc:
             raise TargetError("invalid staged restore size") from exc
-        return stage(config, parts[1], parts[2], parts[3], parts[4], size, source)
+        with host_lock(config):
+            return stage(config, parts[1], parts[2], parts[3], parts[4], size, source)
     if len(parts) == 3 and parts[0] in {"preflight", "prepare", "status"}:
         operation_id, plan_hash = parts[1], parts[2]
         if parts[0] == "preflight":
@@ -673,11 +804,31 @@ def dispatch(config: TargetConfig, original: str, source: BinaryIO, adapter: Uma
         if parts[0] == "prepare":
             with host_lock(config):
                 return prepare(config, operation_id, plan_hash, adapter)
-        journal = TargetJournalStore(config.journal_root).load(operation_id)
-        if journal["plan_hash"] != plan_hash:
-            raise TargetError("target status binding is invalid")
-        return {"status": "status", "operation_id": operation_id, "state": journal["state"],
-                "maintenance_active": journal["maintenance_active"]}
+        with host_lock(config):
+            journal = TargetJournalStore(config.journal_root).load(operation_id)
+            if journal["plan_hash"] != plan_hash:
+                raise TargetError("target status binding is invalid")
+            marker = config.maintenance_root / "umami"
+            owned_marker = (not marker.is_symlink() and marker.is_file()
+                            and marker.stat().st_uid == ROOT_UID
+                            and marker.read_text(encoding="utf-8") == f"{operation_id}\n")
+            state = journal["state"]
+            interrupted = state in {"preparing", "applying", "rolling-back"}
+            conflict = marker.exists() or marker.is_symlink()
+            if interrupted or conflict != bool(journal["maintenance_active"]) or (conflict and not owned_marker):
+                state = "uncertain"
+            configured_route = (not config.caddy_route.is_symlink() and config.caddy_route.is_file()
+                                and config.caddy_route.read_text(encoding="utf-8") ==
+                                'umami.tuinstra.dev {\n\trespond "Service temporarily unavailable" 503\n}\n')
+            return {"status": "status", "operation_id": operation_id, "plan_hash": plan_hash,
+                    "state": state, "maintenance_active": bool(owned_marker and configured_route),
+                    "maintenance_expected": bool(conflict or interrupted or journal["maintenance_active"]),
+                    "maintenance_observation": "configured" if owned_marker and configured_route else "unverified",
+                    "restore_outcome": journal.get("restore_outcome"),
+                    "rollback_plan_hash": journal.get("rollback_plan_hash"),
+                    "safety_snapshot_id": journal.get("safety_snapshot_id"),
+                    "safety_artifact_id": journal.get("safety_artifact_id"),
+                    "target_state": journal.get("target_state"), "validation": journal.get("validation")}
     if len(parts) == 4 and parts[0] == "apply":
         with host_lock(config):
             return apply(config, parts[1], parts[2], parts[3], adapter)
