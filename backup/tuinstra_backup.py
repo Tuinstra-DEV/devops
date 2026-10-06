@@ -962,7 +962,7 @@ def compose_command(app: dict[str, Any]) -> list[str]:
     return command
 
 
-def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
+def running_compose_images(app: dict[str, Any], quiesced_service: str | None = None) -> dict[str, str]:
     approved = app.get("approved_images")
     if app.get("adapter") == TRACKER_ADAPTER:
         if (not isinstance(approved, dict) or not 2 <= len(approved) <= 32
@@ -1011,9 +1011,14 @@ def running_compose_images(app: dict[str, Any]) -> dict[str, str]:
     compose = compose_command(app)
     observed: dict[str, str] = {}
     for service, expected in approved.items():
-        container_id = run([*compose, "ps", "--quiet", service]).stdout.decode().strip()
+        options = ["--all"] if service == quiesced_service else []
+        container_id = run([*compose, "ps", *options, "--quiet", service]).stdout.decode().strip()
         if not re.fullmatch(r"^[0-9a-f]{64}$", container_id):
             raise BackupError("approved compose service is not running")
+        if service == quiesced_service:
+            running = run(["docker", "inspect", "--format", "{{.State.Running}}", container_id]).stdout.strip()
+            if running != b"false":
+                raise BackupError("safety export application is not quiesced")
         image_id = run(["docker", "inspect", "--format", "{{.Image}}", container_id]).stdout.decode().strip()
         if not re.fullmatch(r"^sha256:[0-9a-f]{64}$", image_id):
             raise BackupError("running container image identity is invalid")
@@ -1117,7 +1122,26 @@ def postgres_versions(app: dict[str, Any]) -> dict[str, Any]:
                                "two_factor_count": marker["two_factor_count"]}}
 
 
-def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
+def assert_quiesced_export(config: dict[str, Any], app: dict[str, Any], operation_id: str) -> str:
+    require_id(operation_id, "production restore operation")
+    if app.get("app_id") != "umami" or app.get("adapter") != "postgres-compose-v1":
+        raise BackupError("quiesced safety export is not supported for this application")
+    root = Path(config.get("production_restore_maintenance_root",
+                           "/var/lib/tuinstra-production-restore/maintenance"))
+    reject_symlink_components(root)
+    marker = root / "umami"
+    try:
+        info = marker.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise BackupError("quiesced safety export maintenance marker is unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != ROOT_UID
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or marker.read_text(encoding="utf-8") != f"{operation_id}\n"):
+        raise BackupError("quiesced safety export maintenance ownership is invalid")
+    return str(app["application_service"])
+
+
+def create_export(config: dict[str, Any], app_id: str, *, quiesced_operation: str | None = None) -> dict[str, Any]:
     with export_stage("application-contract"):
         host = require_id(config["host_slug"], "host slug")
         app = application(config, app_id)
@@ -1170,7 +1194,10 @@ def create_export(config: dict[str, Any], app_id: str) -> dict[str, Any]:
             else:
                 with export_stage("compose-contract"):
                     compose = compose_command(app)
-                    actual_images = running_compose_images(app)
+                    quiesced_service = (assert_quiesced_export(config, app, quiesced_operation)
+                                        if quiesced_operation is not None else None)
+                    actual_images = (running_compose_images(app, quiesced_service)
+                                     if quiesced_service is not None else running_compose_images(app))
                 with export_stage("runtime-evidence"):
                     database_versions = postgres_versions(app)
                 inputs = []
@@ -2693,6 +2720,7 @@ def parser() -> argparse.ArgumentParser:
     commands = cli.add_subparsers(dest="command", required=True)
     export = commands.add_parser("export")
     export.add_argument("--app", required=True)
+    export.add_argument("--quiesced-operation")
     commands.add_parser("export-all")
     dispatch_parser = commands.add_parser("dispatch")
     dispatch_parser.add_argument("--original-command")
@@ -2772,7 +2800,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         if args.command == "export":
-            result: Any = create_export(config, args.app)
+            result: Any = create_export(config, args.app, quiesced_operation=args.quiesced_operation)
         elif args.command == "export-all":
             enabled = [item["app_id"] for item in config.get("applications", []) if item.get("enabled", False)]
             result = ([create_export(config, app_id) for app_id in enabled] if enabled else

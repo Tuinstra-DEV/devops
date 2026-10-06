@@ -179,18 +179,20 @@ class JournalStore:
         return value
 
     def create(self, request: RestoreRequest, *, artifact_id: str, manifest_sha256: str,
-               stage_sha256: str, restore_evidence_id: str) -> dict[str, Any]:
+               stage_sha256: str, restore_evidence_id: str, initial_state: str = "preflight-passed") -> dict[str, Any]:
         if not ARTIFACT_RE.fullmatch(artifact_id):
             raise RestoreError("production restore artifact id is invalid")
         if not SHA_RE.fullmatch(manifest_sha256) or not SHA_RE.fullmatch(stage_sha256):
             raise RestoreError("production restore evidence digest is invalid")
         if not EVIDENCE_RE.fullmatch(restore_evidence_id):
             raise RestoreError("production restore evidence id is invalid")
+        if initial_state not in {"staging", "preflight-passed"}:
+            raise RestoreError("invalid initial production restore state")
         value: dict[str, Any] = {
             "schema_version": 1, **request.binding(), "artifact_id": artifact_id,
             "manifest_sha256": manifest_sha256, "stage_sha256": stage_sha256,
             "restore_evidence_id": restore_evidence_id,
-            "adapter_version": "umami-production-v1", "state": "preflight-passed",
+            "adapter_version": "umami-production-v1", "state": initial_state,
             "maintenance_active": False, "target_state": None,
             "safety_artifact_id": None, "safety_snapshot_id": None,
             "created_at": now(), "updated_at": now(), "error_code": None,
@@ -215,7 +217,7 @@ class JournalStore:
         if forbidden.intersection(changes):
             raise RestoreError("production restore immutable binding cannot change")
         allowed = {"state", "maintenance_active", "target_state", "safety_artifact_id",
-                   "safety_snapshot_id", "error_code", "rollback_plan_hash", "updated_at"}
+                   "safety_snapshot_id", "error_code", "rollback_plan_hash", "updated_at", "validation", "maintenance_expected"}
         if not set(changes).issubset(allowed):
             raise RestoreError("production restore journal update is invalid")
         current = self.load(operation_id)
@@ -422,7 +424,16 @@ def materialize_bundle(config: dict[str, Any], request: RestoreRequest, purpose:
     os.chmod(operation_root, 0o700)
     bundle = operation_root / "target.tar"
     with tarfile.open(bundle, "w") as target_archive:
-        target_archive.add(payload, arcname="payload", recursive=True)
+        def stable_header(info: tarfile.TarInfo) -> tarfile.TarInfo:
+            info.uid = info.gid = info.mtime = 0
+            info.uname = info.gname = ""
+            info.mode = 0o700 if info.isdir() else 0o600
+            info.pax_headers = {}
+            return info
+        target_archive.add(payload, arcname="payload", recursive=False, filter=stable_header)
+        for member in sorted(payload.rglob("*")):
+            target_archive.add(member, arcname="payload/" + member.relative_to(payload).as_posix(),
+                               recursive=False, filter=stable_header)
     os.chmod(bundle, 0o600)
     return bundle, {"result": result, "work_root": str(operation_root)}
 
@@ -436,15 +447,21 @@ def preflight(config: dict[str, Any], request: RestoreRequest, store: JournalSto
         try:
             if evidence["manifest_sha256"] != materialized["result"]["manifest_sha256"]:
                 raise RestoreError("materialized manifest does not match isolated restore evidence")
+            journal = store.create(request, artifact_id=point["artifact_id"],
+                                   manifest_sha256=materialized["result"]["manifest_sha256"],
+                                   stage_sha256=sha256(bundle), restore_evidence_id=evidence_id,
+                                   initial_state="staging")
+            if journal["state"] == "preflight-passed":
+                return journal
+            if journal["state"] != "staging":
+                raise RestoreError("production restore requires status reconcile before preflight retry")
             stage_result = transport.stage(bundle, "restore", request.plan_hash)
             if stage_result.get("status") != "staged" or stage_result.get("stage_sha256") != sha256(bundle):
                 raise RestoreError("production target did not confirm the exact staged bundle")
             target_result = transport.rpc(request, "preflight")
             if target_result.get("status") != "preflight-passed":
                 raise RestoreError("production target preflight did not pass")
-            return store.create(request, artifact_id=point["artifact_id"],
-                                manifest_sha256=materialized["result"]["manifest_sha256"],
-                                stage_sha256=sha256(bundle), restore_evidence_id=evidence_id)
+            return store.update(request.operation_id, state="preflight-passed")
         finally:
             shutil.rmtree(materialized["work_root"], ignore_errors=True)
 
@@ -495,7 +512,7 @@ def apply(config: dict[str, Any], request: RestoreRequest, store: JournalStore,
             if result.get("status") != "succeeded" or result.get("health") != "passed" or result.get("data") != "passed":
                 raise RestoreError("production restore target validation failed")
             return store.update(request.operation_id, state="succeeded", maintenance_active=False,
-                                error_code=None)
+                                validation={"health": "passed", "data": "passed"}, error_code=None)
     except TransportUncertain:
         current = store.load(request.operation_id)
         if current["state"] != "uncertain":
@@ -504,22 +521,57 @@ def apply(config: dict[str, Any], request: RestoreRequest, store: JournalStore,
         raise
     except Exception:
         current = store.load(request.operation_id)
-        store.update(request.operation_id, state="failed",
-                     maintenance_active=bool(current.get("maintenance_active")),
-                     error_code="restore-failed")
+        if current["state"] == "preparing":
+            store.update(request.operation_id, state="uncertain", maintenance_expected=True,
+                         error_code="prepare-effects-unverified")
+        else:
+            store.update(request.operation_id, state="failed",
+                         maintenance_active=bool(current.get("maintenance_active")),
+                         error_code="restore-failed")
         raise
 
 
-def status(request: RestoreRequest, store: JournalStore, transport: RemoteTransport) -> dict[str, Any]:
-    journal = store.load(request.operation_id)
-    if not _binding_matches(journal, request):
-        raise RestoreError("production restore operation binding changed")
-    remote = transport.rpc(request, "status")
-    if journal["state"] == "uncertain" and remote.get("state") in {"succeeded", "failed", "rolled-back"}:
-        return store.update(request.operation_id, state=remote["state"],
-                            maintenance_active=bool(remote.get("maintenance_active", True)),
-                            error_code=None if remote["state"] in {"succeeded", "rolled-back"} else "restore-failed")
-    return journal
+def status(config: dict[str, Any], request: RestoreRequest, store: JournalStore,
+           transport: RemoteTransport) -> dict[str, Any]:
+    with host_operation_lock(config, request.host_slug):
+        journal = store.load(request.operation_id)
+        if not _binding_matches(journal, request):
+            raise RestoreError("production restore operation binding changed")
+        remote = transport.rpc(request, "status")
+        interrupted = journal["state"] in MUTATING_STATES | {"uncertain"}
+        if (remote.get("status") != "status" or remote.get("operation_id") != request.operation_id
+                or remote.get("plan_hash") != request.plan_hash
+                or not isinstance(remote.get("maintenance_active"), bool)):
+            if interrupted:
+                store.update(request.operation_id, state="uncertain", maintenance_active=True,
+                             error_code="status-binding-unverified")
+            raise RestoreError("production target status is not bound to this operation")
+        if not interrupted:
+            return journal
+        state = remote.get("state")
+        if state in {"succeeded", "rolled-back"}:
+            safety = journal.get("safety_snapshot_id")
+            target_state = remote.get("target_state")
+            valid_safety = (isinstance(safety, str) and SHA_RE.fullmatch(safety)
+                            and safety == remote.get("safety_snapshot_id")
+                            and ((target_state == "populated" and safety != "0" * 64)
+                                 or (target_state == "empty" and safety == "0" * 64 and state == "succeeded")))
+            rollback_pending = journal["state"] == "rolling-back" or journal.get("rollback_plan_hash") is not None
+            valid_step = (not rollback_pending and state == "succeeded") or (
+                rollback_pending and state == "rolled-back"
+                and remote.get("rollback_plan_hash") == journal.get("rollback_plan_hash"))
+            if (remote["maintenance_active"] or not valid_safety or not valid_step
+                    or remote.get("validation") != {"health": "passed", "data": "passed"}):
+                store.update(request.operation_id, state="uncertain", maintenance_active=True,
+                             error_code="status-validation-unverified")
+                raise RestoreError("production target terminal result lacks exact safety or validation proof")
+            return store.update(request.operation_id, state=state, maintenance_active=False,
+                                validation={"health": "passed", "data": "passed"}, error_code=None)
+        if state == "failed":
+            return store.update(request.operation_id, state="failed",
+                                maintenance_active=remote["maintenance_active"], error_code="restore-failed")
+        return store.update(request.operation_id, state="uncertain", maintenance_active=True,
+                            error_code="interrupted-operation")
 
 
 def rollback(config: dict[str, Any], request: RestoreRequest, rollback_plan_hash: str,
@@ -549,7 +601,7 @@ def rollback(config: dict[str, Any], request: RestoreRequest, rollback_plan_hash
                          error_code="rollback-failed")
             raise RestoreError("production rollback validation failed")
         return store.update(request.operation_id, state="rolled-back", maintenance_active=False,
-                            error_code=None)
+                            validation={"health": "passed", "data": "passed"}, error_code=None)
 
 
 def safety_pull(config: dict[str, Any], request: RestoreRequest, artifact_id: str,
@@ -604,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
             result = apply(config, request, store, transport,
                            lambda exact, artifact, descriptor: safety_pull(config, exact, artifact, descriptor))
         elif args.command == "status":
-            result = status(request, store, transport)
+            result = status(config, request, store, transport)
         elif args.command == "rollback":
             result = rollback(config, request, args.rollback_plan_hash, store, transport,
                               lambda snapshot, purpose, descriptor: stage_rollback(

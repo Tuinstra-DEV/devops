@@ -478,6 +478,59 @@ class BackupTests(unittest.TestCase):
 
         return execute
 
+    def quiesced_export_fixture(self):
+        config = self.producer()
+        marker_root = self.root / 'maintenance'
+        marker_root.mkdir(mode=0o700)
+        marker = marker_root / 'umami'
+        marker.write_text('restore-fixture\n')
+        marker.chmod(0o600)
+        config['production_restore_maintenance_root'] = str(marker_root)
+        normal = self.fake_export_run(config)
+        def stopped(argv, **kwargs):
+            if 'ps' in argv and argv[-1] == 'umami' and '--all' not in argv:
+                return mock.Mock(stdout=b'')
+            if argv[:4] == ['docker', 'inspect', '--format', '{{.State.Running}}']:
+                return mock.Mock(stdout=b'false\n')
+            return normal(argv, **kwargs)
+        return config, marker, stopped
+
+    def test_quiesced_safety_export_checks_maintenance_owner_and_stopped_image(self):
+        config, _, stopped = self.quiesced_export_fixture()
+        with mock.patch.object(backup, 'run', side_effect=stopped):
+            result = backup.create_export(config, 'umami', quiesced_operation='restore-fixture')
+        self.assertRegex(result['artifact_id'], r'^[a-f0-9-]{36}$')
+
+    def test_regular_export_still_rejects_stopped_application(self):
+        config, _, stopped = self.quiesced_export_fixture()
+        with mock.patch.object(backup, 'run', side_effect=stopped), self.assertRaises(backup.BackupError):
+            backup.create_export(config, 'umami')
+
+    def test_quiesced_export_refuses_missing_wrong_or_public_maintenance_marker(self):
+        config, marker, stopped = self.quiesced_export_fixture()
+        for mutation in ('wrong-owner', 'public', 'absent'):
+            with self.subTest(mutation=mutation):
+                if mutation == 'wrong-owner': marker.write_text('another-operation\n')
+                elif mutation == 'public': marker.write_text('restore-fixture\n'); marker.chmod(0o644)
+                else: marker.unlink()
+                with mock.patch.object(backup, 'run', side_effect=stopped), self.assertRaises(backup.BackupError):
+                    backup.create_export(config, 'umami', quiesced_operation='restore-fixture')
+        self.assertFalse(list(Path(config['spool_dir']).glob('*.age')))
+
+    def test_quiesced_export_refuses_application_still_running_or_wrong_digest(self):
+        config, _, stopped = self.quiesced_export_fixture()
+        for mutation in ('running', 'digest'):
+            with self.subTest(mutation=mutation):
+                def invalid(argv, **kwargs):
+                    if mutation == 'running' and argv[:4] == ['docker', 'inspect', '--format', '{{.State.Running}}']:
+                        return mock.Mock(stdout=b'true\n')
+                    if mutation == 'digest' and argv[:3] == ['docker', 'image', 'inspect']:
+                        return mock.Mock(stdout=json.dumps(['repo@sha256:'+'f'*64]).encode())
+                    return stopped(argv, **kwargs)
+                with mock.patch.object(backup, 'run', side_effect=invalid), self.assertRaises(backup.BackupError):
+                    backup.create_export(config, 'umami', quiesced_operation='restore-fixture')
+        self.assertFalse(list(Path(config['spool_dir']).glob('*.age')))
+
     def test_export_is_atomic_encrypted_and_public_manifest_is_secret_free(self):
         config = self.producer()
 

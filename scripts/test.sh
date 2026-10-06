@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Verification imports must not create runtime bytecode in scanned source paths.
+export PYTHONDONTWRITEBYTECODE=1
+
 required_dirs=(
   ".github/workflows"
   "scripts"
