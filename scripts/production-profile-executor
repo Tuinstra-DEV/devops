@@ -32,6 +32,7 @@ HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 SHA_PATTERN = re.compile(r"[a-f0-9]{40}")
 VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 MAX_OUTPUT = 4_194_304
+ACTIVE_HOST_LOCK: int | None = None
 
 
 class Rejected(Exception):
@@ -87,9 +88,10 @@ def decode_request() -> dict[str, Any]:
         "profile_version", "profile_content_hash", "source_sha", "procedure",
     }
     operation = request.get("operation") if isinstance(request, dict) else None
-    keys = common | ({"approved_check_result_hash"} if operation == "apply" else set())
+    execution_operation = request.get("execution_operation") if operation == "status" else operation
+    keys = common | ({"execution_operation"} if operation == "status" else set()) | ({"approved_check_result_hash"} if execution_operation == "apply" else set())
     request = exact_object(request, keys, "Profile request")
-    if request["contract_version"] != CONTRACT or operation not in {"check", "apply"}:
+    if request["contract_version"] != CONTRACT or operation not in {"check", "apply", "status"} or execution_operation not in {"check", "apply"}:
         raise Rejected("Profile request contract or operation is unsupported.")
     bounded_string(request["host_slug"], HOST_PATTERN, "Host")
     bounded_string(request["job_id"], JOB_PATTERN, "Job")
@@ -99,9 +101,19 @@ def decode_request() -> dict[str, Any]:
     bounded_string(request["source_sha"], SHA_PATTERN, "Source SHA")
     if request["procedure"] not in {"baseline", "baseline_umami_restore"}:
         raise Rejected("Profile procedure is unsupported.")
-    if operation == "apply":
+    if execution_operation == "apply":
         bounded_string(request["approved_check_result_hash"], HASH_PATTERN, "Approved check hash")
     return request
+
+
+def verify_host_identity(request: dict[str, Any]) -> None:
+    if request["host_slug"] not in {"tuinstra-prod-01", "tuinstra-prod-02", "tuinstra-rehearsal-01"}:
+        raise Rejected("Target host is outside the fixed registry.")
+    safe_directory(CONFIG_ROOT, 0o700)
+    identity_path = CONFIG_ROOT / "host-identity"
+    safe_file(identity_path, 0o644)
+    if identity_path.read_text(encoding="ascii").strip() != request["host_slug"]:
+        raise Rejected("Target host identity does not match the request.")
 
 
 def load_policy(request: dict[str, Any]) -> dict[str, Any]:
@@ -299,6 +311,7 @@ def run_bounded(
         stdout=stdout,
         stderr=stderr,
         start_new_session=True,
+        pass_fds=() if ACTIVE_HOST_LOCK is None else (ACTIVE_HOST_LOCK,),
     )
     try:
         return process.wait(timeout=timeout)
@@ -315,8 +328,9 @@ def run_bounded(
             process.wait(timeout=5)
         raise
     finally:
+        # Reap even if the leader already exited while a descendant survived.
+        signal_group(process.pid, signal.SIGKILL)
         if process.poll() is None:
-            signal_group(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
 
 
@@ -379,7 +393,29 @@ def acquire_host_lock(host: str) -> int:
     return descriptor
 
 
+def read_status(request: dict[str, Any]) -> dict[str, Any]:
+    """Observe an exact original request. Absence never creates execution."""
+    original = {key: value for key, value in request.items() if key != "execution_operation"}
+    original["operation"] = request["execution_operation"]
+    digest = hashlib.sha256(json.dumps(original, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    journal_root = ROOT / "journal"
+    safe_directory(journal_root, 0o700)
+    journal = journal_root / f"{request['job_id']}-{request['plan_hash']}.json"
+    unresolved = {"contract_version": CONTRACT, "status": "uncertain", "summary": "Original target execution is not terminal; privileged investigation is required.", "retry_safe": False, "execution_operation": request["execution_operation"], "journal_terminal": False}
+    if not journal.exists():
+        return {**unresolved, "journal_present": False}
+    safe_file(journal, 0o600)
+    stored = json.loads(journal.read_text(encoding="utf-8"))
+    if stored.get("request_hash") != digest:
+        raise Rejected("Operation journal identity does not match this status request.")
+    response = stored.get("response")
+    if not isinstance(response, dict):
+        return {**unresolved, "journal_present": True}
+    return {**response, "execution_operation": request["execution_operation"], "journal_present": True, "journal_terminal": True}
+
+
 def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, Path, Path]) -> dict[str, Any]:
+    global ACTIVE_HOST_LOCK
     operation = request["operation"]
     journal_root = ROOT / "journal"
     safe_directory(journal_root, 0o700)
@@ -413,8 +449,20 @@ def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, 
         os.close(descriptor)
         return existing
 
+    termination_signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {selected: signal.getsignal(selected) for selected in termination_signals}
+
+    def interrupted(selected: int, frame: Any) -> None:
+        # Subsequent disconnect signals must not interrupt group cleanup or receipt.
+        for current in termination_signals:
+            signal.signal(current, signal.SIG_IGN)
+        raise subprocess.SubprocessError("Target session interrupted.")
+
     try:
         atomic_json(journal, {"request_hash": request_hash, "response": None})
+        ACTIVE_HOST_LOCK = descriptor
+        for selected in termination_signals:
+            signal.signal(selected, interrupted)
         try:
             if operation == "check":
                 result = run_phase(request, policy, paths, "check")
@@ -449,8 +497,12 @@ def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, 
         atomic_json(journal, {"request_hash": request_hash, "response": response})
         return response
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        ACTIVE_HOST_LOCK = None
+        # Descendants inherit the flock across exec. Closing our descriptor keeps
+        # it held if an uncatchable parent death leaves Ansible still running.
         os.close(descriptor)
+        for selected, handler in previous_handlers.items():
+            signal.signal(selected, handler)
 
 
 def main() -> int:
@@ -459,9 +511,15 @@ def main() -> int:
         if os.geteuid() != 0 or sys.argv != [sys.argv[0]] or os.environ.get("SUDO_USER") != "console-profile-executor":
             raise Rejected("Executor invocation identity is invalid.")
         request = decode_request()
-        policy = load_policy(request)
-        paths = verify_bundle(policy)
-        response = execute(request, policy, paths)
+        verify_host_identity(request)
+        if request["operation"] == "status":
+            # Root-owned original request digest binds historical authorization.
+            # Current publication/bundle is irrelevant to a read-only receipt.
+            response = read_status(request)
+        else:
+            policy = load_policy(request)
+            paths = verify_bundle(policy)
+            response = execute(request, policy, paths)
         response.update({
             "host_slug": request["host_slug"],
             "job_id": request["job_id"],
