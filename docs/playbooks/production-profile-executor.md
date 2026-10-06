@@ -63,8 +63,10 @@ non-blocking lock gedurende de volledige check of apply. Back-up-, restore- en
 deployhelpers gebruiken dezelfde buitenste lock voordat ze een app- of
 Restic-lock nemen.
 
-Resultaten worden atomair en met `fsync` gejournaled op job- en planhash. Een
-herhaald verzoek krijgt hetzelfde terminale resultaat. Een afgebroken apply
+Resultaten worden atomair en met `fsync` gejournaled op job- en planhash. De
+gezamenlijke hostlock blijft vastgehouden totdat ook de terminale receipt
+duurzaam is opgeslagen. Een fout bij de eerste journalwrite geeft de lock vrij
+zonder Ansible te starten. Een herhaald verzoek krijgt hetzelfde terminale resultaat. Een afgebroken apply
 zonder terminaal resultaat blijft `uncertain` en moet worden gereconcilieerd;
 de worker mag hem niet blind opnieuw uitvoeren.
 

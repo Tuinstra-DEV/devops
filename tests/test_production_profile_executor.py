@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -149,6 +150,67 @@ prod01 : ok=47 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
             self.assertEqual("failed", result["status"])
             self.assertTrue(result["retry_safe"])
             runner.assert_called_once()
+
+    def test_terminal_receipt_is_persisted_before_releasing_host_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            lock_path = root / "lock"
+            lock_path.touch(mode=0o600)
+            persisted_while_locked: list[bool] = []
+            original_atomic_json = EXECUTOR.atomic_json
+
+            def acquire(_: str) -> int:
+                descriptor = os.open(lock_path, os.O_RDWR)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+
+            def persist(path: pathlib.Path, value: dict[str, object]) -> None:
+                if isinstance(value.get("response"), dict):
+                    with lock_path.open("r+") as contender:
+                        try:
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            persisted_while_locked.append(True)
+                        else:
+                            persisted_while_locked.append(False)
+                            fcntl.flock(contender, fcntl.LOCK_UN)
+                original_atomic_json(path, value)
+
+            with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "acquire_host_lock", side_effect=acquire), mock.patch.object(EXECUTOR, "run_phase", return_value={"successful": True}), mock.patch.object(EXECUTOR, "atomic_json", side_effect=persist):
+                result = EXECUTOR.execute(request(), {}, (pathlib.Path(), pathlib.Path(), pathlib.Path()))
+
+            self.assertEqual("succeeded", result["status"])
+            self.assertEqual([True], persisted_while_locked)
+
+    def test_initial_journal_write_failure_releases_host_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            lock_path = root / "lock"
+            lock_path.touch(mode=0o600)
+            acquired: list[int] = []
+
+            def acquire(_: str) -> int:
+                descriptor = os.open(lock_path, os.O_RDWR)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired.append(descriptor)
+                return descriptor
+
+            try:
+                with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "acquire_host_lock", side_effect=acquire), mock.patch.object(EXECUTOR, "atomic_json", side_effect=OSError("synthetic receipt write failure")), mock.patch.object(EXECUTOR, "run_phase") as runner:
+                    with self.assertRaises(OSError):
+                        EXECUTOR.execute(request(), {}, (pathlib.Path(), pathlib.Path(), pathlib.Path()))
+                runner.assert_not_called()
+                with lock_path.open("r+") as contender:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(contender, fcntl.LOCK_UN)
+            finally:
+                for descriptor in acquired:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
     def test_bounded_runner_terminates_the_entire_child_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

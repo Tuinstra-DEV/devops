@@ -413,8 +413,8 @@ def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, 
         os.close(descriptor)
         return existing
 
-    atomic_json(journal, {"request_hash": request_hash, "response": None})
     try:
+        atomic_json(journal, {"request_hash": request_hash, "response": None})
         try:
             if operation == "check":
                 result = run_phase(request, policy, paths, "check")
@@ -445,12 +445,12 @@ def execute(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, 
                 "summary": "Target execution was interrupted; reconciliation is required." if operation == "apply" else "Target check was interrupted before mutation.",
                 "retry_safe": operation == "check",
             }
+        # Keep the authoritative host lock until the terminal receipt is durable.
+        atomic_json(journal, {"request_hash": request_hash, "response": response})
+        return response
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
-
-    atomic_json(journal, {"request_hash": request_hash, "response": response})
-    return response
 
 
 def main() -> int:
