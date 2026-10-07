@@ -175,6 +175,16 @@ def exclusion_report(work: Path, placeholder: bytes = b"") -> tuple[dict, bytes]
     return report, raw
 
 
+class ScannerProfileBindingTests(unittest.TestCase):
+    def test_producer_matches_the_reviewed_scanner_manifest_bytes(self):
+        raw = (ROOT / "tests/fixtures/gate-pr-security/scanner-frozen.json").read_bytes()
+        manifest = json.loads(raw)
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        self.assertEqual(digest, evidence.constants.BUNDLE_DIGEST)
+        self.assertEqual(digest, evidence.constants.DATASET_DIGEST)
+        self.assertEqual(manifest["files"]["policy.json"], evidence.constants.POLICY_DIGEST)
+
+
 class FakeResponse:
     def __init__(self, status, body):
         self.status = status
