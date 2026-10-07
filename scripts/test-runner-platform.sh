@@ -28,7 +28,10 @@ for file in infra/packer/sanctuary-runner.pkr.hcl infra/ansible/site.yml; do
 done
 
 grep -q 'rotate 30' runner/logrotate/ci-runner-audit
-grep -q '^MAX_CONCURRENCY = 1$' runner/host-helper/ci_runner_host_helper.py
+grep -q '^MAX_CONCURRENCY = 4$' runner/host-helper/ci_runner_host_helper.py
+grep -q '^LEGACY_CONCURRENCY = 1$' runner/host-helper/ci_runner_host_helper.py
+grep -q 'PROFILE_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}' runner/host-helper/ci_runner_host_helper.py
+grep -q 'PROFILE_DISK_GIB = {"heavy": 12, "medium": 4}' runner/host-helper/ci_runner_host_helper.py
 grep -q '^MEMORY_MIB = 6144$' runner/host-helper/ci_runner_host_helper.py
 grep -q '^VCPUS = 4$' runner/host-helper/ci_runner_host_helper.py
 grep -q 'DISK_GIB = "120G"' runner/host-helper/ci_runner_host_helper.py

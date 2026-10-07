@@ -11,14 +11,21 @@
 - name: Assert runner capacity contract
   ansible.builtin.assert:
     that:
-      - runner_max_concurrency | int == 1
+      - runner_pool_mode in ['legacy', 'four']
+      - (runner_pool_mode == 'legacy' and runner_max_concurrency | int == 1) or (runner_pool_mode == 'four' and runner_max_concurrency | int == 4)
       - runner_vcpus | int == 4
       - runner_memory_mib | int == 6144
+      - runner_medium_vcpus | int == 2
+      - runner_medium_memory_mib | int == 3072
+      - runner_max_heavy | int == 2
+      - runner_max_medium | int == 2
+      - runner_heavy_disk_reservation_gib | int == 12
+      - runner_medium_disk_reservation_gib | int == 4
       - runner_host_memory_reserve_mib | int == 4096
       - runner_min_free_disk_gib | int == 60
-      - ansible_processor_vcpus | int >= (runner_max_concurrency | int) * (runner_vcpus | int)
-      - ansible_memtotal_mb | int >= ((runner_max_concurrency | int) * (runner_memory_mib | int)) + (runner_host_memory_reserve_mib | int)
-    fail_msg: Host capacity must fit one 4-vCPU, 6144-MiB runner plus the 4096-MiB memory reserve.
+      - ansible_processor_vcpus | int >= (12 if runner_pool_mode == 'four' else 4)
+      - ansible_memtotal_mb | int >= (18432 if runner_pool_mode == 'four' else 6144) + (runner_host_memory_reserve_mib | int)
+    fail_msg: Host capacity or immutable runner pool policy does not fit the selected mode.
 
 - name: Check KVM device
   ansible.builtin.stat:
@@ -72,8 +79,10 @@
       - >-
         not runner_existing_manager_policy.stat.exists or
         (runner_existing_concurrency_lines | length == 1 and
-         (runner_existing_concurrency_lines[0].split(' = ')[1] | int)
-         == (runner_max_concurrency | int))
+         ((runner_existing_concurrency_lines[0].split(' = ')[1] | int)
+          == (runner_max_concurrency | int) or
+          (runner_allow_pool_policy_transition | bool and
+           (runner_existing_concurrency_lines[0].split(' = ')[1] | int) in [1, 4])))
       - >-
         not runner_existing_manager_policy.stat.exists or
         (runner_existing_memory_lines | length == 1 and
@@ -89,19 +98,21 @@
          | map(attribute='size_available') | first | int) >=
         (runner_min_free_disk_gib | int) * 1073741824
     fail_msg: >-
-      Refusing runner capacity drift from the approved one-VM, 6144-MiB,
-      60-GiB policy or deployment when the main NVMe has less than 60 GiB free.
+      Refusing unreviewed runner capacity drift or deployment when the main
+      NVMe has less than 60 GiB free.
 
 - name: Install virtualization and policy packages
   ansible.builtin.apt:
     name:
       - cloud-image-utils
+      - e2fsprogs
       - libvirt-daemon-system
       - nftables
       - python3
       - qemu-kvm
       - qemu-utils
       - virtinst
+      - util-linux
     state: present
     update_cache: true
 
@@ -182,6 +193,24 @@
 
 - name: Inspect existing services before image activation
   ansible.builtin.service_facts:
+
+- name: Inspect runner domains before stopping admission
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - --connect
+      - qemu:///system
+      - list
+      - --all
+      - --name
+  register: runner_preflight_domains
+  changed_when: false
+
+- name: Require a drained runner before touching admission
+  ansible.builtin.assert:
+    that:
+      - runner_preflight_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
+    fail_msg: Wait for active Sanctuary CI leases to finish before applying runner host changes.
 
 - name: Stop runner admission before image activation
   ansible.builtin.systemd:

@@ -13,8 +13,16 @@ runner_allowed_repositories:
   - Tuinstra-DEV/marcel-site
   - Tuinstra-DEV/tuinstra-site
 runner_max_concurrency: 1
+runner_pool_mode: legacy
+runner_allow_pool_policy_transition: false
 runner_vcpus: 4
 runner_memory_mib: 6144
+runner_medium_vcpus: 2
+runner_medium_memory_mib: 3072
+runner_max_heavy: 2
+runner_max_medium: 2
+runner_heavy_disk_reservation_gib: 12
+runner_medium_disk_reservation_gib: 4
 runner_host_memory_reserve_mib: 4096
 runner_min_free_disk_gib: 60
 runner_overlay_root: /var/lib/ci-runner/overlay

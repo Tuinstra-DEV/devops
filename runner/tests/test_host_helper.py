@@ -14,6 +14,177 @@ import ci_runner_host_helper as helper
 class HostHelperTests(unittest.TestCase):
     request_id = "a" * 32
 
+    def setUp(self):
+        self.policy = mock.patch.object(helper, "active_pool_mode", return_value="legacy")
+        self.policy.start()
+        self.addCleanup(self.policy.stop)
+
+    def test_root_policy_rejects_mode_and_profile_bypass(self):
+        legacy = {"max_concurrency": 1, "runner_vcpus": 4,
+                  "runner_memory_mib": 6144, "runner_label": "trusted-heavy",
+                  "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        four = {**legacy, "pool_mode": "four", "max_concurrency": 4,
+                "medium_runner_label": "trusted-medium", "medium_runner_vcpus": 2,
+                "medium_runner_memory_mib": 3072, "max_heavy": 2, "max_medium": 2,
+                "heavy_disk_reservation_gib": 12,
+                "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop"}
+        self.assertEqual(helper.policy_mode_from_mapping(legacy), "legacy")
+        self.assertEqual(helper.policy_mode_from_mapping(four), "four")
+        with self.assertRaises(helper.ProtocolError):
+            helper.policy_mode_from_mapping({**four, "storage_mode": "sparse"})
+        with mock.patch.object(helper, "active_pool_mode", return_value="four"):
+            with self.assertRaises(helper.ProtocolError):
+                helper.enforce_launch_mode(None)
+        with self.assertRaises(helper.ProtocolError):
+            helper.enforce_launch_mode("medium")
+
+    def test_four_pool_socket_rejects_legacy_launch_before_jit(self):
+        request = {"v": 1, "id": self.request_id, "op": "launch", "lease": "job-1",
+                   "vcpus": 4, "memory_mib": 6144}
+        connection = self.connection_for_uid(1002)
+        connection.recv.return_value = json.dumps(request).encode()
+        with mock.patch.object(helper, "active_pool_mode", return_value="four"), \
+                mock.patch.object(helper, "launch") as launch:
+            helper.serve_connection(connection, expected_uid=1002)
+        launch.assert_not_called()
+        connection.recv.assert_called_once()
+        self.assertEqual(self.decoded_response(connection)["error"], "invalid_request")
+
+    @mock.patch.object(helper.os, "geteuid", return_value=0)
+    @mock.patch.object(helper, "run")
+    def test_four_pool_direct_launch_rejects_legacy_overlay(self, run, _euid):
+        with mock.patch.object(helper, "active_pool_mode", return_value="four"):
+            with self.assertRaisesRegex(helper.ProtocolError, "requires a bounded profile"):
+                helper.launch("legacy-attempt", b"aml0")
+        run.assert_not_called()
+
+    def test_bounded_profiles_reject_resource_and_slot_drift(self):
+        self.assertEqual(helper.validate_resources(4, 6144, "heavy"), (4, 6144))
+        self.assertEqual(helper.validate_resources(2, 3072, "medium"), (2, 3072))
+        for profile, cpu, memory in (("medium", 4, 6144), ("heavy", 2, 3072),
+                                     ("unknown", 2, 3072)):
+            with self.subTest(profile=profile), self.assertRaises(helper.ProtocolError):
+                helper.validate_resources(cpu, memory, profile)
+        self.assertTrue(helper.profile_has_slot({"heavy": 1, "medium": 2}, "heavy"))
+        self.assertFalse(helper.profile_has_slot({"heavy": 2, "medium": 1}, "heavy"))
+        self.assertFalse(helper.profile_has_slot({"heavy": 2, "medium": 2}, "medium"))
+
+    def test_bounded_launch_requires_positive_reserved_disk_headroom(self):
+        self.assertTrue(helper.reservation_fits(97 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(72 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(63 * 1024**3, "medium"))
+
+    @mock.patch.object(helper, "local_mount_source", return_value="/dev/mapper/other")
+    @mock.patch.object(helper, "host_mount_source", return_value="/dev/mapper/other")
+    def test_bounded_mount_rejects_unexpected_device(self, _source, _local):
+        with self.assertRaisesRegex(RuntimeError, "not loop-backed"):
+            helper.verify_bounded_mount(Path("/lease/bounded.img"), Path("/lease/work"))
+
+    @mock.patch.object(helper, "run")
+    @mock.patch.object(helper, "local_mount_source", return_value=None)
+    @mock.patch.object(helper, "host_mount_source", side_effect=["/dev/loop7", "/dev/loop7"])
+    def test_bounded_cleanup_preserves_storage_when_umount_does_not_complete(
+            self, _source, _local, run):
+        with mock.patch.object(helper, "associated_loop", return_value="/dev/loop7"), \
+                mock.patch.object(helper, "verify_loop_binding"), \
+                mock.patch.object(helper.shutil, "rmtree") as rmtree:
+            with self.assertRaisesRegex(RuntimeError, "mount remains active"):
+                helper.remove_bounded_storage("a")
+            rmtree.assert_not_called()
+
+    @mock.patch.object(helper, "run")
+    @mock.patch.object(helper, "local_mount_source", return_value=None)
+    @mock.patch.object(helper, "host_mount_source", side_effect=["/dev/loop7", None])
+    def test_bounded_cleanup_allows_discard_drift_after_domain_destroy(
+            self, _host, _local, _run):
+        def verify_identity(_backing, _loop, *, require_discard=True):
+            if require_discard:
+                raise RuntimeError("runner loop discard is enabled")
+
+        with mock.patch.object(helper, "associated_loop",
+                               side_effect=["/dev/loop7", None]), \
+                mock.patch.object(helper, "verify_loop_binding",
+                                  side_effect=verify_identity) as verify, \
+                mock.patch.object(helper.shutil, "rmtree") as rmtree:
+            helper.remove_bounded_storage("a")
+        self.assertEqual(verify.call_count, 2)
+        self.assertTrue(all(call.kwargs == {"require_discard": False}
+                            for call in verify.call_args_list))
+        rmtree.assert_called_once()
+
+    @mock.patch.object(helper, "run")
+    @mock.patch.object(helper.shutil, "disk_usage", return_value=mock.Mock(free=97 * 1024**3))
+    def test_partial_backing_allocation_stops_before_mount_or_vm(self, _disk, run):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            paths = (directory, directory / "bounded.img", directory / "work")
+            with mock.patch.object(helper, "bounded_paths", return_value=paths):
+                with self.assertRaisesRegex(RuntimeError, "not fully allocated"):
+                    helper.create_bounded_storage("lease", "medium", 994)
+        self.assertEqual([call.args[0][0] for call in run.call_args_list], ["fallocate"])
+
+    @mock.patch.object(helper, "run", return_value=mock.Mock(stdout="/wrong/backing.img\n"))
+    def test_wrong_loop_backing_stops_before_mount_or_vm(self, _run):
+        with self.assertRaisesRegex(RuntimeError, "does not match lease"):
+            helper.verify_loop_binding(Path("/lease/bounded.img"), "/dev/loop7")
+
+    @mock.patch.object(helper.shutil, "disk_usage", return_value=mock.Mock(free=97 * 1024**3))
+    def test_storage_creation_rejects_wrong_loop_backing_before_mount(self, _disk):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            backing = directory / "bounded.img"
+            paths = (directory, backing, directory / "work")
+            real_stat = Path.stat
+            reserved = 4 * 1024**3
+
+            def backing_stat(path, *args, **kwargs):
+                if path == backing:
+                    return mock.Mock(st_size=reserved, st_blocks=reserved // 512)
+                return real_stat(path, *args, **kwargs)
+
+            def runner_command(command, **_kwargs):
+                if command[:3] == ["losetup", "--find", "--show"]:
+                    return mock.Mock(stdout="/dev/loop7\n")
+                if command[:4] == ["losetup", "--noheadings", "--output", "BACK-FILE"]:
+                    return mock.Mock(stdout="/wrong/backing.img\n")
+                return mock.Mock(stdout="")
+
+            with mock.patch.object(helper, "bounded_paths", return_value=paths), \
+                    mock.patch.object(helper, "associated_loop", return_value=None), \
+                    mock.patch.object(Path, "stat", autospec=True, side_effect=backing_stat), \
+                    mock.patch.object(helper, "run", side_effect=runner_command) as run:
+                with self.assertRaisesRegex(RuntimeError, "does not match lease"):
+                    helper.create_bounded_storage("lease", "medium", 994)
+            commands = [call.args[0][0] for call in run.call_args_list]
+            self.assertNotIn("systemd-mount", commands)
+            self.assertNotIn("qemu-img", commands)
+
+    @mock.patch.object(helper, "local_mount_source", return_value=None)
+    @mock.patch.object(helper, "host_mount_source", return_value="/dev/loop7")
+    def test_mount_must_be_visible_in_helper_namespace(self, _host, _local):
+        with self.assertRaisesRegex(RuntimeError, "namespaces disagree"):
+            helper.verify_bounded_mount(Path("/lease/bounded.img"), Path("/lease/work"))
+
+    @mock.patch.object(helper, "run")
+    def test_discard_must_read_back_zero_before_guest_storage(self, run):
+        run.side_effect = [mock.Mock(stdout="0\n"), mock.Mock(stdout="1\n")]
+        with self.assertRaisesRegex(RuntimeError, "could not be disabled"):
+            helper.disable_loop_discard("/dev/loop7")
+        self.assertEqual(run.call_args_list[0].kwargs["input_text"], "0\n")
+        self.assertEqual(run.call_args_list[0].args[0][-1],
+                         "/sys/class/block/loop7/queue/discard_max_bytes")
+
+    @mock.patch.object(helper, "run")
+    def test_destroy_preserves_storage_when_domain_remains(self, run):
+        run.side_effect = [mock.Mock(stdout="", returncode=0),
+                           mock.Mock(stdout="", returncode=0),
+                           mock.Mock(stdout="", returncode=0),
+                           mock.Mock(stdout="sanctuary-ci-a\n", returncode=0)]
+        with mock.patch.object(helper, "remove_bounded_storage") as remove:
+            with self.assertRaisesRegex(RuntimeError, "domain remains defined"):
+                helper.destroy("a")
+            remove.assert_not_called()
+
     @staticmethod
     def decoded_response(connection):
         return json.loads(connection.sendall.call_args.args[0])
