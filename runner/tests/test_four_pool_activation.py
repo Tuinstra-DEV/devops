@@ -223,6 +223,14 @@ class FourPoolActivationTests(unittest.TestCase):
         self.assertIn("remove_bounded_storage", activation.CANARY_CODE)
         self.assertNotIn("launch(", activation.CANARY_CODE)
 
+    def test_canary_mount_query_failure_has_allowlisted_diagnostic(self):
+        self.assertIn('"local runner mount state cannot be verified"',
+                      activation.CANARY_CODE)
+        self.assertIn('"mount_query_failed"', activation.CANARY_CODE)
+        self.assertEqual(activation.CANARY_MARKER.findall(
+            "DEV50_CANARY stage=create error=mount_query_failed\n"),
+            [("create", "mount_query_failed")])
+
     def test_failed_canary_reports_only_allowlisted_journal_stage(self):
         calls = []
 

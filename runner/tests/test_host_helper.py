@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import struct
 import tempfile
 import unittest
@@ -79,6 +81,68 @@ class HostHelperTests(unittest.TestCase):
     def test_bounded_mount_rejects_unexpected_device(self, _source, _local):
         with self.assertRaisesRegex(RuntimeError, "not loop-backed"):
             helper.verify_bounded_mount(Path("/lease/bounded.img"), Path("/lease/work"))
+
+    @mock.patch.object(helper, "run")
+    def test_local_mount_queries_visible_exact_target(self, run):
+        run.return_value = mock.Mock(returncode=0, stderr="", stdout=(
+            '{"filesystems":[{"source":"/dev/loop8","target":"/lease/work"}]}'))
+        self.assertEqual(helper.local_mount_source(Path("/lease/work")), "/dev/loop8")
+        self.assertEqual(run.call_args.args[0], [
+            "findmnt", "--kernel", "--uniq", "--json", "--output", "SOURCE,TARGET",
+            "--mountpoint", "/lease/work"])
+
+    @mock.patch.object(helper, "run")
+    def test_host_mount_queries_visible_exact_target(self, run):
+        run.return_value = mock.Mock(returncode=0, stderr="", stdout=(
+            '{"filesystems":[{"source":"/dev/loop8","target":"/lease/work"}]}'))
+        self.assertEqual(helper.host_mount_source(Path("/lease/work")), "/dev/loop8")
+        self.assertEqual(run.call_args.args[0], [
+            "nsenter", "--mount=/proc/1/ns/mnt", "--", "findmnt", "--kernel",
+            "--uniq", "--json", "--output", "SOURCE,TARGET", "--mountpoint",
+            "/lease/work"])
+
+    @mock.patch.object(helper, "run")
+    def test_mount_query_rejects_parent_wrong_source_and_ambiguous_records(self, run):
+        path = Path("/lease/work")
+        for record in (
+            '{"filesystems":[{"source":"/dev/root","target":"/lease"}]}',
+            '{"filesystems":[{"source":"/dev/mapper/other","target":"/lease/work"}]}',
+            '{"filesystems":[{"source":"/dev/loop7","target":"/lease/work"},'
+            '{"source":"/dev/loop8","target":"/lease/work"}]}',
+            '{"filesystems":[{"source":"/dev/loop8"}]}',
+            'not json',
+        ):
+            with self.subTest(record=record):
+                run.return_value = mock.Mock(returncode=0, stderr="", stdout=record)
+                with self.assertRaisesRegex(RuntimeError, "mount state cannot be verified"):
+                    helper.local_mount_source(path)
+
+    @mock.patch.object(helper, "run")
+    def test_mount_query_reports_absent_only_for_empty_not_found(self, run):
+        run.return_value = mock.Mock(returncode=1, stdout="", stderr="")
+        self.assertIsNone(helper.local_mount_source(Path("/lease/work")))
+        run.return_value = mock.Mock(returncode=1, stdout="unexpected output", stderr="")
+        with self.assertRaisesRegex(RuntimeError, "mount state cannot be verified"):
+            helper.local_mount_source(Path("/lease/work"))
+        run.return_value = mock.Mock(returncode=1, stdout="", stderr="findmnt query failed")
+        with self.assertRaisesRegex(RuntimeError, "mount state cannot be verified"):
+            helper.local_mount_source(Path("/lease/work"))
+
+    def test_findmnt_uniq_fixture_keeps_later_stacked_mount(self):
+        if not shutil.which("findmnt"):
+            self.skipTest("findmnt is only installed on Linux")
+        with tempfile.TemporaryDirectory() as temporary:
+            mountinfo = Path(temporary) / "mountinfo"
+            mountinfo.write_text(
+                "100 1 7:7 / /lease/work rw - ext4 /dev/loop7 rw\n"
+                "101 1 7:8 / /lease/work rw - ext4 /dev/loop8 rw\n",
+                encoding="ascii")
+            result = subprocess.run([
+                "findmnt", "--kernel", "--tab-file", str(mountinfo), "--uniq",
+                "--json", "--output", "SOURCE,TARGET", "--mountpoint", "/lease/work",
+            ], text=True, capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout), {"filesystems": [
+            {"source": "/dev/loop8", "target": "/lease/work"}]})
 
     @mock.patch.object(helper, "run")
     @mock.patch.object(helper, "local_mount_source", return_value=None)

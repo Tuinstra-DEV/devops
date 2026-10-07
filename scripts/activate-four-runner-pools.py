@@ -30,7 +30,7 @@ from typing import Callable
 
 
 MANAGER_SHA256 = "c4490d84a0338e282bd6b98916293a2ba63f97d044d0cb6cbb31329cafde700f"
-HELPER_SHA256 = "000fe44deed24d1798580fc6bc9b71b7bd3e37c1a865f2036a19ae23cb23e9ee"
+HELPER_SHA256 = "c8932841ee520853f2f6e127ad89fe94ca71e0b952f163a23a234a8f2baa0e35"
 UNIT_SHA256 = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 SYSTEMD_UNIT_OBJECT = "/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice"
 SOURCE_FILES = {"manager": "ci_runner_manager.py", "helper": "ci_runner_host_helper.py"}
@@ -413,6 +413,9 @@ def error_code(exc):
         return "mount_namespace_mismatch"
     if message == "runner mount did not become visible in both namespaces":
         return "mount_not_visible"
+    if message in ("runner mount state cannot be verified",
+                   "local runner mount state cannot be verified"):
+        return "mount_query_failed"
     if message in ("runner backing file is not fully allocated",
                    "filesystem creation released backing reservation",
                    "runner backing reservation changed before guest creation"):
@@ -475,7 +478,7 @@ print("DEV50_CANARY stage=complete error=none", file=sys.stderr, flush=True)
 
 CANARY_MARKER = re.compile(
     r"^DEV50_CANARY stage=(initial|prepare|create|verify|trim|discard|cleanup|complete) "
-    r"error=(none|mount_namespace_mismatch|mount_not_visible|backing_allocation|"
+    r"error=(none|mount_namespace_mismatch|mount_not_visible|mount_query_failed|backing_allocation|"
     r"loop_binding|discard_limit|trim_guard|unknown)$", re.MULTILINE,
 )
 
