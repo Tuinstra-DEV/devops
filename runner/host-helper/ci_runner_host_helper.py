@@ -263,26 +263,41 @@ def recorded_profile(lease: str) -> str:
     raise RuntimeError("runner profile is not known")
 
 
+def visible_mount_source(result: subprocess.CompletedProcess[str], mountpoint: Path,
+                         error: str) -> str | None:
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        return None
+    if result.returncode != 0:
+        raise RuntimeError(error)
+    try:
+        rows = json.loads(result.stdout)["filesystems"]
+        if len(rows) != 1:
+            raise ValueError("expected one visible mount")
+        row = rows[0]
+        source = row["source"]
+        if row["target"] != str(mountpoint) or not isinstance(source, str) or \
+                not re.fullmatch(r"/dev/loop[0-9]+", source):
+            raise ValueError("unexpected mount target or source")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise RuntimeError(error) from exc
+    return source
+
+
 def host_mount_source(mountpoint: Path) -> str | None:
     result = run([
-        "nsenter", "--mount=/proc/1/ns/mnt", "--", "findmnt", "--noheadings",
-        "--output", "SOURCE", "--mountpoint", str(mountpoint),
+        "nsenter", "--mount=/proc/1/ns/mnt", "--", "findmnt", "--kernel",
+        "--uniq", "--json", "--output", "SOURCE,TARGET", "--mountpoint",
+        str(mountpoint),
     ], check=False)
-    if result.returncode == 1 and not result.stdout.strip():
-        return None
-    if result.returncode != 0 or len(result.stdout.splitlines()) != 1:
-        raise RuntimeError("runner mount state cannot be verified")
-    return result.stdout.strip()
+    return visible_mount_source(result, mountpoint,
+                                "runner mount state cannot be verified")
 
 
 def local_mount_source(mountpoint: Path) -> str | None:
-    result = run(["findmnt", "--noheadings", "--output", "SOURCE",
-                  "--mountpoint", str(mountpoint)], check=False)
-    if result.returncode == 1 and not result.stdout.strip():
-        return None
-    if result.returncode != 0 or len(result.stdout.splitlines()) != 1:
-        raise RuntimeError("local runner mount state cannot be verified")
-    return result.stdout.strip()
+    result = run(["findmnt", "--kernel", "--uniq", "--json", "--output",
+                  "SOURCE,TARGET", "--mountpoint", str(mountpoint)], check=False)
+    return visible_mount_source(result, mountpoint,
+                                "local runner mount state cannot be verified")
 
 
 def associated_loop(backing: Path) -> str | None:
