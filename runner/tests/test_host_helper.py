@@ -14,6 +14,38 @@ import ci_runner_host_helper as helper
 class HostHelperTests(unittest.TestCase):
     request_id = "a" * 32
 
+    def test_bounded_profiles_reject_resource_and_slot_drift(self):
+        self.assertEqual(helper.validate_resources(4, 6144, "heavy"), (4, 6144))
+        self.assertEqual(helper.validate_resources(2, 3072, "medium"), (2, 3072))
+        for profile, cpu, memory in (("medium", 4, 6144), ("heavy", 2, 3072),
+                                     ("unknown", 2, 3072)):
+            with self.subTest(profile=profile), self.assertRaises(helper.ProtocolError):
+                helper.validate_resources(cpu, memory, profile)
+        self.assertTrue(helper.profile_has_slot({"heavy": 1, "medium": 2}, "heavy"))
+        self.assertFalse(helper.profile_has_slot({"heavy": 2, "medium": 1}, "heavy"))
+        self.assertFalse(helper.profile_has_slot({"heavy": 2, "medium": 2}, "medium"))
+
+    def test_bounded_launch_requires_positive_reserved_disk_headroom(self):
+        self.assertTrue(helper.reservation_fits(97 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(72 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(63 * 1024**3, "medium"))
+
+    @mock.patch.object(helper, "host_mount_source", return_value="/dev/mapper/other")
+    def test_bounded_mount_rejects_unexpected_device(self, _source):
+        with self.assertRaisesRegex(RuntimeError, "not loop-backed"):
+            helper.verify_bounded_mount(Path("/lease/bounded.img"), Path("/lease/work"))
+
+    @mock.patch.object(helper, "run")
+    @mock.patch.object(helper, "host_mount_source", side_effect=["/dev/loop7", "/dev/loop7"])
+    def test_bounded_cleanup_preserves_storage_when_umount_does_not_complete(
+            self, _source, run):
+        run.return_value = mock.Mock(stdout="/var/lib/ci-runner/overlay/a/bounded.img\n",
+                                     returncode=0)
+        with mock.patch.object(helper.shutil, "rmtree") as rmtree:
+            with self.assertRaisesRegex(RuntimeError, "mount remains active"):
+                helper.remove_bounded_storage("a")
+            rmtree.assert_not_called()
+
     @staticmethod
     def decoded_response(connection):
         return json.loads(connection.sendall.call_args.args[0])

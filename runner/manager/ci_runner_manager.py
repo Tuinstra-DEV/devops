@@ -43,6 +43,11 @@ HELPER_MUTATION_TIMEOUT_SECONDS = 330
 MAX_CONCURRENCY = 1
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
+FOUR_POOL_CONCURRENCY = 4
+POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
+POOL_LIMITS = {"heavy": 2, "medium": 2}
+POOL_DISK_GIB = {"heavy": 12, "medium": 4}
+DISK_MARGIN_GIB = 2
 RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
 REPOSITORY_JIT_ENDPOINT_RE = re.compile(
@@ -123,11 +128,32 @@ def load_config(path: Path) -> dict[str, Any]:
     missing = required.difference(cfg)
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
+    mode = cfg.get("pool_mode", "legacy")
+    if mode not in {"legacy", "four"}:
+        raise RunnerError("pool_mode must be legacy or four")
     exact_resources = {
-        "max_concurrency": MAX_CONCURRENCY,
+        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else FOUR_POOL_CONCURRENCY,
         "runner_vcpus": RUNNER_VCPUS,
         "runner_memory_mib": RUNNER_MEMORY_MIB,
     }
+    if mode == "four":
+        exact_resources.update({
+            "medium_runner_vcpus": 2,
+            "medium_runner_memory_mib": 3072,
+            "max_heavy": 2,
+            "max_medium": 2,
+            "heavy_disk_reservation_gib": 12,
+            "medium_disk_reservation_gib": 4,
+        })
+        if cfg.get("medium_runner_label") != "trusted-medium" or \
+                cfg.get("runner_label") != "trusted-heavy" or \
+                cfg.get("storage_mode") != "bounded-loop":
+            raise RunnerError("four-pool labels and bounded storage mode must match policy")
+    elif any(key in cfg for key in (
+            "medium_runner_vcpus", "medium_runner_memory_mib", "max_heavy",
+            "max_medium", "heavy_disk_reservation_gib",
+            "medium_disk_reservation_gib", "medium_runner_label", "storage_mode")):
+        raise RunnerError("four-pool policy keys require pool_mode=four")
     for key, expected in exact_resources.items():
         value = cfg[key]
         if not isinstance(value, int) or isinstance(value, bool) or value != expected:
@@ -144,6 +170,16 @@ def load_config(path: Path) -> dict[str, Any]:
     if "runner_cpu_sets" in cfg:
         raise RunnerError("runner_cpu_sets is unsupported by the single-runner policy")
     return cfg
+
+
+def four_pool(cfg: dict[str, Any]) -> bool:
+    return cfg.get("pool_mode", "legacy") == "four"
+
+
+def pool_resources(profile: str) -> tuple[int, int]:
+    if profile not in POOL_RESOURCES:
+        raise RunnerError("invalid runner profile")
+    return POOL_RESOURCES[profile]
 
 
 def validate_lease_id(value: str) -> str:
@@ -192,8 +228,51 @@ def configured_resource(cfg: dict[str, Any], key: str, expected: int) -> int:
     return value
 
 
-def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> list[str]:
+def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
+                    profile: str = "heavy", active: list[dict[str, Any]] | None = None,
+                    available_override_mib: int | None = None) -> list[str]:
     errors: list[str] = []
+    if four_pool(cfg):
+        requested_vcpus, requested_memory = pool_resources(profile)
+        if active is None:
+            return ["active runner resources are not verified"]
+        counts = {"heavy": 0, "medium": 0}
+        active_vcpus = 0
+        active_memory = 0
+        unresident_mib = 0
+        for item in active:
+            if not isinstance(item, dict) or item.get("profile") not in counts:
+                return ["active runner resources are not verified"]
+            kind = item["profile"]
+            cpu, memory = POOL_RESOURCES[kind]
+            if item.get("vcpus") != cpu or item.get("memory_mib") != memory:
+                return ["active runner resources are not verified"]
+            rss = item.get("rss_mib")
+            if not isinstance(rss, int) or isinstance(rss, bool) or rss < 0:
+                return ["active runner memory is not verified"]
+            counts[kind] += 1
+            active_vcpus += cpu
+            active_memory += memory
+            unresident_mib += max(0, memory - rss)
+        if any(counts[kind] > POOL_LIMITS[kind] for kind in POOL_LIMITS) or \
+                len(active) > FOUR_POOL_CONCURRENCY or active_vcpus > 12:
+            return ["active runner resources exceed pool policy"]
+        if len(active) >= FOUR_POOL_CONCURRENCY or counts[profile] >= POOL_LIMITS[profile]:
+            errors.append(f"{profile} runner slots are occupied")
+        if active_vcpus + requested_vcpus > 12 or (os.cpu_count() or 0) < 12:
+            errors.append("host cannot fit 12 configured runner vCPUs")
+        reserve_mib = int(cfg["host_memory_reserve_mib"])
+        if memory_total_mib() < active_memory + requested_memory + reserve_mib:
+            errors.append("host memory cannot fit projected runners and reserve")
+        available_mib = memory_available_mib() if available_override_mib is None \
+            else available_override_mib
+        if available_mib - requested_memory - unresident_mib < reserve_mib:
+            errors.append("host projected free memory is below the configured reserve")
+        disk = shutil.disk_usage(str(cfg["overlay_root"]))
+        if disk.free - POOL_DISK_GIB[profile] * 1024**3 < \
+                (int(cfg["min_free_disk_gib"]) + DISK_MARGIN_GIB) * 1024**3:
+            errors.append("bounded overlay reservation would breach NVMe floor")
+        return errors
     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
     vcpus = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
     memory_mib = configured_resource(cfg, "runner_memory_mib", RUNNER_MEMORY_MIB)
@@ -803,8 +882,9 @@ def read_token(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-    if not args or args[0] not in {"list", "launch", "destroy"} or len(args) > 2:
+def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
+           check: bool = True, profile: str | None = None) -> subprocess.CompletedProcess[bytes]:
+    if not args or args[0] not in {"list", "resources", "launch", "destroy"} or len(args) > 2:
         raise RunnerError("invalid host helper operation")
     operation = args[0]
     request_id = secrets.token_hex(16)
@@ -818,10 +898,18 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     if operation == "launch":
         if stdin is None:
             raise RunnerError("launch requires JIT configuration")
-        request["vcpus"] = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
-        request["memory_mib"] = configured_resource(
-            cfg, "runner_memory_mib", RUNNER_MEMORY_MIB
-        )
+        if four_pool(cfg):
+            if profile is None:
+                raise RunnerError("four-pool launch requires a profile")
+            request["profile"] = profile
+            request["vcpus"], request["memory_mib"] = pool_resources(profile)
+        else:
+            if profile not in (None, "heavy"):
+                raise RunnerError("legacy launch accepts only heavy profile")
+            request["vcpus"] = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
+            request["memory_mib"] = configured_resource(
+                cfg, "runner_memory_mib", RUNNER_MEMORY_MIB
+            )
         stdin = validate_jit_config(stdin)
     elif stdin is not None:
         raise RunnerError("host helper payload is only valid for launch")
@@ -831,7 +919,7 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     command = ["host-helper", operation, *args[1:]]
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
-            connection.settimeout(HELPER_QUERY_TIMEOUT_SECONDS if operation == "list"
+            connection.settimeout(HELPER_QUERY_TIMEOUT_SECONDS if operation in {"list", "resources"}
                                   else HELPER_MUTATION_TIMEOUT_SECONDS)
             connection.connect(str(cfg["helper_socket"]))
             if connection.send(header) != len(header):
@@ -852,9 +940,11 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     if response.get("ok") is True and set(response) == {"v", "id", "ok", "result"}:
         result = response["result"]
         if (operation == "list" and not isinstance(result, dict)) or \
-                (operation != "list" and result is not None):
+                (operation == "resources" and not isinstance(result, list)) or \
+                (operation not in {"list", "resources"} and result is not None):
             raise RunnerError("host helper returned an invalid response")
-        stdout = json.dumps(result, sort_keys=True).encode("utf-8") if operation == "list" else b""
+        stdout = json.dumps(result, sort_keys=True).encode("utf-8") \
+            if operation in {"list", "resources"} else b""
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
     error = response.get("error")
     if response.get("ok") is not False or set(response) != {"v", "id", "ok", "error"} or error not in HELPER_ERROR_CODES:
@@ -875,7 +965,8 @@ def with_lock(path: Path):
 def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
            metadata: dict[str, Any] | None = None,
            dispatch_history_key: str | None = None,
-           dispatch_history_claimed: bool = False) -> None:
+           dispatch_history_claimed: bool = False,
+           profile: str = "heavy") -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
@@ -905,7 +996,8 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             for state_lease, item in state_by_lease.items()
         ):
             raise RunnerError("runner lifecycle state requires reconciliation")
-        concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+        concurrency = FOUR_POOL_CONCURRENCY if four_pool(cfg) else \
+            configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
             LOG.info("admission denied reason=runner_slot_exhausted active=%s", len(state_by_lease))
             raise CapacityUnavailable(
@@ -913,13 +1005,28 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             )
         if lease in state_by_lease or lease in inventory:
             raise RunnerError("lease already exists")
-        failures = capacity_errors(cfg, len(state_by_lease) + 1)
+        active = None
+        if four_pool(cfg):
+            active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
+            if not isinstance(active, list) or \
+                    {item.get("lease") for item in active if isinstance(item, dict)} != set(inventory) or \
+                    len(active) != len(inventory) or any(
+                        not isinstance(item, dict) or
+                        item.get("profile") != state_by_lease[item["lease"]].get("profile", "heavy") or
+                        item.get("bounded") is not True
+                        for item in active if isinstance(item, dict)):
+                raise RunnerError("runner resource inventory requires reconciliation")
+        failures = capacity_errors(cfg, len(state_by_lease) + 1,
+                                   profile=profile, active=active) if four_pool(cfg) \
+            else capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
             LOG.info("admission denied active=%s reasons=%s", len(state_by_lease),
                      "; ".join(failures))
             raise CapacityUnavailable("; ".join(failures))
         LOG.info("admission allowed active=%s runner_slot_available=true", len(state_by_lease))
         state = {"lease": lease, "phase": "provisioning", "launched_at": now}
+        if four_pool(cfg):
+            state["profile"] = profile
         if metadata:
             state.update(metadata)
         if dispatch_history_key is not None:
@@ -938,7 +1045,10 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         launch_started = time.monotonic()
         LOG.info("launch requested lease=%s", lease)
         try:
-            helper(cfg, "launch", lease, stdin=jit)
+            if four_pool(cfg):
+                helper(cfg, "launch", lease, stdin=jit, profile=profile)
+            else:
+                helper(cfg, "launch", lease, stdin=jit)
         except Exception:
             # The socket may close while the root-side mutation is still being
             # terminated. Keep the cleanup obligation durable so the next
@@ -1229,8 +1339,16 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
 
 def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
     store = StateStore(Path(cfg["state_dir"]))
-    concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
-    available_slots = concurrency - len(store.leases())
+    states = store.leases()
+    if four_pool(cfg):
+        if any(state.get("profile", "heavy") not in POOL_LIMITS for state in states):
+            raise RunnerError("runner lifecycle state has an unknown profile")
+        active_heavy = sum(state.get("profile", "heavy") == "heavy" for state in states)
+        available_slots = min(FOUR_POOL_CONCURRENCY - len(states),
+                              POOL_LIMITS["heavy"] - active_heavy)
+    else:
+        concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+        available_slots = concurrency - len(states)
     if available_slots <= 0:
         return False
     now = int(time.time())

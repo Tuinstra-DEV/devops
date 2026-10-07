@@ -15,6 +15,59 @@ import ci_runner_manager as manager
 
 
 class ManagerTests(unittest.TestCase):
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_admission_counts_unresident_memory_once(
+            self, disk, _available, _total, _cpu):
+        disk.return_value = mock.Mock(free=76 * 1024**3)
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 5120}]
+        self.assertEqual(manager.capacity_errors(cfg, profile="medium", active=active), [])
+        self.assertIn("host projected free memory is below the configured reserve",
+                      manager.capacity_errors(cfg, profile="medium", active=active,
+                                              available_override_mib=8000))
+        self.assertIn("active runner memory is not verified",
+                      manager.capacity_errors(cfg, profile="medium", active=[{
+                          "profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                          "rss_mib": None}] ))
+
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_rejects_tier_and_disk_overcommit(
+            self, disk, _available, _total, _cpu):
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 5000}] * 2
+        disk.return_value = mock.Mock(free=97 * 1024**3)
+        self.assertIn("heavy runner slots are occupied",
+                      manager.capacity_errors(cfg, profile="heavy", active=active))
+        disk.return_value = mock.Mock(free=65 * 1024**3)
+        self.assertIn("bounded overlay reservation would breach NVMe floor",
+                      manager.capacity_errors(cfg, profile="medium", active=active))
+
+    def test_two_medium_leases_leave_both_heavy_dispatch_slots_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            store = manager.StateStore(state)
+            store.write("medium-1", {"lease": "medium-1", "phase": "running",
+                                     "profile": "medium"})
+            store.write("medium-2", {"lease": "medium-2", "phase": "running",
+                                     "profile": "medium"})
+            cfg = {"state_dir": state, "pool_mode": "four", "max_concurrency": 4,
+                   "runner_label": "trusted-heavy", "repositories": ["Tuinstra-DEV/gate"]}
+            client = mock.Mock()
+            client.candidate_jobs.return_value = []
+            self.assertFalse(manager.dispatch_once(cfg, client))
+            client.candidate_jobs.assert_called_once_with("Tuinstra-DEV/gate",
+                                                          "trusted-heavy")
+
     @staticmethod
     def github_redirect(code, *locations):
         headers = email.message.Message()
@@ -79,6 +132,23 @@ class ManagerTests(unittest.TestCase):
             path = Path(directory) / "manager.toml"
             path.write_text(source + '\nrunner_cpu_sets = ["4,12,5,13"]\n', encoding="utf-8")
             with self.assertRaisesRegex(manager.RunnerError, "unsupported"):
+                manager.load_config(path)
+
+    def test_four_pool_configuration_requires_explicit_bounded_policy(self):
+        source = (Path(__file__).parents[1] / "config" / "manager.toml").read_text()
+        four = source.replace("max_concurrency = 1", "max_concurrency = 4") + (
+            '\npool_mode = "four"\nmedium_runner_label = "trusted-medium"\n'
+            'medium_runner_vcpus = 2\nmedium_runner_memory_mib = 3072\n'
+            'max_heavy = 2\nmax_medium = 2\nheavy_disk_reservation_gib = 12\n'
+            'medium_disk_reservation_gib = 4\nstorage_mode = "bounded-loop"\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manager.toml"
+            path.write_text(four, encoding="utf-8")
+            self.assertEqual(manager.load_config(path)["max_concurrency"], 4)
+            path.write_text(four.replace('storage_mode = "bounded-loop"',
+                                         'storage_mode = "sparse-qcow2"'), encoding="utf-8")
+            with self.assertRaises(manager.RunnerError):
                 manager.load_config(path)
 
     @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)
