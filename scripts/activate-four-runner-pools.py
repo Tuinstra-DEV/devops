@@ -65,6 +65,10 @@ class ActivationError(RuntimeError):
     pass
 
 
+class CanaryIndeterminate(ActivationError):
+    """The transient root canary may still be running; never restart admission."""
+
+
 @dataclass(frozen=True)
 class Layout:
     config: Path = Path("/etc/ci-runner/manager.toml")
@@ -223,7 +227,7 @@ def verify_credential_binding(command: Command = run) -> None:
 
 
 def verify_host(layout: Layout = HOST, command: Command = run) -> None:
-    for name in ("systemctl", "busctl", "systemd-run", "virsh", "findmnt", "fallocate",
+    for name in ("systemctl", "busctl", "systemd-run", "journalctl", "virsh", "findmnt", "fallocate",
                  "mkfs.ext4", "losetup", "blockdev", "systemd-mount", "nsenter",
                  "fstrim", "udevadm", "python3"):
         if shutil.which(name) is None:
@@ -403,43 +407,134 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 helper = importlib.util.module_from_spec(spec)
 loader.exec_module(helper)
 lease = sys.argv[1]
-with helper.HELPER_LOCK.open("a+", encoding="utf-8") as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    directory = helper.lease_dir(lease)
-    if directory.exists():
-        raise RuntimeError("canary lease path is occupied")
-    directory.mkdir(mode=0o700)
-    _uid, gid = helper.qemu_identity()
-    helper.set_qemu_access(directory, 0, gid, 0o710)
-    try:
-        work = helper.create_bounded_storage(lease, "heavy", gid)
-        backing = directory / "bounded.img"
-        if not helper.verify_bounded_mount(backing, work):
-            raise RuntimeError("canary mount was not verified")
-        blocks = backing.stat().st_blocks
-        trim = subprocess.run(["fstrim", str(work)], capture_output=True, timeout=30)
-        if trim.returncode == 0 or backing.stat().st_blocks != blocks:
-            raise RuntimeError("canary discard guard failed")
-        if helper.loop_discard_limit(helper.host_mount_source(work)) != 0:
-            raise RuntimeError("canary discard limit changed")
-    finally:
-        helper.remove_bounded_storage(lease)
-    if directory.exists():
-        raise RuntimeError("canary storage remains after cleanup")
+def error_code(exc):
+    message = str(exc)
+    if message == "runner mount namespaces disagree":
+        return "mount_namespace_mismatch"
+    if message == "runner mount did not become visible in both namespaces":
+        return "mount_not_visible"
+    if message in ("runner backing file is not fully allocated",
+                   "filesystem creation released backing reservation",
+                   "runner backing reservation changed before guest creation"):
+        return "backing_allocation"
+    if message in ("runner loop backing file does not match lease",
+                   "runner loop size does not match lease"):
+        return "loop_binding"
+    if message in ("runner loop discard could not be disabled",
+                   "runner loop discard is enabled", "canary discard limit changed"):
+        return "discard_limit"
+    if message == "canary discard guard failed":
+        return "trim_guard"
+    return "unknown"
+stage = "initial"
+reported = False
+try:
+    with helper.HELPER_LOCK.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stage = "prepare"
+        directory = helper.lease_dir(lease)
+        if directory.exists():
+            raise RuntimeError("canary lease path is occupied")
+        directory.mkdir(mode=0o700)
+        _uid, gid = helper.qemu_identity()
+        helper.set_qemu_access(directory, 0, gid, 0o710)
+        try:
+            stage = "create"
+            work = helper.create_bounded_storage(lease, "heavy", gid)
+            backing = directory / "bounded.img"
+            stage = "verify"
+            if not helper.verify_bounded_mount(backing, work):
+                raise RuntimeError("canary mount was not verified")
+            blocks = backing.stat().st_blocks
+            stage = "trim"
+            trim = subprocess.run(["fstrim", str(work)], capture_output=True, timeout=30)
+            if trim.returncode == 0 or backing.stat().st_blocks != blocks:
+                raise RuntimeError("canary discard guard failed")
+            stage = "discard"
+            if helper.loop_discard_limit(helper.host_mount_source(work)) != 0:
+                raise RuntimeError("canary discard limit changed")
+        finally:
+            try:
+                helper.remove_bounded_storage(lease)
+            except Exception as cleanup_error:
+                print("DEV50_CANARY stage=cleanup error=" + error_code(cleanup_error),
+                      file=sys.stderr, flush=True)
+                reported = True
+                raise
+        stage = "cleanup"
+        if directory.exists():
+            raise RuntimeError("canary storage remains after cleanup")
+except Exception as exc:
+    if not reported:
+        print("DEV50_CANARY stage=" + stage + " error=" + error_code(exc),
+              file=sys.stderr, flush=True)
+    raise
+print("DEV50_CANARY stage=complete error=none", file=sys.stderr, flush=True)
 '''
+
+
+CANARY_MARKER = re.compile(
+    r"^DEV50_CANARY stage=(initial|prepare|create|verify|trim|discard|cleanup|complete) "
+    r"error=(none|mount_namespace_mismatch|mount_not_visible|backing_allocation|"
+    r"loop_binding|discard_limit|trim_guard|unknown)$", re.MULTILINE,
+)
+
+
+def stop_and_verify_canary(unit: str, command: Command = run) -> None:
+    service = f"{unit}.service"
+    try:
+        command(["systemctl", "stop", service], check=False, timeout=30)
+        status = command([
+            "systemctl", "show", service, "--property=LoadState",
+            "--property=ActiveState", "--property=MainPID",
+            "--property=ControlPID",
+        ], check=False, timeout=30)
+    except Exception as exc:
+        raise CanaryIndeterminate(f"canary unit={service} stop_status=unknown") from exc
+    fields = {}
+    for line in status.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key in fields:
+            raise CanaryIndeterminate(f"canary unit={service} stop_status=unknown")
+        fields[key] = value
+    if status.returncode != 0 or set(fields) != {"LoadState", "ActiveState", "MainPID", "ControlPID"} or \
+            fields["LoadState"] not in {"loaded", "not-found"} or \
+            fields["ActiveState"] not in {"inactive", "failed"} or \
+            fields["MainPID"] != "0" or fields["ControlPID"] != "0":
+        raise CanaryIndeterminate(f"canary unit={service} stop_status=unverified")
 
 
 def storage_canary(command: Command = run) -> None:
     lease = "dev50-canary-" + secrets.token_hex(6)
     unit = "ci-runner-dev50-canary-" + secrets.token_hex(6)
-    command([
-        "systemd-run", "--quiet", "--wait", "--collect", "--pipe", f"--unit={unit}",
+    args = [
+        "systemd-run", "--quiet", "--wait", "--collect", f"--unit={unit}",
         "--property=NoNewPrivileges=yes", "--property=ProtectSystem=strict",
         "--property=ProtectHome=yes", "--property=PrivateTmp=yes",
+        "--property=RuntimeMaxSec=240",
         "--property=ReadWritePaths=/var/lib/ci-runner/overlay /run/lock",
-        "--property=RestrictAddressFamilies=AF_UNIX", "--",
+        "--property=RestrictAddressFamilies=AF_UNIX",
+        "--property=StandardOutput=journal", "--property=StandardError=journal", "--",
         "/usr/bin/python3", "-c", CANARY_CODE, lease,
-    ], timeout=300)
+    ]
+    try:
+        result = command(args, check=False, timeout=300)
+    except Exception as exc:
+        stop_and_verify_canary(unit, command)
+        raise ActivationError(f"canary unit={unit} exit=unknown stage=unknown error=launcher_failed") from exc
+    if result.returncode:
+        stop_and_verify_canary(unit, command)
+        try:
+            journal = command(["journalctl", f"--unit={unit}", "--output=cat",
+                               "--no-pager", "--lines=120"], check=False)
+        except Exception:
+            journal = None
+        markers = CANARY_MARKER.findall(journal.stdout) if journal is not None \
+            and journal.returncode == 0 else []
+        stage, error = markers[-1] if markers else ("unknown", "unknown")
+        raise ActivationError(
+            f"canary unit={unit} exit={result.returncode} stage={stage} error={error}"
+        )
 
 
 def lock_file(path: Path) -> int:
@@ -506,6 +601,23 @@ def activate(stage: Path, seconds: int, layout: Layout = HOST,
             raise ActivationError("runner services did not become active")
         return backup
     except Exception as original_error:
+        safe_reason = str(original_error) if isinstance(original_error, ActivationError) \
+            else type(original_error).__name__
+        if isinstance(original_error, CanaryIndeterminate):
+            admission_stopped = True
+            for service in (SERVICE, SOCKET):
+                try:
+                    command(["systemctl", "stop", service], check=False)
+                    if service_active(service, command):
+                        admission_stopped = False
+                except Exception:
+                    admission_stopped = False
+            state = "admission remains stopped" if admission_stopped \
+                else "admission stop could not be verified"
+            raise CanaryIndeterminate(
+                f"activation indeterminate; {state}; backup={backup or 'none'}; "
+                f"failure={safe_reason}"
+            ) from original_error
         try:
             command(["systemctl", "stop", SERVICE], check=False)
             if backup is not None:
@@ -523,10 +635,10 @@ def activate(stage: Path, seconds: int, layout: Layout = HOST,
             raise ActivationError(
                 "activation failed and safe automatic rollback could not be verified; "
                 f"runner admission remains stopped; backup={backup or 'none'}; "
-                f"recovery={type(recovery_error).__name__}"
+                f"failure={safe_reason}; recovery={type(recovery_error).__name__}"
             ) from original_error
         raise ActivationError(f"activation aborted; original runner policy restored; "
-                              f"cause={type(original_error).__name__}") from original_error
+                              f"failure={safe_reason}") from original_error
     finally:
         os.close(lock)
 
