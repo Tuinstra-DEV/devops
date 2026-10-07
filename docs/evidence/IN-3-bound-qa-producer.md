@@ -60,5 +60,7 @@ The inactive `qa-final` profile was prepared by Gate PR #341 and published from 
 - Policy: `sha256:71aafe520ca7ee3b0dc350a308e2875a9f558f20a53e3c7023390acc88f76bc4`.
 - Bundle/data manifest: `sha256:2b00dd4947676189b6236f2a8c9394a9300c9ff5b7e709fa40f23180829835d5`.
 - Exclusions artifact: `sha256:86d9767c93c58f8df00d971b2da82ea92e26e9b236d3fe5abf2466f014ff0bc5`.
+- Final producer action commit: `8bc8f288e420fc8a587b07e42268cab209d89fdf`.
+- Immutable reusable workflow pin: `4551b0e24c2397bdac57724d31779942cf3797d6`.
 
 Only the two exact QA workflow content bindings change for Gate PR #340, which removes the obsolete duplicate migration job. Scanners, rules, advisory data, helper hash, exclusion entries, expiry and GitHub permissions remain unchanged. Fixtures follow the new exact profile; local `make lint` and `make test` verify the producer contracts. No UI changes or screenshots apply. Enrollment and consumer pins must be updated before activating the cleanup.
