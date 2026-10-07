@@ -223,6 +223,162 @@ class FourPoolActivationTests(unittest.TestCase):
         self.assertIn("remove_bounded_storage", activation.CANARY_CODE)
         self.assertNotIn("launch(", activation.CANARY_CODE)
 
+    def test_failed_canary_reports_only_allowlisted_journal_stage(self):
+        calls = []
+
+        def command(args, **_kwargs):
+            calls.append(args)
+            if args[0] == "systemd-run":
+                return result(args, code=1)
+            if args[:2] == ["systemctl", "stop"]:
+                return result(args)
+            if args[:2] == ["systemctl", "show"]:
+                return result(args, "LoadState=not-found\nActiveState=inactive\n"
+                              "MainPID=0\nControlPID=0\n")
+            if args[0] == "journalctl":
+                return result(args, "private traceback ignored\n"
+                              "DEV50_CANARY stage=create error=mount_namespace_mismatch\n")
+            raise AssertionError(args)
+
+        with self.assertRaises(activation.ActivationError) as caught:
+            activation.storage_canary(command)
+        message = str(caught.exception)
+        self.assertIn("ci-runner-dev50-canary-", message)
+        self.assertIn("exit=1", message)
+        self.assertIn("stage=create", message)
+        self.assertIn("error=mount_namespace_mismatch", message)
+        self.assertNotIn("private traceback", message)
+        self.assertNotIn("--pipe", calls[0])
+        self.assertIn("--property=StandardError=journal", calls[0])
+        self.assertIn("--property=RuntimeMaxSec=240", calls[0])
+        self.assertEqual([call[:2] for call in calls[1:3]],
+                         [["systemctl", "stop"], ["systemctl", "show"]])
+        self.assertTrue(any(call[0] == "journalctl" for call in calls))
+
+    def test_failed_canary_does_not_echo_unknown_journal_text(self):
+        def command(args, **_kwargs):
+            if args[0] == "systemd-run":
+                return result(args, code=1)
+            if args[:2] == ["systemctl", "stop"]:
+                return result(args)
+            if args[:2] == ["systemctl", "show"]:
+                return result(args, "LoadState=not-found\nActiveState=inactive\n"
+                              "MainPID=0\nControlPID=0\n")
+            return result(args, "credential-like arbitrary output\n"
+                          "DEV50_CANARY stage=bad error=unapproved\n")
+
+        with self.assertRaises(activation.ActivationError) as caught:
+            activation.storage_canary(command)
+        message = str(caught.exception)
+        self.assertIn("stage=unknown", message)
+        self.assertIn("error=unknown", message)
+        self.assertNotIn("credential-like", message)
+        self.assertNotIn("unapproved", message)
+
+    def test_failed_canary_retains_unit_and_exit_when_journal_is_unavailable(self):
+        def command(args, **_kwargs):
+            if args[0] == "systemd-run":
+                return result(args, code=1)
+            if args[:2] == ["systemctl", "stop"]:
+                return result(args)
+            if args[:2] == ["systemctl", "show"]:
+                return result(args, "LoadState=not-found\nActiveState=inactive\n"
+                              "MainPID=0\nControlPID=0\n")
+            raise activation.ActivationError("journal unavailable")
+
+        with self.assertRaises(activation.ActivationError) as caught:
+            activation.storage_canary(command)
+        message = str(caught.exception)
+        self.assertIn("ci-runner-dev50-canary-", message)
+        self.assertIn("exit=1", message)
+        self.assertIn("stage=unknown error=unknown", message)
+        self.assertNotIn("journal unavailable", message)
+
+    def test_launcher_timeout_stops_and_verifies_exact_canary_unit(self):
+        calls = []
+
+        def command(args, **_kwargs):
+            calls.append(args)
+            if args[0] == "systemd-run":
+                raise activation.ActivationError("launcher timeout")
+            if args[:2] == ["systemctl", "stop"]:
+                return result(args)
+            if args[:2] == ["systemctl", "show"]:
+                return result(args, "LoadState=not-found\nActiveState=inactive\n"
+                              "MainPID=0\nControlPID=0\n")
+            raise AssertionError(args)
+
+        with self.assertRaises(activation.ActivationError) as caught:
+            activation.storage_canary(command)
+        self.assertNotIsInstance(caught.exception, activation.CanaryIndeterminate)
+        self.assertIn("exit=unknown", str(caught.exception))
+        exact_unit = next(arg for arg in calls[0] if arg.startswith("--unit="))[7:] + ".service"
+        self.assertEqual(calls[1], ["systemctl", "stop", exact_unit])
+        self.assertEqual(calls[2][2], exact_unit)
+
+    def test_canary_stop_status_with_live_pid_is_indeterminate(self):
+        calls = []
+
+        def command(args, **_kwargs):
+            calls.append(args)
+            if args[0] == "systemd-run":
+                return result(args, code=1)
+            if args[:2] == ["systemctl", "stop"]:
+                return result(args)
+            if args[:2] == ["systemctl", "show"]:
+                return result(args, "LoadState=loaded\nActiveState=deactivating\n"
+                              "MainPID=321\nControlPID=0\n")
+            raise AssertionError(args)
+
+        with self.assertRaises(activation.CanaryIndeterminate) as caught:
+            activation.storage_canary(command)
+        self.assertIn("stop_status=unverified", str(caught.exception))
+        self.assertFalse(any(call[0] == "journalctl" for call in calls))
+
+    def test_canary_status_uncertain_keeps_installed_files_and_admission_stopped(self):
+        original = {"config": self.config.read_bytes(), "manager": self.manager.read_bytes(),
+                    "helper": self.helper.read_bytes()}
+        metadata = {key: path.stat() for key, path in
+                    (("config", self.config), ("manager", self.manager),
+                     ("helper", self.helper))}
+        replacement = {"config": activation.validate_legacy_config(original["config"])[1],
+                       "manager": original["manager"] + b"# candidate\n",
+                       "helper": original["helper"] + b"# candidate\n"}
+        calls = []
+
+        def command(args, **_kwargs):
+            calls.append(args)
+            if args[:3] == ["systemctl", "is-active", "--quiet"]:
+                return result(args, code=3)
+            return result(args)
+
+        real_read = activation.read_regular
+        real_directory = activation.checked_directory
+        uid = os.getuid()
+        with mock.patch.object(activation, "preflight",
+                               return_value=(replacement, original, metadata)), \
+                mock.patch.object(activation, "read_regular",
+                                  side_effect=lambda path, **_: real_read(path, owner=uid)), \
+                mock.patch.object(activation, "checked_directory",
+                                  side_effect=lambda path, **_: real_directory(path, owner=uid)), \
+                mock.patch.object(activation, "state_owner", return_value=uid), \
+                mock.patch.object(activation, "lock_file",
+                                  side_effect=lambda path: os.open(path, os.O_CREAT | os.O_RDWR, 0o600)), \
+                mock.patch.object(activation.os, "fchown"), \
+                mock.patch.object(activation, "drain_existing_jobs", return_value=(1, 2)), \
+                mock.patch.object(activation, "assert_no_helper_instances"), \
+                mock.patch.object(activation, "storage_canary",
+                                  side_effect=activation.CanaryIndeterminate("canary unit=ci-runner-dev50-canary-test status=unknown")), \
+                mock.patch.object(activation, "remove_dropin") as remove_dropin, \
+                mock.patch.object(activation, "restore_files") as restore:
+            with self.assertRaises(activation.CanaryIndeterminate) as caught:
+                activation.activate(self.stage, 60, self.layout, command)
+        self.assertIn("admission remains stopped", str(caught.exception))
+        self.assertEqual(self.config.read_bytes(), replacement["config"])
+        self.assertFalse(any(call[:2] == ["systemctl", "start"] for call in calls))
+        restore.assert_not_called()
+        remove_dropin.assert_not_called()
+
     def test_stopping_helper_instance_still_blocks_install(self):
         calls = []
 
@@ -285,7 +441,7 @@ class FourPoolActivationTests(unittest.TestCase):
         def fail_canary(_command):
             if orphan:
                 (self.overlay / "retained-canary").mkdir()
-            raise activation.ActivationError("canary failed")
+            raise activation.ActivationError("canary stage=create error=mount_namespace_mismatch")
 
         real_read = activation.read_regular
         real_directory = activation.checked_directory
@@ -319,8 +475,10 @@ class FourPoolActivationTests(unittest.TestCase):
                 expected = "safe automatic rollback could not be verified"
             else:
                 expected = "original runner policy restored"
-            with self.assertRaisesRegex(activation.ActivationError, expected):
+            with self.assertRaisesRegex(activation.ActivationError, expected) as caught:
                 activation.activate(self.stage, 60, self.layout, command)
+            if not fail_install:
+                self.assertIn("mount_namespace_mismatch", str(caught.exception))
 
         self.assertFalse(any(call[:2] == ["virsh", "destroy"] for call in calls))
         if orphan:
