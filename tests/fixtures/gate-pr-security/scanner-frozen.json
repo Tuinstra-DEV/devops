@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "tools": {
+    "semgrep": {
+      "path": "/usr/local/bin/semgrep",
+      "version": "1.178.0",
+      "sha256": "sha256:b62de90872dfba81835241ed983279815aec6a66c1d092fc42835ce74d62edc7"
+    },
+    "gitleaks": {
+      "path": "/usr/local/bin/gitleaks",
+      "version": "8.30.1",
+      "sha256": "sha256:d42d50248dab2b72f44638341470b2e824cd23a9d119be990f7c21c1666d502e"
+    },
+    "osv": {
+      "path": "/usr/local/bin/osv-scanner",
+      "version": "2.3.8",
+      "sha256": "sha256:8158b18edd2d03b1a30d905ca91b032bc62262167be8f206c27114f08823e27c"
+    }
+  },
+  "files": {
+    ".gitleaksignore": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "acquisition-lock.json": "sha256:c6c20ed63771c95e18ddc6a649fe51029b8f804c4d60c18ada612823045b90d5",
+    "gate-scope-inventory.json": "sha256:dfa9788ddb6d1eda6360188566a60253a934e230e9b5f7f561bb8b2ac46c4fb0",
+    "gitleaks.toml": "sha256:27630a96d6c55755cc37620f3933d5cab94b1eb78a726a32e11212972525d76e",
+    "osv/osv-scanner/Packagist/all.zip": "sha256:80040a4b371e876eed43bb736e235d08e3783aa95fc2e48387e7f2f5440a0d30",
+    "osv/osv-scanner/npm/all.zip": "sha256:f28ab42d60c2cd13dc4196aebaa28bc4364a6a63e056c9994173b4b009426e1b",
+    "policy.json": "sha256:4a7ccc1ccb4fa97ac1c4cf90aea99b3081a16c9c5bbc18027adb5c9420fe5d7b",
+    "semgrep-rules.yml": "sha256:e7d97c1018aa7c6d7846427d1e3719423586c59e796fd5a7e210e5c802870323",
+    "semgrep-severity-map.json": "sha256:5d4a154077b2bb0bf0efc5d8f28bff23f8c11fb626754de92034a9190f37494a"
+  },
+  "semgrep": {
+    "rules_file": "semgrep-rules.yml",
+    "severity_map_file": "semgrep-severity-map.json"
+  },
+  "gitleaks": {
+    "config_file": "gitleaks.toml"
+  },
+  "osv": {
+    "db_dir": "osv",
+    "ecosystems": [
+      "Packagist",
+      "npm"
+    ]
+  },
+  "gate_inventory_file": "gate-scope-inventory.json",
+  "supported_scopes": [
+    "secrets",
+    "php",
+    "javascript-typescript",
+    "embedded-web",
+    "composer",
+    "npm",
+    "pnpm",
+    "configuration",
+    "shell-infrastructure",
+    "dockerfile",
+    "web-assets",
+    "template",
+    "php-framework",
+    "build-configuration",
+    "opaque-input",
+    "unknown-input",
+    "embedded-code"
+  ]
+}
