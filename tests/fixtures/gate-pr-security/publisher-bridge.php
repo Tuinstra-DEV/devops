@@ -66,9 +66,9 @@ try {
     }
 
     // Reviewed DevOps constants.py literals; never derive policy from the ZIP.
-    $bundle = 'sha256:2b00dd4947676189b6236f2a8c9394a9300c9ff5b7e709fa40f23180829835d5';
-    $policy = 'sha256:71aafe520ca7ee3b0dc350a308e2875a9f558f20a53e3c7023390acc88f76bc4';
-    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:6dd129dfe8d1e093f8794610248af1352b021ff52059121c80908324dc132414';
+    $bundle = 'sha256:aaf3144cf9f849b9b5113b67258b78c1ba9df3e151359e02a2e6c436256cc0b7';
+    $policy = 'sha256:4a7ccc1ccb4fa97ac1c4cf90aea99b3081a16c9c5bbc18027adb5c9420fe5d7b';
+    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:48b768f9e6e61aac3aff458b17f758b530a58f964252075312d0358fee245e54';
     // This is the trusted local Gate policy, pinned by the published scanner's
     // exact digest. ZIP contents never select the server-side exclusion allowlist.
     $policyBytes = localBytes($backend.'/ci-scanner/policy.json', 262_144);

@@ -16,4 +16,4 @@ jobs:
       id-token: write
     steps:
       - name: Produce immutable PR security evidence
-        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@8bc8f288e420fc8a587b07e42268cab209d89fdf
+        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@e051ec1a9634eb179aa3ed34577a619ede065804
