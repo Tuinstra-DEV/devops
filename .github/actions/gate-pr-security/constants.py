@@ -1,9 +1,9 @@
 """Reviewed producer profile. Changes require a new immutable workflow pin."""
 
-IMAGE = "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:591b8079477e5e42a366bb1ea50dcb6cebfb968e933293a02380d3763a7756c5"
-POLICY_DIGEST = "sha256:e865da74ee00ca910a3af661a9841ec0f6dbfdcfbe2499a82c51ffe75247b6e6"
-EXCLUDED_INPUTS_DIGEST = "sha256:f32bd3a571f439c8cc162bb6c89ced7153d45b01bcb80362c9856b8738794059"
-BUNDLE_DIGEST = "sha256:56c461418ac00b19c79f503949ef9297a5c810a3528167c3fc1e784732e8ae65"
+IMAGE = "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:ee183d3c710d69c24923159813183c8d7ec06a0b6f38d9cd874bec00964a40a0"
+POLICY_DIGEST = "sha256:1fc6f66fa2e39f58c4cedd290275e5d0715b2858a541477a5fd5abc882997f2f"
+EXCLUDED_INPUTS_DIGEST = "sha256:0ba6df75e6aef9ad8568f0a02bdf69febbd17de77daeae498835c128289123e3"
+BUNDLE_DIGEST = "sha256:bef09b59369b57eea636b793be28c73b4167faef84729cf856b38ec651217a03"
 DATASET_DIGEST = BUNDLE_DIGEST
 ENDPOINT = "https://gate.tuinstra.dev/integrations/github/pr-security/receipts"
 AUDIENCE = "https://gate.tuinstra.dev/pr-security"

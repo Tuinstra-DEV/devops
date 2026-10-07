@@ -6,16 +6,16 @@
   "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "base_tree": "cccccccccccccccccccccccccccccccccccccccc",
   "head_tree": "dddddddddddddddddddddddddddddddddddddddd",
-  "bundle_digest": "sha256:56c461418ac00b19c79f503949ef9297a5c810a3528167c3fc1e784732e8ae65",
-  "policy_digest": "sha256:e865da74ee00ca910a3af661a9841ec0f6dbfdcfbe2499a82c51ffe75247b6e6",
-  "dataset_manifest_digest": "sha256:56c461418ac00b19c79f503949ef9297a5c810a3528167c3fc1e784732e8ae65",
+  "bundle_digest": "sha256:bef09b59369b57eea636b793be28c73b4167faef84729cf856b38ec651217a03",
+  "policy_digest": "sha256:1fc6f66fa2e39f58c4cedd290275e5d0715b2858a541477a5fd5abc882997f2f",
+  "dataset_manifest_digest": "sha256:bef09b59369b57eea636b793be28c73b4167faef84729cf856b38ec651217a03",
   "outcome": "incomplete",
   "coverage": [
     {
       "scanner": "gitleaks",
       "version": "8.30.1",
       "scope": "secrets",
-      "rules_digest": "sha256:56c461418ac00b19c79f503949ef9297a5c810a3528167c3fc1e784732e8ae65",
+      "rules_digest": "sha256:bef09b59369b57eea636b793be28c73b4167faef84729cf856b38ec651217a03",
       "advisory_digest": null,
       "base_result": "complete",
       "head_result": "complete"
@@ -24,7 +24,7 @@
       "scanner": "unsupported",
       "version": "unregistered",
       "scope": "python",
-      "rules_digest": "sha256:56c461418ac00b19c79f503949ef9297a5c810a3528167c3fc1e784732e8ae65",
+      "rules_digest": "sha256:bef09b59369b57eea636b793be28c73b4167faef84729cf856b38ec651217a03",
       "advisory_digest": null,
       "base_result": "unsupported",
       "head_result": "unsupported"
