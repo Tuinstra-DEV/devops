@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -64,6 +65,12 @@ SCOPE_SCANNERS = {
     "unknown-input": "policy-exclusion",
     "embedded-code": "policy-exclusion",
 }
+PAIR_OPTIONAL = {"content_bound_exceptions"}
+CONTENT_BOUND_RULES = {"GATE-TEXT-WORKFLOW-TRUST", "GATE-TEXT-WORKFLOW-WRITE"}
+CONTENT_BOUND_WORKFLOW = ".github/workflows/gate-heal-qa-gate.yml"
+CONTENT_BOUND_HELPER = "scripts/ci/heal-qa-bridge.mjs"
+CONTENT_BOUND_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,100}\Z")
+CONTENT_BOUND_DATE_RE = re.compile(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 PAIR_REQUIRED = {
     "schema_version", "document_type", "policy_version", "base_sha", "head_sha",
     "base_tree", "head_tree", "bundle_digest", "policy_digest",
@@ -265,6 +272,64 @@ def _validate_findings(findings: Any) -> None:
             raise EvidenceError("invalid_findings")
 
 
+def _content_bound_exceptions(value: Any, repository: str) -> None:
+    """Validate the narrow scanner proof wire format without granting a waiver."""
+    reason = "invalid_content_bound_exceptions"
+    if not isinstance(value, list) or len(value) > 2:
+        raise EvidenceError(reason)
+    if value and repository != "Tuinstra-DEV/gate":
+        raise EvidenceError(reason)
+    seen_ids: set[str] = set()
+    seen_fingerprints: set[str] = set()
+    seen_rules: set[str] = set()
+    for record in value:
+        if not isinstance(record, dict) or set(record) != {
+            "id", "fingerprint", "repository", "rule_id", "path", "expires_at", "owner", "reason", "inputs",
+        }:
+            raise EvidenceError(reason)
+        identifier = record["id"]
+        rule = record["rule_id"]
+        if (not isinstance(identifier, str) or CONTENT_BOUND_ID_RE.fullmatch(identifier) is None
+            or not isinstance(rule, str) or rule not in CONTENT_BOUND_RULES
+            or record["repository"] != "Tuinstra-DEV/gate" or record["path"] != CONTENT_BOUND_WORKFLOW):
+            raise EvidenceError(reason)
+        material = "\0".join(("gate-text", rule, "security", CONTENT_BOUND_WORKFLOW, rule.lower())).encode("ascii")
+        fingerprint = "sha256:" + hashlib.sha256(material).hexdigest()
+        if record["fingerprint"] != fingerprint or identifier in seen_ids or fingerprint in seen_fingerprints or rule in seen_rules:
+            raise EvidenceError(reason)
+        seen_ids.add(identifier)
+        seen_fingerprints.add(fingerprint)
+        seen_rules.add(rule)
+        expires = record["expires_at"]
+        if not isinstance(expires, str) or CONTENT_BOUND_DATE_RE.fullmatch(expires) is None:
+            raise EvidenceError(reason)
+        try:
+            parsed = datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            raise EvidenceError(reason) from None
+        if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != expires:
+            raise EvidenceError(reason)
+        for field, maximum in (("owner", 200), ("reason", 500)):
+            text = record[field]
+            if not isinstance(text, str) or not text.strip():
+                raise EvidenceError(reason)
+            try:
+                length = len(text.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise EvidenceError(reason) from None
+            if length > maximum:
+                raise EvidenceError(reason)
+        inputs = record["inputs"]
+        if not isinstance(inputs, list) or len(inputs) != 2:
+            raise EvidenceError(reason)
+        for index, path in enumerate((CONTENT_BOUND_WORKFLOW, CONTENT_BOUND_HELPER)):
+            item = inputs[index]
+            if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                or item["path"] != path or not isinstance(item["sha256"], str)
+                or DIGEST_RE.fullmatch(item["sha256"]) is None):
+                raise EvidenceError(reason)
+
+
 def _inputs(report: dict[str, Any], coverage: list[dict[str, Any]], complete_outcome: bool) -> None:
     entries = report["inputs"]
     if not isinstance(entries, list):
@@ -441,8 +506,11 @@ def _source_exclusions(root: Path, state: dict[str, Any], report: dict[str, Any]
 
 def _validate_report(state: dict[str, Any], report: dict[str, Any]) -> None:
     _validate_state(state)
-    if set(report) != PAIR_REQUIRED or report.get("schema_version") != "1.0" or report.get("document_type") != "ci-pair-result" or report.get("policy_version") != "gate-assurance-1":
+    if (set(report) not in (PAIR_REQUIRED, PAIR_REQUIRED | PAIR_OPTIONAL)
+        or report.get("schema_version") != "1.0" or report.get("document_type") != "ci-pair-result" or report.get("policy_version") != "gate-assurance-1"):
         raise EvidenceError("invalid_report")
+    if "content_bound_exceptions" in report:
+        _content_bound_exceptions(report["content_bound_exceptions"], state["repository"])
     for key in ("base_sha", "head_sha", "base_tree", "head_tree"):
         _text(report[key], SHA_RE, "report_provenance_mismatch")
         if report[key] != state[key]:
