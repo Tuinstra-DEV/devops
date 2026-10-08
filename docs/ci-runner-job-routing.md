@@ -20,7 +20,7 @@ These are selected migration targets, not completed changes or measured memory p
 | devops | no self-execution on Sanctuary | no self-execution on Sanctuary | all control-plane tests and security |
 | agent-lab | no active CI | no active CI | no active CI |
 
-Two heavy slots queue WODIQ's third concurrent PostgreSQL job. Medium jobs have 3 GiB RAM and 4 GiB reserved backing; workload fit needs actual measurements. Docker quality belongs on heavy initially, but its 12 GiB reservation also needs a real guest run before broad activation.
+Two heavy slots queue WODIQ's third concurrent PostgreSQL job. Medium jobs have 3 GiB RAM and 4 GiB reserved backing; workload fit needs actual measurements. Docker quality belongs on heavy initially, but its 24 GiB reservation needs a successful guest run before broad activation. The first 12 GiB Gate guest filled its disk; current NVMe free-space admission temporarily serializes heavy jobs.
 
 ## Required checks and consumer evidence
 

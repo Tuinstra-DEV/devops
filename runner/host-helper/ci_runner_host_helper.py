@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import fcntl
 import grp
 import json
@@ -39,7 +40,9 @@ MEMORY_MIB = 6144
 DISK_GIB = "120G"
 PROFILE_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 PROFILE_LIMITS = {"heavy": 2, "medium": 2}
-PROFILE_DISK_GIB = {"heavy": 12, "medium": 4}
+PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
+EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
+                        "medium": frozenset({4})}
 MIN_FREE_DISK_GIB = 60
 DISK_MARGIN_GIB = 2
 MAX_LEASE_SECONDS = "7200"
@@ -62,6 +65,9 @@ DIAGNOSTIC_COMMANDS = frozenset({
 })
 UNKNOWN_REQUEST_ID = "0" * 32
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
+LOOP_GET_STATUS64 = 0x4C05
+LOOP_INFO64_SIZE = 232  # Linux uapi/linux/loop.h: five u64, four u32, 176 bytes.
+MAX_LOOP_DEVICES = 256
 
 
 class ProtocolError(ValueError):
@@ -182,7 +188,7 @@ def policy_mode_from_mapping(cfg: dict[str, Any]) -> str:
             "max_concurrency": 4, "medium_runner_label": "trusted-medium",
             "medium_runner_vcpus": 2, "medium_runner_memory_mib": 3072,
             "max_heavy": 2, "max_medium": 2,
-            "heavy_disk_reservation_gib": 12,
+            "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop",
         })
     else:
@@ -239,21 +245,35 @@ def bounded_paths(lease: str) -> tuple[Path, Path, Path]:
     return directory, directory / "bounded.img", directory / "work"
 
 
+def validated_bounded_profile(lease: str, *, allow_empty: bool = False) -> \
+        tuple[str, Path, Path, os.stat_result]:
+    directory = lease_dir(lease)
+    marker = directory / "profile"
+    if marker.is_symlink():
+        raise RuntimeError("runner profile marker is a link")
+    if not marker.is_file():
+        raise RuntimeError("runner profile marker is invalid")
+    profile = marker.read_text(encoding="ascii").strip()
+    if profile not in PROFILE_RESOURCES:
+        raise RuntimeError("runner profile marker is invalid")
+    _, backing, mountpoint = bounded_paths(lease)
+    if backing.is_symlink() or not backing.is_file():
+        raise RuntimeError("runner bounded backing file is invalid")
+    metadata = backing.stat()
+    approved_sizes = {size * 1024**3 for size in EXISTING_BACKING_GIB[profile]}
+    if metadata.st_size not in approved_sizes and not (allow_empty and metadata.st_size == 0):
+        raise RuntimeError("runner bounded backing file has an unapproved size")
+    return profile, backing, mountpoint, metadata
+
+
 def recorded_profile(lease: str) -> str:
     directory = lease_dir(lease)
     marker = directory / "profile"
     if marker.is_symlink():
         raise RuntimeError("runner profile marker is a link")
     if marker.is_file():
-        profile = marker.read_text(encoding="ascii").strip()
-        if profile not in PROFILE_RESOURCES:
-            raise RuntimeError("runner profile marker is invalid")
-        _, backing, mountpoint = bounded_paths(lease)
-        if backing.is_symlink() or not backing.is_file():
-            raise RuntimeError("runner bounded backing file is invalid")
-        stat = backing.stat()
-        expected_bytes = PROFILE_DISK_GIB[profile] * 1024**3
-        if stat.st_size != expected_bytes or stat.st_blocks * 512 < expected_bytes:
+        profile, backing, mountpoint, metadata = validated_bounded_profile(lease)
+        if metadata.st_blocks * 512 < metadata.st_size:
             raise RuntimeError("runner bounded backing file is not fully allocated")
         if not verify_bounded_mount(backing, mountpoint):
             raise RuntimeError("runner bounded mount is not active")
@@ -300,15 +320,68 @@ def local_mount_source(mountpoint: Path) -> str | None:
                                 "local runner mount state cannot be verified")
 
 
+def kernel_encode_dev(device: int) -> int:
+    """Match Linux huge_encode_dev(stat.dev), not libc's st_dev layout."""
+    major, minor = os.major(device), os.minor(device)
+    if major >= 1 << 12 or minor >= 1 << 20:
+        raise RuntimeError("runner backing device number is unsupported")
+    return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12)
+
+
+def backing_identity(backing: Path) -> tuple[int, int]:
+    if backing.is_symlink():
+        raise RuntimeError("runner backing file is a link")
+    metadata = backing.stat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("runner backing file is invalid")
+    return kernel_encode_dev(metadata.st_dev), metadata.st_ino
+
+
+def loop_status(loop: str) -> tuple[int, int, int, int, int]:
+    """Read kernel file identity; loop backing path changes with mount namespaces."""
+    match = re.fullmatch(r"/dev/loop([0-9]+)", loop)
+    if not match:
+        raise RuntimeError("runner loop device is invalid")
+    fd = os.open(loop, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        device = os.fstat(fd)
+        if not stat.S_ISBLK(device.st_mode) or os.major(device.st_rdev) != 7 or \
+                os.minor(device.st_rdev) != int(match.group(1)):
+            raise RuntimeError("runner loop device identity is invalid")
+        buffer = bytearray(LOOP_INFO64_SIZE)
+        fcntl.ioctl(fd, LOOP_GET_STATUS64, buffer, True)
+        backing_device, inode, _rdevice, offset, limit, number, *_ = \
+            struct.unpack_from("=QQQQQIIII", buffer)
+        return backing_device, inode, offset, limit, number
+    finally:
+        os.close(fd)
+
+
 def associated_loop(backing: Path) -> str | None:
-    result = run(["losetup", "--noheadings", "--output", "NAME",
-                  "--associated", str(backing)], check=False)
-    if result.returncode != 0 or len(result.stdout.splitlines()) > 1:
+    expected = backing_identity(backing)
+    try:
+        devices = os.listdir("/sys/class/block")
+    except OSError as exc:
+        raise RuntimeError("runner loop association cannot be verified") from exc
+    candidates = [item for item in devices if re.fullmatch(r"loop[0-9]+", item)]
+    if len(candidates) > MAX_LOOP_DEVICES:
         raise RuntimeError("runner loop association cannot be verified")
-    loop = result.stdout.strip()
-    if loop and not re.fullmatch(r"/dev/loop[0-9]+", loop):
-        raise RuntimeError("runner loop association is invalid")
-    return loop or None
+    matches = []
+    for item in sorted(candidates, key=lambda value: int(value[4:])):
+        loop = "/dev/" + item
+        try:
+            identity = loop_status(loop)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                continue  # An existing but unbound loop device.
+            raise RuntimeError("runner loop association cannot be verified") from exc
+        if identity[:2] == expected:
+            if identity[2:] != (0, 0, int(item[4:])):
+                raise RuntimeError("runner loop association is invalid")
+            matches.append(loop)
+    if len(matches) > 1:
+        raise RuntimeError("multiple loop devices match runner backing file")
+    return matches[0] if matches else None
 
 
 def loop_discard_limit(loop: str) -> int:
@@ -331,10 +404,16 @@ def disable_loop_discard(loop: str) -> None:
 
 
 def verify_loop_binding(backing: Path, loop: str, *, require_discard: bool = True) -> None:
-    if not re.fullmatch(r"/dev/loop[0-9]+", loop):
+    match = re.fullmatch(r"/dev/loop([0-9]+)", loop)
+    if not match:
         raise RuntimeError("runner mount is not loop-backed")
-    result = run(["losetup", "--noheadings", "--output", "BACK-FILE", loop])
-    if result.stdout.strip() != str(backing) or associated_loop(backing) != loop:
+    expected = backing_identity(backing)
+    try:
+        identity = loop_status(loop)
+    except OSError as exc:
+        raise RuntimeError("runner loop identity cannot be verified") from exc
+    if identity != (*expected, 0, 0, int(match.group(1))) or \
+            associated_loop(backing) != loop:
         raise RuntimeError("runner loop backing file does not match lease")
     size = run(["blockdev", "--getsize64", loop]).stdout.strip()
     if not size.isdecimal() or int(size) != backing.stat().st_size:
@@ -396,6 +475,13 @@ def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
 
 def remove_bounded_storage(lease: str) -> None:
     directory, backing, mountpoint = bounded_paths(lease)
+    _, _, _, metadata = validated_bounded_profile(lease, allow_empty=True)
+    if metadata.st_size == 0:
+        if host_mount_source(mountpoint) is not None or \
+                local_mount_source(mountpoint) is not None or associated_loop(backing) is not None:
+            raise RuntimeError("empty runner backing file is still attached")
+        shutil.rmtree(directory)
+        return
     source = host_mount_source(mountpoint)
     loop = associated_loop(backing)
     if source is not None:

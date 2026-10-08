@@ -29,8 +29,8 @@ import tomllib
 from typing import Callable
 
 
-MANAGER_SHA256 = "ddb7a749ff50072a2ae4f6fa2e9b30b222961280b085877578236064e88f53cd"
-HELPER_SHA256 = "c8932841ee520853f2f6e127ad89fe94ca71e0b952f163a23a234a8f2baa0e35"
+MANAGER_SHA256 = "37061633484a206a027c0079bc47cfb904d8189a97e3bd3a06ff4bfb59be2249"
+HELPER_SHA256 = "33af6fba20c6f4aa6ebc0c7955eda5dbcd9c3d4c0f14b738bd549f12154e7fec"
 UNIT_SHA256 = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 SYSTEMD_UNIT_OBJECT = "/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice"
 SOURCE_FILES = {"manager": "ci_runner_manager.py", "helper": "ci_runner_host_helper.py"}
@@ -44,14 +44,14 @@ POOL_VALUES = {
     "pool_mode": "four", "medium_runner_label": "trusted-medium",
     "medium_runner_vcpus": 2, "medium_runner_memory_mib": 3072,
     "max_heavy": 2, "max_medium": 2,
-    "heavy_disk_reservation_gib": 12, "medium_disk_reservation_gib": 4,
+    "heavy_disk_reservation_gib": 24, "medium_disk_reservation_gib": 4,
     "storage_mode": "bounded-loop",
 }
 POOL_LINES = (
     '\npool_mode = "four"\nmedium_runner_label = "trusted-medium"\n'
     'medium_runner_vcpus = 2\nmedium_runner_memory_mib = 3072\n'
     'max_heavy = 2\nmax_medium = 2\n'
-    'heavy_disk_reservation_gib = 12\nmedium_disk_reservation_gib = 4\n'
+    'heavy_disk_reservation_gib = 24\nmedium_disk_reservation_gib = 4\n'
     'storage_mode = "bounded-loop"\n'
 )
 DRAIN_DROPIN = (
@@ -135,8 +135,9 @@ def validate_legacy_config(data: bytes) -> tuple[dict, bytes]:
         old = tomllib.loads(text)
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ActivationError("installed manager configuration is invalid TOML") from exc
+    resizing = old.get("pool_mode") == "four"
     exact = {
-        "max_concurrency": 1, "runner_vcpus": 4, "runner_memory_mib": 6144,
+        "max_concurrency": 4 if resizing else 1, "runner_vcpus": 4, "runner_memory_mib": 6144,
         "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60,
         "max_lease_seconds": 7200, "runner_label": "trusted-heavy",
         "runner_group_id": 1, "allowed_owner": "Tuinstra-DEV",
@@ -149,15 +150,29 @@ def validate_legacy_config(data: bytes) -> tuple[dict, bytes]:
     for key, expected in exact.items():
         if key not in old or type(old[key]) is not type(expected) or old[key] != expected:
             raise ActivationError(f"installed manager policy differs at {key}")
-    for key in ("pool_mode", *POOL_VALUES):
-        if key in old:
-            raise ActivationError("four-pool policy is already present")
+    if resizing:
+        previous = {**POOL_VALUES, "heavy_disk_reservation_gib": 12}
+        for key, expected in previous.items():
+            if type(old.get(key)) is not type(expected) or old.get(key) != expected:
+                raise ActivationError(f"installed four-pool policy differs at {key}")
+    else:
+        for key in ("pool_mode", *POOL_VALUES):
+            if key in old:
+                raise ActivationError("unsupported partial four-pool policy")
     repositories = old.get("repositories")
     if not isinstance(repositories, list) or not repositories or \
             any(not isinstance(repo, str) or not repo.startswith("Tuinstra-DEV/")
                 for repo in repositories) or len(repositories) != len(set(repositories)) or \
             "Tuinstra-DEV/wodiq-platform" not in repositories:
         raise ActivationError("installed repository allowlist is not the reviewed owner set")
+    if resizing:
+        matches = list(re.finditer(r"(?m)^heavy_disk_reservation_gib = 12$", text))
+        if len(matches) != 1:
+            raise ActivationError("heavy disk reservation line has an unsupported format")
+        candidate = text[:matches[0].start()] + "heavy_disk_reservation_gib = 24" + text[matches[0].end():]
+        if tomllib.loads(candidate) != {**old, "heavy_disk_reservation_gib": 24}:
+            raise ActivationError("heavy disk transformation is not isolated")
+        return old, candidate.encode("utf-8")
     matches = list(re.finditer(r"(?m)^max_concurrency = 1$", text))
     if len(matches) != 1:
         raise ActivationError("max_concurrency line has an unsupported format")
@@ -240,8 +255,8 @@ def verify_host(layout: Layout = HOST, command: Command = run) -> None:
                       "--target", str(layout.overlay)]).stdout.strip()
     if source != ROOT_SOURCE:
         raise ActivationError("runner overlay root source differs from reviewed NVMe")
-    if shutil.disk_usage(layout.overlay).free < 74 * GIB:
-        raise ActivationError("root NVMe lacks the 12-GiB canary and 62-GiB floor")
+    if shutil.disk_usage(layout.overlay).free < 86 * GIB:
+        raise ActivationError("root NVMe lacks the 24-GiB canary and 62-GiB floor")
 
 
 def assert_drained(layout: Layout = HOST, command: Command = run) -> None:
