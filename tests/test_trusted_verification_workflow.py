@@ -547,6 +547,9 @@ else:
             self.assertIn("actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3", route)
             self.assertIn("java-version: '17'", route)
             self.assertIn("android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407", route)
+            android = route.split("      - name: Set up OpenAirco Android SDK", 1)[1].split("      - name:", 1)[0]
+            # The pinned action defaults to obsolete `tools platform-tools`.
+            self.assertRegex(android, r"(?m)^          packages: ['\"]?platform-tools['\"]?$")
             self.assertIn("run: sdkmanager 'platforms;android-37'", route)
             self.assertIn("subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2", route)
             self.assertIn("flutter-version: 3.47.1", route)
