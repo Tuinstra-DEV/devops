@@ -415,6 +415,16 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             self.assertIn("if-no-files-found: error", route)
             self.assertIn("include-hidden-files: true", route)
 
+    def test_both_routes_checkout_merge_commit_with_parent_for_site_docs(self):
+        source = WORKFLOW.read_text()
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            checkout = route.split("uses: actions/checkout@", 1)[1].split("      - name:", 1)[0]
+            self.assertIn("fetch-depth: 2", checkout)
+            self.assertIn("persist-credentials: false", checkout)
+        self.assertIn("ref: ${{ needs.preflight.outputs.source-sha }}", trusted)
+
     def test_download_caches_use_fixed_lockfile_identities_on_both_routes(self):
         source = WORKFLOW.read_text()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
