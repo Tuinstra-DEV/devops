@@ -172,16 +172,22 @@ def atomic_write(path: Path, data: bytes, uid: int, gid: int, mode: int) -> None
 
 
 def service_state(name: str, command: Command = run) -> tuple[str, int, int]:
-    reply = command(["systemctl", "show", name, "--property=ActiveState", "--property=MainPID",
-                     "--property=ControlPID"])
+    # Socket units expose ControlPID but do not expose a service MainPID.
+    fields = {"ActiveState", "ControlPID"} if name == SOCKET else {"ActiveState", "MainPID", "ControlPID"}
+    reply = command(["systemctl", "show", name, *["--property=" + key for key in sorted(fields)]])
     pairs = [line.split("=", 1) for line in reply.stdout.splitlines()]
-    if any(len(pair) != 2 for pair in pairs) or len(pairs) != 3:
+    if any(len(pair) != 2 for pair in pairs) or len(pairs) != len(fields):
         raise RecoveryError(f"service state unknown: {name}")
     values = dict(pairs)
-    if set(values) != {"ActiveState", "MainPID", "ControlPID"}:
+    if set(values) != fields or values["ActiveState"] not in {
+            "active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing"}:
         raise RecoveryError(f"service state unknown: {name}")
     try:
-        return values["ActiveState"], int(values["MainPID"]), int(values["ControlPID"])
+        main_pid = 0 if name == SOCKET else int(values["MainPID"])
+        control_pid = int(values["ControlPID"])
+        if main_pid < 0 or control_pid < 0:
+            raise ValueError("negative PID")
+        return values["ActiveState"], main_pid, control_pid
     except ValueError as exc:
         raise RecoveryError(f"service state unknown: {name}") from exc
 
