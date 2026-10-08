@@ -77,6 +77,16 @@ class FourPoolActivationTests(unittest.TestCase):
         self.assertIn(b'runner_group_id = 1', candidate)
         self.assertIn(b'medium_runner_label = "trusted-medium"', candidate)
 
+    def test_existing_four_pool_disk_resize_preserves_other_fields(self):
+        _, initial = activation.validate_legacy_config(self.config.read_bytes())
+        installed = initial.replace(b"heavy_disk_reservation_gib = 24", b"heavy_disk_reservation_gib = 12")
+        old, candidate = activation.validate_legacy_config(installed)
+        self.assertEqual(tomllib.loads(candidate.decode()), {**old, "heavy_disk_reservation_gib": 24})
+        for invalid in (installed.replace(b"heavy_disk_reservation_gib = 12", b"heavy_disk_reservation_gib = 16"),
+                        installed.replace(b"medium_disk_reservation_gib = 4", b"medium_disk_reservation_gib = 8")):
+            with self.assertRaises(activation.ActivationError):
+                activation.validate_legacy_config(invalid)
+
     def test_config_rejects_legacy_resource_or_allowlist_drift(self):
         source = self.config.read_bytes()
         cases = (

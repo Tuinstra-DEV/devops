@@ -46,7 +46,7 @@ RUNNER_MEMORY_MIB = 6144
 FOUR_POOL_CONCURRENCY = 4
 POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 POOL_LIMITS = {"heavy": 2, "medium": 2}
-POOL_DISK_GIB = {"heavy": 12, "medium": 4}
+POOL_DISK_GIB = {"heavy": 24, "medium": 4}
 DISK_MARGIN_GIB = 2
 RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
@@ -152,7 +152,7 @@ def load_config(path: Path) -> dict[str, Any]:
             "medium_runner_memory_mib": 3072,
             "max_heavy": 2,
             "max_medium": 2,
-            "heavy_disk_reservation_gib": 12,
+            "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4,
         })
         if cfg.get("medium_runner_label") != "trusted-medium" or \

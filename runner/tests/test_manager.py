@@ -52,6 +52,25 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("bounded overlay reservation would breach NVMe floor",
                       manager.capacity_errors(cfg, profile="medium", active=active))
 
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_24g_heavy_reservation_serializes_at_98g_free(
+            self, disk, _available, _total, _cpu):
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        disk.return_value = mock.Mock(free=98 * 1024**3)
+        self.assertEqual(manager.capacity_errors(cfg, profile="heavy", active=[]), [])
+
+        # After one 24-GiB allocation, another heavy would breach the 60+2 floor.
+        disk.return_value = mock.Mock(free=74 * 1024**3)
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 6000}]
+        self.assertIn("bounded overlay reservation would breach NVMe floor",
+                      manager.capacity_errors(cfg, profile="heavy", active=active))
+        self.assertEqual(manager.capacity_errors(cfg, profile="medium", active=active), [])
+
     def test_two_medium_leases_leave_both_heavy_dispatch_slots_open(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "state"
@@ -139,7 +158,7 @@ class ManagerTests(unittest.TestCase):
         four = source.replace("max_concurrency = 1", "max_concurrency = 4") + (
             '\npool_mode = "four"\nmedium_runner_label = "trusted-medium"\n'
             'medium_runner_vcpus = 2\nmedium_runner_memory_mib = 3072\n'
-            'max_heavy = 2\nmax_medium = 2\nheavy_disk_reservation_gib = 12\n'
+            'max_heavy = 2\nmax_medium = 2\nheavy_disk_reservation_gib = 24\n'
             'medium_disk_reservation_gib = 4\nstorage_mode = "bounded-loop"\n'
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -149,6 +168,11 @@ class ManagerTests(unittest.TestCase):
             path.write_text(four.replace('storage_mode = "bounded-loop"',
                                          'storage_mode = "sparse-qcow2"'), encoding="utf-8")
             with self.assertRaises(manager.RunnerError):
+                manager.load_config(path)
+            path.write_text(four.replace('heavy_disk_reservation_gib = 24',
+                                         'heavy_disk_reservation_gib = 12'), encoding="utf-8")
+            with self.assertRaisesRegex(manager.RunnerError,
+                                        'heavy_disk_reservation_gib must be exactly 24'):
                 manager.load_config(path)
 
     @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)

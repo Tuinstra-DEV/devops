@@ -1,7 +1,10 @@
 import base64
 import contextlib
+import errno
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,10 +31,12 @@ class HostHelperTests(unittest.TestCase):
         four = {**legacy, "pool_mode": "four", "max_concurrency": 4,
                 "medium_runner_label": "trusted-medium", "medium_runner_vcpus": 2,
                 "medium_runner_memory_mib": 3072, "max_heavy": 2, "max_medium": 2,
-                "heavy_disk_reservation_gib": 12,
+                "heavy_disk_reservation_gib": 24,
                 "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop"}
         self.assertEqual(helper.policy_mode_from_mapping(legacy), "legacy")
         self.assertEqual(helper.policy_mode_from_mapping(four), "four")
+        with self.assertRaisesRegex(helper.ProtocolError, "policy is not approved"):
+            helper.policy_mode_from_mapping({**four, "heavy_disk_reservation_gib": 12})
         with self.assertRaises(helper.ProtocolError):
             helper.policy_mode_from_mapping({**four, "storage_mode": "sparse"})
         with mock.patch.object(helper, "active_pool_mode", return_value="four"):
@@ -72,9 +77,54 @@ class HostHelperTests(unittest.TestCase):
         self.assertFalse(helper.profile_has_slot({"heavy": 2, "medium": 2}, "medium"))
 
     def test_bounded_launch_requires_positive_reserved_disk_headroom(self):
-        self.assertTrue(helper.reservation_fits(97 * 1024**3, "heavy"))
-        self.assertFalse(helper.reservation_fits(72 * 1024**3, "heavy"))
+        self.assertEqual(helper.PROFILE_DISK_GIB["heavy"], 24)
+        self.assertTrue(helper.reservation_fits(98 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(85 * 1024**3, "heavy"))
         self.assertFalse(helper.reservation_fits(63 * 1024**3, "medium"))
+
+    def test_recorded_heavy_accepts_only_full_legacy_12_or_new_24_gib_backing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "profile").write_text("heavy\n", encoding="ascii")
+            backing = directory / "bounded.img"
+            backing.write_bytes(b"")
+            real_stat = Path.stat
+            size = 12 * 1024**3
+
+            def backing_stat(path, *args, **kwargs):
+                if path == backing:
+                    return mock.Mock(st_size=size, st_blocks=size // 512,
+                                     st_mode=stat.S_IFREG | 0o600)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(helper, "lease_dir", return_value=directory), \
+                    mock.patch.object(helper, "bounded_paths", return_value=(
+                        directory, backing, directory / "work")), \
+                    mock.patch.object(Path, "stat", autospec=True,
+                                      side_effect=backing_stat), \
+                    mock.patch.object(helper, "verify_bounded_mount", return_value=True):
+                for gib in (12, 24):
+                    size = gib * 1024**3
+                    with self.subTest(gib=gib):
+                        self.assertEqual(helper.recorded_profile("lease"), "heavy")
+                for gib in (8, 16, 32):
+                    size = gib * 1024**3
+                    with self.subTest(gib=gib), self.assertRaisesRegex(
+                            RuntimeError, "bounded backing file"):
+                        helper.recorded_profile("lease")
+
+    @mock.patch.object(helper, "run")
+    @mock.patch.object(helper.shutil, "disk_usage", return_value=mock.Mock(free=98 * 1024**3))
+    def test_new_heavy_allocates_24_gib_before_mount(self, _disk, run):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            backing = directory / "bounded.img"
+            paths = (directory, backing, directory / "work")
+            with mock.patch.object(helper, "bounded_paths", return_value=paths):
+                with self.assertRaisesRegex(RuntimeError, "not fully allocated"):
+                    helper.create_bounded_storage("new-heavy", "heavy", 994)
+            run.assert_called_once_with([
+                "fallocate", "--length", str(24 * 1024**3), str(backing)])
 
     @mock.patch.object(helper, "local_mount_source", return_value="/dev/mapper/other")
     @mock.patch.object(helper, "host_mount_source", return_value="/dev/mapper/other")
@@ -150,6 +200,9 @@ class HostHelperTests(unittest.TestCase):
     def test_bounded_cleanup_preserves_storage_when_umount_does_not_complete(
             self, _source, _local, run):
         with mock.patch.object(helper, "associated_loop", return_value="/dev/loop7"), \
+                mock.patch.object(helper, "validated_bounded_profile", return_value=(
+                    "heavy", Path("/lease/bounded.img"), Path("/lease/work"),
+                    mock.Mock(st_size=12 * 1024**3))), \
                 mock.patch.object(helper, "verify_loop_binding"), \
                 mock.patch.object(helper.shutil, "rmtree") as rmtree:
             with self.assertRaisesRegex(RuntimeError, "mount remains active"):
@@ -167,6 +220,9 @@ class HostHelperTests(unittest.TestCase):
 
         with mock.patch.object(helper, "associated_loop",
                                side_effect=["/dev/loop7", None]), \
+                mock.patch.object(helper, "validated_bounded_profile", return_value=(
+                    "heavy", Path("/lease/bounded.img"), Path("/lease/work"),
+                    mock.Mock(st_size=12 * 1024**3))), \
                 mock.patch.object(helper, "verify_loop_binding",
                                   side_effect=verify_identity) as verify, \
                 mock.patch.object(helper.shutil, "rmtree") as rmtree:
@@ -187,10 +243,201 @@ class HostHelperTests(unittest.TestCase):
                     helper.create_bounded_storage("lease", "medium", 994)
         self.assertEqual([call.args[0][0] for call in run.call_args_list], ["fallocate"])
 
-    @mock.patch.object(helper, "run", return_value=mock.Mock(stdout="/wrong/backing.img\n"))
-    def test_wrong_loop_backing_stops_before_mount_or_vm(self, _run):
-        with self.assertRaisesRegex(RuntimeError, "does not match lease"):
-            helper.verify_loop_binding(Path("/lease/bounded.img"), "/dev/loop7")
+    def test_shortened_namespace_path_uses_kernel_file_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            stat_result = backing.stat()
+            identity = (helper.kernel_encode_dev(stat_result.st_dev), stat_result.st_ino,
+                        0, 0, 7)
+            with mock.patch.object(helper, "loop_status", return_value=identity), \
+                    mock.patch.object(helper, "associated_loop", return_value="/dev/loop7"), \
+                    mock.patch.object(helper, "run", return_value=mock.Mock(stdout="4\n")), \
+                    mock.patch.object(helper, "loop_discard_limit", return_value=0):
+                # The kernel/sysfs pathname can become /lease/bounded.img after
+                # the helper mount namespace that attached the loop exits.
+                helper.verify_loop_binding(backing, "/dev/loop7")
+
+    def test_kernel_loop_status_reads_device_inode_and_rejects_alias_device(self):
+        payload = struct.pack("=QQQQQIIII", 123, 456, 0, 0, 0, 7, 0, 0, 0)
+
+        def fill_status(_fd, command, buffer, mutate):
+            self.assertEqual(command, 0x4C05)
+            self.assertTrue(mutate)
+            buffer[:len(payload)] = payload
+
+        with mock.patch.object(helper.os, "open", return_value=31), \
+                mock.patch.object(helper.os, "fstat", return_value=mock.Mock(
+                    st_mode=stat.S_IFBLK | 0o660, st_rdev=os.makedev(7, 7))), \
+                mock.patch.object(helper.fcntl, "ioctl", side_effect=fill_status), \
+                mock.patch.object(helper.os, "close") as close:
+            self.assertEqual(helper.loop_status("/dev/loop7"), (123, 456, 0, 0, 7))
+            close.assert_called_once_with(31)
+        with mock.patch.object(helper.os, "open", return_value=31), \
+                mock.patch.object(helper.os, "fstat", return_value=mock.Mock(
+                    st_mode=stat.S_IFBLK | 0o660, st_rdev=os.makedev(7, 8))), \
+                mock.patch.object(helper.fcntl, "ioctl") as ioctl, \
+                mock.patch.object(helper.os, "close"):
+            with self.assertRaisesRegex(RuntimeError, "device identity"):
+                helper.loop_status("/dev/loop7")
+            ioctl.assert_not_called()
+
+    def test_kernel_device_encoding_matches_linux_huge_encode_dev(self):
+        self.assertEqual(helper.kernel_encode_dev(os.makedev(8, 258)),
+                         (8 << 8) | 2 | (256 << 12))
+
+    def test_associated_loop_finds_shortened_path_by_inode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            stat_result = backing.stat()
+            identity = (helper.kernel_encode_dev(stat_result.st_dev), stat_result.st_ino,
+                        0, 0, 7)
+            with mock.patch.object(helper.os, "listdir", return_value=[
+                "loop7", "loop-control", "loop8"]), \
+                    mock.patch.object(helper, "loop_status", side_effect=[
+                        identity, OSError(errno.ENXIO, "unbound")]):
+                self.assertEqual(helper.associated_loop(backing), "/dev/loop7")
+
+    def test_wrong_loop_backing_stops_before_mount_or_vm(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            with mock.patch.object(helper, "loop_status",
+                                   return_value=(123, 456, 0, 0, 7)):
+                with self.assertRaisesRegex(RuntimeError, "does not match lease"):
+                    helper.verify_loop_binding(backing, "/dev/loop7")
+
+    def test_loop_binding_rejects_offset_sizelimit_and_wrong_number(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            stat_result = backing.stat()
+            dev = helper.kernel_encode_dev(stat_result.st_dev)
+            for offset, limit, number in ((1, 0, 7), (0, 1, 7), (0, 0, 8)):
+                with self.subTest(offset=offset, limit=limit, number=number), \
+                        mock.patch.object(helper, "loop_status",
+                                          return_value=(dev, stat_result.st_ino,
+                                                        offset, limit, number)):
+                    with self.assertRaisesRegex(RuntimeError, "does not match lease"):
+                        helper.verify_loop_binding(backing, "/dev/loop7")
+
+    def test_loop_binding_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            alias = Path(temporary) / "alias.img"
+            alias.symlink_to(backing)
+            with mock.patch.object(helper, "loop_status") as status:
+                with self.assertRaisesRegex(RuntimeError, "backing file"):
+                    helper.verify_loop_binding(alias, "/dev/loop7")
+            status.assert_not_called()
+
+    def test_associated_loop_rejects_duplicate_kernel_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            stat_result = backing.stat()
+            identity = (helper.kernel_encode_dev(stat_result.st_dev), stat_result.st_ino,
+                        0, 0, 7)
+            with mock.patch.object(helper.os, "listdir", return_value=["loop7", "loop8"]), \
+                    mock.patch.object(helper, "loop_status", side_effect=[
+                        identity, (*identity[:4], 8)]):
+                with self.assertRaisesRegex(RuntimeError, "multiple loop"):
+                    helper.associated_loop(backing)
+
+    def test_associated_loop_propagates_unexpected_ioctl_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backing = Path(temporary) / "bounded.img"
+            backing.write_bytes(b"test")
+            for error in (errno.EIO, errno.ENOENT):
+                with self.subTest(error=error), \
+                        mock.patch.object(helper.os, "listdir", return_value=["loop7"]), \
+                        mock.patch.object(helper, "loop_status",
+                                          side_effect=OSError(error, "query failed")):
+                    with self.assertRaisesRegex(RuntimeError, "loop association"):
+                        helper.associated_loop(backing)
+
+    def test_cleanup_detaches_namespace_shortened_loop_after_unmount(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "lease"
+            directory.mkdir()
+            backing = directory / "bounded.img"
+            backing.write_bytes(b"")
+            with backing.open("r+b") as handle:
+                handle.truncate(12 * 1024**3)
+            (directory / "profile").write_text("heavy\n", encoding="ascii")
+            mountpoint = directory / "work"
+            mountpoint.mkdir()
+            metadata = backing.stat()
+            identity = (helper.kernel_encode_dev(metadata.st_dev), metadata.st_ino,
+                        0, 0, 7)
+            detached = False
+
+            def status(_loop):
+                if detached:
+                    raise OSError(errno.ENXIO, "unbound")
+                return identity
+
+            def command(args, **_kwargs):
+                nonlocal detached
+                if args[:2] == ["losetup", "--detach"]:
+                    detached = True
+                return mock.Mock(returncode=0, stdout=f"{backing.stat().st_size}\n"
+                                 if args[0] == "blockdev"
+                                 else "", stderr="")
+
+            with mock.patch.object(helper, "bounded_paths", return_value=(
+                    directory, backing, mountpoint)), \
+                    mock.patch.object(helper, "lease_dir", return_value=directory), \
+                    mock.patch.object(helper, "host_mount_source",
+                                      side_effect=["/dev/loop7", None]), \
+                    mock.patch.object(helper, "local_mount_source", return_value=None), \
+                    mock.patch.object(helper.os, "listdir", return_value=["loop7"]), \
+                    mock.patch.object(helper, "loop_status", side_effect=status), \
+                    mock.patch.object(helper, "run", side_effect=command):
+                helper.remove_bounded_storage("lease")
+            self.assertTrue(detached)
+            self.assertFalse(directory.exists())
+
+    def test_cleanup_rejects_unknown_backing_size_before_unmount(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "profile").write_text("heavy\n", encoding="ascii")
+            backing = directory / "bounded.img"
+            with backing.open("wb") as handle:
+                handle.truncate(16 * 1024**3)
+            paths = (directory, backing, directory / "work")
+            with mock.patch.object(helper, "bounded_paths", return_value=paths), \
+                    mock.patch.object(helper, "lease_dir", return_value=directory), \
+                    mock.patch.object(helper, "host_mount_source") as mount:
+                with self.assertRaisesRegex(RuntimeError, "bounded backing file"):
+                    helper.remove_bounded_storage("lease")
+                mount.assert_not_called()
+
+    def test_cleanup_empty_failed_reservation_only_when_no_mount_or_loop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "lease"
+            directory.mkdir()
+            (directory / "profile").write_text("heavy\n", encoding="ascii")
+            backing = directory / "bounded.img"
+            backing.write_bytes(b"")
+            paths = (directory, backing, directory / "work")
+            with mock.patch.object(helper, "bounded_paths", return_value=paths), \
+                    mock.patch.object(helper, "lease_dir", return_value=directory), \
+                    mock.patch.object(helper, "host_mount_source", return_value=None), \
+                    mock.patch.object(helper, "local_mount_source", return_value=None), \
+                    mock.patch.object(helper, "associated_loop", return_value="/dev/loop7"):
+                with self.assertRaisesRegex(RuntimeError, "still attached"):
+                    helper.remove_bounded_storage("lease")
+            self.assertTrue(directory.exists())
+            with mock.patch.object(helper, "bounded_paths", return_value=paths), \
+                    mock.patch.object(helper, "lease_dir", return_value=directory), \
+                    mock.patch.object(helper, "host_mount_source", return_value=None), \
+                    mock.patch.object(helper, "local_mount_source", return_value=None), \
+                    mock.patch.object(helper, "associated_loop", return_value=None):
+                helper.remove_bounded_storage("lease")
+            self.assertFalse(directory.exists())
 
     @mock.patch.object(helper.shutil, "disk_usage", return_value=mock.Mock(free=97 * 1024**3))
     def test_storage_creation_rejects_wrong_loop_backing_before_mount(self, _disk):
@@ -203,18 +450,20 @@ class HostHelperTests(unittest.TestCase):
 
             def backing_stat(path, *args, **kwargs):
                 if path == backing:
-                    return mock.Mock(st_size=reserved, st_blocks=reserved // 512)
+                    return mock.Mock(st_size=reserved, st_blocks=reserved // 512,
+                                     st_mode=stat.S_IFREG | 0o600,
+                                     st_dev=1, st_ino=123)
                 return real_stat(path, *args, **kwargs)
 
             def runner_command(command, **_kwargs):
                 if command[:3] == ["losetup", "--find", "--show"]:
                     return mock.Mock(stdout="/dev/loop7\n")
-                if command[:4] == ["losetup", "--noheadings", "--output", "BACK-FILE"]:
-                    return mock.Mock(stdout="/wrong/backing.img\n")
                 return mock.Mock(stdout="")
 
             with mock.patch.object(helper, "bounded_paths", return_value=paths), \
                     mock.patch.object(helper, "associated_loop", return_value=None), \
+                    mock.patch.object(helper, "loop_status",
+                                      return_value=(123, 456, 0, 0, 7)), \
                     mock.patch.object(Path, "stat", autospec=True, side_effect=backing_stat), \
                     mock.patch.object(helper, "run", side_effect=runner_command) as run:
                 with self.assertRaisesRegex(RuntimeError, "does not match lease"):
