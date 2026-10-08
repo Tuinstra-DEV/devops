@@ -421,16 +421,46 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
         with:
           node-version: ${{ needs.preflight.outputs.node-version }}
-      - name: Set up PHP and Composer
+      - name: Select verified baked PHP and Composer without privileges
         if: ${{ needs.preflight.outputs.php-version != '' }}
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
-        with:
-          php-version: ${{ needs.preflight.outputs.php-version }}
-          extensions: ${{ needs.preflight.outputs.php-extensions }}
-          tools: composer:v2
-          coverage: none
+        shell: bash
         env:
-          fast-fail: true
+          PHP_VERSION: ${{ needs.preflight.outputs.php-version }}
+          PHP_EXTENSIONS: ${{ needs.preflight.outputs.php-extensions }}
+          JOB_KEY: ${{ inputs.job-key }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REPOSITORY:$JOB_KEY" in
+            Tuinstra-DEV/gate:gate-php)
+              [[ "$PHP_VERSION" == 8.3 && "$PHP_EXTENSIONS" == 'ctype, iconv' ]]
+              required='ctype,iconv,openssl,Zend OPcache,zip' ;;
+            Tuinstra-DEV/tracker:tracker-backend-postgres)
+              [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip' ]]
+              required='ctype,fileinfo,iconv,intl,mbstring,openssl,pdo,pdo_pgsql,zip' ;;
+            Tuinstra-DEV/console:console-php-lint|Tuinstra-DEV/console:console-php-postgres)
+              [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'intl, pdo_pgsql' ]]
+              required='ctype,iconv,intl,pdo_pgsql' ;;
+            *) echo 'Unsupported baked PHP contract' >&2; exit 1 ;;
+          esac
+          php_bin="/usr/bin/php${PHP_VERSION}"
+          composer_bin=/usr/local/bin/composer
+          [[ -x "$php_bin" && -r "$composer_bin" ]]
+          [[ "$("$php_bin" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')" == "$PHP_VERSION" ]]
+          "$php_bin" -r '
+            foreach (explode(",", $argv[1]) as $extension) {
+              if (!extension_loaded($extension)) {
+                fwrite(STDERR, "Missing baked PHP extension: $extension\n");
+                exit(1);
+              }
+            }
+          ' "$required"
+          shim_dir="$(mktemp -d "$RUNNER_TEMP/ci-php-bin.XXXXXX")"
+          printf '#!/bin/sh\nexec /usr/bin/php%s "$@"\n' "$PHP_VERSION" > "$shim_dir/php"
+          printf '#!/bin/sh\nexec /usr/bin/php%s /usr/local/bin/composer "$@"\n' "$PHP_VERSION" > "$shim_dir/composer"
+          chmod 0700 "$shim_dir/php" "$shim_dir/composer"
+          composer_version="$("$shim_dir/composer" --version --no-ansi)"
+          [[ "$composer_version" =~ ^Composer[[:space:]]version[[:space:]]2[.] ]]
+          echo "$shim_dir" >> "$GITHUB_PATH"
       - name: Resolve fixed Composer download cache
         if: ${{ needs.preflight.outputs.php-version != '' }}
         id: composer-cache

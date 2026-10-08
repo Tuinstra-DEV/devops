@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -35,6 +36,13 @@ def contract_script():
     if not match:
         raise AssertionError("fixed consumer contract missing")
     return textwrap.dedent(match.group("script"))
+
+
+def trusted_php_script():
+    source = WORKFLOW.read_text()
+    trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+    step = trusted.split("      - name: Select verified baked PHP and Composer without privileges", 1)[1]
+    return textwrap.dedent(step.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
 
 
 def consumer_verdict(call_result, preflight_trusted, trusted_proof, hosted_proof):
@@ -424,6 +432,67 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             self.assertIn("fetch-depth: 2", checkout)
             self.assertIn("persist-credentials: false", checkout)
         self.assertIn("ref: ${{ needs.preflight.outputs.source-sha }}", trusted)
+
+    def test_trusted_baked_php_selection_checks_version_extensions_and_composer(self):
+        source = WORKFLOW.read_text()
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        self.assertNotIn("shivammathur/setup-php@", trusted)
+        self.assertIn("shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240", hosted)
+        self.assertNotIn("sudo", trusted_php_script())
+
+        fake_php = """#!/usr/bin/env python3
+import os
+import sys
+if len(sys.argv) >= 3 and sys.argv[1] == '-r':
+    if 'PHP_MAJOR_VERSION' in sys.argv[2]:
+        print(os.environ.get('FAKE_PHP_VERSION', '8.4'), end='')
+    elif 'extension_loaded' in sys.argv[2]:
+        if os.environ.get('FAKE_MISSING_EXTENSION') in sys.argv[3].split(','):
+            raise SystemExit(1)
+elif len(sys.argv) >= 2 and sys.argv[1] == os.environ['FAKE_COMPOSER_PATH']:
+    print('Composer version ' + os.environ.get('FAKE_COMPOSER_VERSION', '2.9.0'))
+else:
+    raise SystemExit(2)
+"""
+        fake_root = Path(self.temp.name)
+        fake_bin = fake_root / "bin"
+        fake_bin.mkdir()
+        fake_composer = fake_root / "composer"
+        fake_composer.write_text("fixture")
+        for version in ("8.3", "8.4"):
+            binary = fake_bin / f"php{version}"
+            binary.write_text(fake_php)
+            binary.chmod(0o755)
+        script = trusted_php_script().replace("/usr/bin/php", str(fake_bin / "php"))
+        script = script.replace("/usr/local/bin/composer", str(fake_composer))
+
+        cases = (
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.3", "", "", True),
+            ("Tuinstra-DEV/tracker", "tracker-backend-postgres", "8.4",
+             "ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip", "8.4", "", "", True),
+            ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "", "", True),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.4", "", "", False),
+            ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "intl", "", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.3", "", "3.0.0", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.4", "ctype, iconv", "8.4", "", "", False),
+        )
+        for index, (repo, key, version, extensions, actual, missing, composer_version, succeeds) in enumerate(cases):
+            with self.subTest(repo=repo, key=key, index=index):
+                path_file = fake_root / f"path-{index}"
+                env = {**os.environ, "RUNNER_TEMP": str(fake_root), "GITHUB_PATH": str(path_file),
+                       "GITHUB_REPOSITORY": repo, "JOB_KEY": key, "PHP_VERSION": version,
+                       "PHP_EXTENSIONS": extensions, "FAKE_PHP_VERSION": actual,
+                       "FAKE_MISSING_EXTENSION": missing, "FAKE_COMPOSER_PATH": str(fake_composer),
+                       "FAKE_COMPOSER_VERSION": composer_version or "2.9.0"}
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                self.assertEqual(path_file.exists(), succeeds)
+                if succeeds:
+                    shim = Path(path_file.read_text().strip())
+                    self.assertEqual(shim.parent, fake_root)
+                    self.assertEqual(subprocess.run([str(shim / "composer"), "--version"], env=env,
+                                                    capture_output=True, text=True).returncode, 0)
 
     def test_download_caches_use_fixed_lockfile_identities_on_both_routes(self):
         source = WORKFLOW.read_text()

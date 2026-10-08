@@ -50,7 +50,7 @@ WODIQ runtime output is bound to the synthetic PR merge SHA, run ID and run atte
 
 ## Required organization boundary
 
-Create a new group named `sanctuary-trusted-verification`, with visibility `selected`, public access disabled, `restricted_to_workflows=true`, and exactly one selected workflow: `Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@<reviewed-full-commit-SHA>`.
+Create a new group named `sanctuary-trusted-verification`, with visibility `selected`, public access disabled, `restricted_to_workflows=true`, and initially one selected workflow: `Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@<reviewed-full-commit-SHA>`.
 
 The selected private repository IDs are checked in at [org-routing-repositories.json](../runner/policy/org-routing-repositories.json). Public DevOps and inactive Agent Lab are excluded. The group permits only jobs directly defined in the immutable central workflow, not arbitrary PR workflow jobs that copy a runner label. The workflow checks GitHub event and REST identities before queueing a group job; only the human `marcel-tuinstra` author/actor/triggering actor on a same-repository non-fork PR qualifies. Untrusted source retains hosted checks. There is no caller-supplied trust boolean, command string, or arbitrary runs-on input.
 
@@ -72,3 +72,28 @@ The opt-in Ansible variables record the organization group, exact workflow refer
 6. Observe actual assigned jobs, Docker behavior, peak backing usage, memory reserve and successful lease cleanup. Record hosted minutes against the audit baseline; do not claim money saved before billing evidence supports it.
 
 If organization access or a restricted workflow is missing, leave new routing disabled and keep runnable hosted consumers. Never queue medium jobs into the default unrestricted group, silently reuse the repository JIT path, or bypass required checks. Rollback restores consumer workflow pins and disables organization routing after active leases finish; existing release routing remains available.
+
+### PHP in restricted guests
+
+Trusted PHP jobs select `/usr/bin/php8.3` (Gate) or `/usr/bin/php8.4`
+(Tracker and Console) through job-local `php` and `composer` wrappers. The
+workflow validates the fixed version, required extensions and Composer v2
+before dependency installation. It never invokes sudo; the guest service
+retains `NoNewPrivileges=yes`. Hosted fallback keeps its existing setup action.
+
+The immutable image must include PHP 8.4 `intl` and `pgsql` at the same pinned
+package version as its PHP CLI, in addition to the existing XML, mbstring, zip
+and curl packages. The image contract verifies both PHP extension sets.
+A workflow change alone cannot repair an older image that lacks these modules.
+Activate a replacement image only after existing leases drain; preserve the
+previous digest image for rollback and execute real PHP canaries afterward.
+
+During a reviewed workflow revision transition, the manager accepts either
+legacy `org_workflow_ref` or `org_workflow_refs` with at most two distinct
+full commit references to this same workflow. The GitHub group must match
+that exact set, without wildcard or branch references. Each candidate run
+must name one accepted central revision with matching SHA; new leases record
+that reference and assignment revalidates it. Existing consumers may retain
+the previous reviewed revision while PHP consumers adopt the repaired one.
+Drain leases before removing their accepted revision; never replace the
+repository, human-actor or current-PR admission checks with labels alone.

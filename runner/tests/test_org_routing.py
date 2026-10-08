@@ -12,6 +12,7 @@ ORG = "Tuinstra-DEV"
 REPO = f"{ORG}/tracker"
 REF = (f"{ORG}/devops/.github/workflows/reusable-trusted-verification.yml@"
        + "a" * 40)
+NEW_REF = REF[:-40] + "b" * 40
 POLICY = {
     "org_routing_enabled": True, "pool_mode": "four",
     "repositories": [REPO],
@@ -32,6 +33,7 @@ class OrgRoutingTests(unittest.TestCase):
                "head_repository": repository,
                "actor": {"login": "marcel-tuinstra", "type": "User"},
                "triggering_actor": {"login": "marcel-tuinstra", "type": "User"},
+               "referenced_workflows": [{"path": REF, "sha": REF[-40:]}],
                "pull_requests": []}
         pr = {"number": 7, "state": "open", "merged": False,
               "user": {"login": "marcel-tuinstra", "type": "User"},
@@ -44,7 +46,7 @@ class OrgRoutingTests(unittest.TestCase):
 
     def test_empty_run_association_resolves_one_current_private_pr_for_admission(self):
         run, pr, job = self.empty_association_evidence()
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         paths = []
 
         def response(_method, path):
@@ -55,6 +57,8 @@ class OrgRoutingTests(unittest.TestCase):
                 return {"workflow_runs": []}
             if "/jobs?" in path:
                 return {"jobs": [job]}
+            if path.endswith("/actions/runs/11"):
+                return run
             if "/pulls?" in path:
                 return [{"number": 7}]
             if path.endswith("/pulls/7"):
@@ -63,7 +67,8 @@ class OrgRoutingTests(unittest.TestCase):
 
         with mock.patch.object(client, "request", side_effect=response):
             self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"),
-                             [{"repo": REPO, "run_id": 11, "job_id": 22}])
+                             [{"repo": REPO, "run_id": 11, "job_id": 22,
+                               "workflow_ref": REF}])
         self.assertIn(f"/repos/{REPO}/pulls?state=open&head=Tuinstra-DEV%3Afeat%2Fverified-head&per_page=100", paths)
         self.assertIn(f"/repos/{REPO}/pulls/7", paths)
         self.assertFalse(any("/git/ref/" in path for path in paths))
@@ -77,7 +82,7 @@ class OrgRoutingTests(unittest.TestCase):
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
                  "runner_name": "sanctuary-22"}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         with mock.patch.object(client, "request", side_effect=[assigned, run,
                                [{"number": 7}], pr]) as request:
             client.verify_org_assignment(state, assignment)
@@ -88,7 +93,7 @@ class OrgRoutingTests(unittest.TestCase):
         run, pr, medium_job = self.empty_association_evidence()
         heavy_job = {**medium_job, "id": 23,
                      "labels": ["self-hosted", "trusted-heavy", "sanctuary-tracker"]}
-        client = manager.GitHubClient("org-token")
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
         paths = []
 
         def response(_method, path):
@@ -99,6 +104,8 @@ class OrgRoutingTests(unittest.TestCase):
                 return {"workflow_runs": []}
             if "/jobs?" in path:
                 return {"jobs": [medium_job, heavy_job]}
+            if path.endswith("/actions/runs/11"):
+                return run
             if "/pulls?" in path:
                 return [{"number": 7}]
             if path.endswith("/pulls/7"):
@@ -109,7 +116,8 @@ class OrgRoutingTests(unittest.TestCase):
             self.assertEqual(scope, "organization")
             expected = 23 if profile == "heavy" else 22
             self.assertEqual(adapter.candidate_jobs(REPO, f"trusted-{profile}"),
-                             [{"repo": REPO, "run_id": 11, "job_id": expected}])
+                             [{"repo": REPO, "run_id": 11, "job_id": expected,
+                               "workflow_ref": REF}])
             return False
 
         with mock.patch.object(client, "request", side_effect=response), \
@@ -121,6 +129,8 @@ class OrgRoutingTests(unittest.TestCase):
                 self.assertEqual(sum("status=queued" in path for path in paths), cycle)
                 self.assertEqual(sum("status=in_progress" in path for path in paths), cycle)
                 self.assertEqual(sum("/jobs?" in path for path in paths), cycle)
+                self.assertEqual(sum(path.endswith("/actions/runs/11") for path in paths),
+                                 2 * cycle)
                 # PR list and detail are security reads, so both profiles revalidate.
                 self.assertEqual(sum("/pulls?" in path for path in paths), 2 * cycle)
                 self.assertEqual(sum(path.endswith("/pulls/7") for path in paths),
@@ -131,7 +141,7 @@ class OrgRoutingTests(unittest.TestCase):
         repositories = {f"{ORG}/repo-{number}": number
                         for number in range(1, 13)}
         cfg = {**POLICY, "org_repository_ids": repositories}
-        client = manager.GitHubClient("org-token")
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
         paths = []
 
         def response(_method, path):
@@ -157,7 +167,7 @@ class OrgRoutingTests(unittest.TestCase):
 
     def test_cached_lists_do_not_cache_current_pr_at_assignment(self):
         run, pr, job = self.empty_association_evidence()
-        client = manager.GitHubClient("org-token")
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
         snapshot = manager.WorkflowListSnapshot()
         assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
                     "runner_group_id": 42,
@@ -192,14 +202,14 @@ class OrgRoutingTests(unittest.TestCase):
         with mock.patch.object(client, "request", side_effect=response):
             self.assertEqual(client.candidate_trusted_jobs(REPO, "medium",
                                                             snapshot=snapshot),
-                             [assignment])
+                             [{**assignment, "workflow_ref": REF}])
             with self.assertRaises(manager.RunnerError):
                 client.verify_org_assignment(state, assignment)
         self.assertEqual(detail_reads, 2)
 
     def test_empty_run_association_rejects_bad_or_ambiguous_current_pr(self):
         run, pr, job = self.empty_association_evidence()
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         for changed_run, returned_prs in (
                 ({}, []),
                 ({}, [pr, {**pr, "number": 8}]),
@@ -226,6 +236,8 @@ class OrgRoutingTests(unittest.TestCase):
                         return {"workflow_runs": []}
                     if "/jobs?" in path:
                         return {"jobs": [job]}
+                    if path.endswith("/actions/runs/11"):
+                        return {**run, **changed_run}
                     if "/pulls?" in path:
                         return returned_prs
                     if "/pulls/" in path:
@@ -255,7 +267,7 @@ class OrgRoutingTests(unittest.TestCase):
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
                  "runner_name": "sanctuary-22"}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         for returned in ([], [pr, {**pr, "number": 8}],
                          [{**pr, "head": {**pr["head"], "sha": "c" * 40}}]):
             detail = [returned[0]] if len(returned) == 1 else []
@@ -272,7 +284,7 @@ class OrgRoutingTests(unittest.TestCase):
     def test_nonempty_run_association_never_falls_back_to_branch_lookup(self):
         run, pr, job = self.empty_association_evidence()
         run["pull_requests"] = [{"number": 8}]
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         paths = []
 
         def response(_method, path):
@@ -283,6 +295,8 @@ class OrgRoutingTests(unittest.TestCase):
                 return {"workflow_runs": []}
             if "/jobs?" in path:
                 return {"jobs": [job]}
+            if path.endswith("/actions/runs/11"):
+                return run
             if path.endswith("/pulls/8"):
                 return {**pr, "number": 8, "head": {**pr["head"],
                                                     "sha": "c" * 40}}
@@ -320,6 +334,24 @@ class OrgRoutingTests(unittest.TestCase):
                 manager.validate_org_config({**POLICY,
                                              "org_repository_ids": {excluded: 123}})
 
+    def test_workflow_transition_accepts_only_one_or_two_distinct_exact_refs(self):
+        dual = {key: value for key, value in POLICY.items()
+                if key != "org_workflow_ref"}
+        dual["org_workflow_refs"] = [REF, NEW_REF]
+        manager.validate_org_config(POLICY)
+        manager.validate_org_config({**dual, "org_workflow_refs": [NEW_REF]})
+        manager.validate_org_config(dual)
+        self.assertEqual(manager.configured_org_workflow_refs(POLICY), (REF,))
+        self.assertEqual(manager.configured_org_workflow_refs(dual), (REF, NEW_REF))
+        for refs in ([], [REF, REF], [REF, NEW_REF, REF[:-40] + "c" * 40],
+                     [REF, REF + "extra"], [REF, REF[:-40] + "refs/heads/main"],
+                     [REF, "other/devops/.github/workflows/reusable-trusted-verification.yml@" + "c" * 40],
+                     [REF, REF[:-40] + "C" * 40], REF, [REF, 7]):
+            with self.subTest(refs=refs), self.assertRaises(manager.RunnerError):
+                manager.validate_org_config({**dual, "org_workflow_refs": refs})
+        with self.assertRaises(manager.RunnerError):
+            manager.validate_org_config({**POLICY, "org_workflow_refs": [REF, NEW_REF]})
+
     def test_org_repositories_are_independent_of_legacy_heavy_allowlist(self):
         org_repo = "Tuinstra-DEV/status"
         cfg = {**POLICY, "repositories": [REPO],
@@ -341,7 +373,7 @@ class OrgRoutingTests(unittest.TestCase):
                  "restricted_to_workflows": True, "selected_workflows": [REF]}
         repos = {"total_count": 1, "repositories": [
             {"id": 123, "full_name": REPO, "private": True}]}
-        client = manager.GitHubClient("org-token")
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
         with mock.patch.object(client, "request", side_effect=[group, repos]) as request:
             client.verify_org_group(POLICY)
         self.assertEqual(request.call_count, 2)
@@ -364,10 +396,125 @@ class OrgRoutingTests(unittest.TestCase):
                     self.assertRaises(manager.RunnerError):
                 client.verify_org_group(POLICY)
 
+    def test_transition_group_requires_exact_two_ref_set(self):
+        dual = {key: value for key, value in POLICY.items()
+                if key != "org_workflow_ref"}
+        dual["org_workflow_refs"] = [REF, NEW_REF]
+        group = {"id": 42, "name": "sanctuary-trusted-verification",
+                 "visibility": "selected", "default": False, "inherited": False,
+                 "allows_public_repositories": False,
+                 "restricted_to_workflows": True,
+                 "selected_workflows": [NEW_REF, REF]}
+        repos = {"total_count": 1, "repositories": [
+            {"id": 123, "full_name": REPO, "private": True}]}
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
+        with mock.patch.object(client, "request", side_effect=[group, repos]):
+            client.verify_org_group(dual)
+        for selected in ([REF], [NEW_REF], [REF, REF], [REF, NEW_REF, REF],
+                         [REF, NEW_REF + "extra"]):
+            with self.subTest(selected=selected), \
+                    mock.patch.object(client, "request", return_value={
+                        **group, "selected_workflows": selected}), \
+                    self.assertRaises(manager.RunnerError):
+                client.verify_org_group(dual)
+
+    def test_run_detail_requires_one_allowed_central_workflow_and_exact_sha(self):
+        run, pr, job = self.empty_association_evidence()
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF, NEW_REF))
+        for ref in (REF, NEW_REF):
+            with self.subTest(ref=ref):
+                detail = {**run, "referenced_workflows": [
+                    {"path": ref, "sha": ref[-40:]}]}
+                self.assertTrue(client._trusted_run(detail, REPO))
+                self.assertEqual(client._verified_workflow_ref(detail), ref)
+        single = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
+        self.assertTrue(single._trusted_run(run, REPO))
+        self.assertFalse(single._trusted_run({**run, "referenced_workflows": [
+            {"path": NEW_REF, "sha": NEW_REF[-40:]}]}, REPO))
+        for references in ([], [{"path": NEW_REF, "sha": REF[-40:]}],
+                           [{"path": REF[:-40] + "c" * 40, "sha": "c" * 40}],
+                           [{"path": REF, "sha": REF[-40:]},
+                            {"path": NEW_REF, "sha": NEW_REF[-40:]}],
+                           [{"path": REF[:-40] + "refs/heads/main",
+                             "sha": REF[-40:]}]):
+            with self.subTest(references=references):
+                self.assertFalse(client._trusted_run(
+                    {**run, "referenced_workflows": references}, REPO))
+        self.assertFalse(manager.GitHubClient("org-token")._trusted_run(run, REPO))
+
+        new_run = {**run, "referenced_workflows": [
+            {"path": NEW_REF, "sha": NEW_REF[-40:]}]}
+        def response(_method, path):
+            if "status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/jobs?" in path:
+                return {"jobs": [job]}
+            if path.endswith("/actions/runs/11"):
+                return new_run
+            if "/pulls?" in path:
+                return [{"number": 7}]
+            if path.endswith("/pulls/7"):
+                return pr
+            raise AssertionError(path)
+        with mock.patch.object(client, "request", side_effect=response):
+            self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"), [
+                {"repo": REPO, "run_id": 11, "job_id": 22,
+                 "workflow_ref": NEW_REF}])
+
+    def test_assignment_rechecks_persisted_workflow_reference(self):
+        run, pr, job = self.empty_association_evidence()
+        run["referenced_workflows"] = [{"path": NEW_REF, "sha": NEW_REF[-40:]}]
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42,
+                    "runner_group_name": "sanctuary-trusted-verification"}
+        state = {"repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22", "workflow_ref": NEW_REF}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF, NEW_REF))
+        with mock.patch.object(client, "request", side_effect=[assigned, run,
+                               [{"number": 7}], pr]):
+            client.verify_org_assignment(state, assignment)
+        with mock.patch.object(client, "request", side_effect=[assigned, run]), \
+                self.assertRaisesRegex(manager.RunnerError, "workflow changed"):
+            client.verify_org_assignment({**state, "workflow_ref": REF}, assignment)
+
+    def test_new_org_lease_binds_ref_and_rejects_missing_candidate_ref_before_jit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {**POLICY, "state_dir": str(Path(temporary) / "state"),
+                   "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
+            client = mock.Mock()
+            candidate = {"repo": REPO, "run_id": 11, "job_id": 22,
+                         "workflow_ref": REF}
+            client.candidate_jobs.return_value = [candidate]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": "e30=",
+                "runner": {"id": 30, "name": "sanctuary-22"},
+            }
+            with mock.patch.object(manager, "pre_jit_capacity_errors", return_value=[]), \
+                    mock.patch.object(manager, "launch") as launch:
+                self.assertTrue(manager.dispatch_once(cfg, client, profile="medium",
+                                                      scope="organization"))
+            self.assertEqual(launch.call_args.kwargs["metadata"]["workflow_ref"], REF)
+            client.generate_jit.assert_called_once()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {**POLICY, "state_dir": str(Path(temporary) / "state"),
+                   "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [{"repo": REPO, "run_id": 11,
+                                                   "job_id": 22}]
+            with self.assertRaisesRegex(manager.RunnerError, "candidate workflow"):
+                manager.dispatch_once(cfg, client, profile="medium",
+                                      scope="organization")
+            client.generate_jit.assert_not_called()
+
     def test_trusted_job_requires_human_same_repo_pr_and_fixed_labels(self):
         run, pr, job = self.empty_association_evidence()
         run["pull_requests"] = [{"number": 7}]
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         def candidates(candidate_run=run, candidate_job=job, candidate_pr=pr):
             def response(_method, path):
                 if "status=queued" in path:
@@ -376,12 +523,15 @@ class OrgRoutingTests(unittest.TestCase):
                     return {"workflow_runs": []}
                 if "/jobs?" in path:
                     return {"jobs": [candidate_job]}
+                if path.endswith("/actions/runs/11"):
+                    return candidate_run
                 if "/pulls/" in path:
                     return candidate_pr
                 raise AssertionError(path)
             with mock.patch.object(client, "request", side_effect=response):
                 return client.candidate_trusted_jobs(REPO, "medium")
-        self.assertEqual(candidates(), [{"repo": REPO, "run_id": 11, "job_id": 22}])
+        self.assertEqual(candidates(), [{"repo": REPO, "run_id": 11,
+                                         "job_id": 22, "workflow_ref": REF}])
         for changed_run, changed_pr in (
                 ({"event": "pull_request_target"}, {}),
                 ({"actor": {"login": "dependabot[bot]", "type": "Bot"}}, {}),
@@ -403,7 +553,7 @@ class OrgRoutingTests(unittest.TestCase):
                                     ["sanctuary-other"]}), [])
 
     def test_org_registration_and_cleanup_use_org_endpoints_only(self):
-        client = manager.GitHubClient("org-token")
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF,))
         with mock.patch.object(client, "request", side_effect=[
                 {"runner": {"id": 30}}, {"id": 30, "status": "online", "busy": False},
                 None]) as request:
@@ -441,7 +591,7 @@ class OrgRoutingTests(unittest.TestCase):
             client.candidate_jobs.assert_called_once_with(REPO, "trusted-medium")
 
     def test_org_actual_assignment_requires_same_group_profile_repo_and_pr(self):
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         state = {"repo": REPO, "scope": "organization", "org": ORG,
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
                  "runner_name": "sanctuary-22"}
@@ -522,7 +672,8 @@ class OrgRoutingTests(unittest.TestCase):
                    "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
             org_client = mock.Mock()
             org_client.candidate_trusted_jobs.return_value = [
-                {"repo": REPO, "run_id": 11, "job_id": 22}]
+                {"repo": REPO, "run_id": 11, "job_id": 22,
+                 "workflow_ref": REF}]
             org_client.verify_org_group.side_effect = manager.RunnerError("group unavailable")
             adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
                                                          org_client, "medium")
@@ -543,7 +694,8 @@ class OrgRoutingTests(unittest.TestCase):
                    "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
             org_client = mock.Mock()
             org_client.candidate_trusted_jobs.return_value = [
-                {"repo": REPO, "run_id": 11, "job_id": 22}]
+                {"repo": REPO, "run_id": 11, "job_id": 22,
+                 "workflow_ref": REF}]
             org_client.generate_org_jit.side_effect = manager.RunnerError("POST ambiguous")
             adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
                                                          org_client, "medium")
@@ -559,7 +711,7 @@ class OrgRoutingTests(unittest.TestCase):
             org_client.verify_org_group.assert_called_once_with(cfg)
 
     def test_legacy_candidate_does_not_claim_org_labeled_job(self):
-        client = manager.GitHubClient("repo-token")
+        client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         with mock.patch.object(client, "request", side_effect=[
                 {"workflow_runs": [{"id": 11}]},
                 {"jobs": [{"id": 22, "status": "queued",

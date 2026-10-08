@@ -28,7 +28,10 @@ docker compose version
 node --version | grep -Eq '^v24\.'
 php8.3 --version | grep -Eq '^PHP 8\.3\.'
 php8.4 --version | grep -Eq '^PHP 8\.4\.'
-composer --version
+# Fail the image build before a no-new-privileges job discovers a missing module.
+php8.3 -r 'foreach (["ctype", "iconv", "openssl", "Zend OPcache", "zip"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); } }'
+php8.4 -r 'foreach (["ctype", "fileinfo", "iconv", "intl", "mbstring", "openssl", "pdo_pgsql", "zip", "dom", "SimpleXML", "xml", "xmlwriter", "tokenizer"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.4 missing $ext\n"); exit(1); } }'
+composer --version | grep -Eq '^Composer version 2\.'
 playwright --version
 chromium --version
 trivy --version
