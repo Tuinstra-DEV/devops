@@ -195,6 +195,20 @@ def org_routing_enabled(cfg: dict[str, Any]) -> bool:
     return value
 
 
+def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
+    single = "org_workflow_ref" in cfg
+    multiple = "org_workflow_refs" in cfg
+    if single == multiple:
+        raise RunnerError("organization workflow requires exactly one reference policy")
+    refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 2 or \
+            any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
+                re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
+                for ref in refs) or len(set(refs)) != len(refs):
+        raise RunnerError("organization workflows must be distinct exact commit references")
+    return tuple(refs)
+
+
 def validate_org_config(cfg: dict[str, Any]) -> None:
     if not org_routing_enabled(cfg):
         return
@@ -206,10 +220,7 @@ def validate_org_config(cfg: dict[str, Any]) -> None:
     group_id = cfg.get("org_runner_group_id")
     if not isinstance(group_id, int) or isinstance(group_id, bool) or group_id < 1:
         raise RunnerError("organization runner group ID is invalid")
-    workflow = cfg.get("org_workflow_ref")
-    if not isinstance(workflow, str) or not workflow.startswith(ORG_WORKFLOW_PREFIX) or \
-            not re.fullmatch(r"[a-f0-9]{40}", workflow[len(ORG_WORKFLOW_PREFIX):]):
-        raise RunnerError("organization workflow must be pinned to a full commit SHA")
+    configured_org_workflow_refs(cfg)
     repo_ids = cfg.get("org_repository_ids")
     if not isinstance(repo_ids, dict) or not repo_ids or \
             any(not isinstance(repo, str) or not re.fullmatch(
@@ -591,7 +602,8 @@ class DispatchHistory:
 
 
 class GitHubClient:
-    def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
+    def __init__(self, token: str, api_url: str = "https://api.github.com", *,
+                 org_workflow_refs: tuple[str, ...] = ()) -> None:
         if not token or "\n" in token:
             raise RunnerError("invalid GitHub credential")
         parsed_api_url = urllib.parse.urlsplit(api_url.rstrip("/"))
@@ -611,6 +623,7 @@ class GitHubClient:
             raise RunnerError("invalid GitHub API URL")
         self._token = token
         self._api_url = api_url.rstrip("/")
+        self._org_workflow_refs = org_workflow_refs
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -864,7 +877,7 @@ class GitHubClient:
         candidates: list[dict[str, Any]] = []
         for status in ("queued", "in_progress"):
             for run in listings.workflow_runs(self, repo, status):
-                if not self._trusted_run(run, repo):
+                if not self._trusted_run(run, repo, require_workflow=False):
                     continue
                 run_id = run["id"]
                 matching = [job for job in listings.workflow_jobs(self, repo, run_id)
@@ -875,9 +888,16 @@ class GitHubClient:
                             and organization_labels_match(job.get("labels"), repo, profile)]
                 if not matching:
                     continue
-                if self._resolve_trusted_pull_request(run, repo) is None:
+                detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run_id}")
+                if not self._trusted_run(detail, repo) or \
+                        detail["id"] != run_id or \
+                        detail["head_sha"] != run["head_sha"] or \
+                        detail["head_branch"] != run["head_branch"] or \
+                        self._resolve_trusted_pull_request(detail, repo) is None:
                     continue
-                candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"]}
+                workflow_ref = self._verified_workflow_ref(detail)
+                candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"],
+                                   "workflow_ref": workflow_ref}
                                   for job in matching)
         return candidates
 
@@ -886,8 +906,8 @@ class GitHubClient:
         return isinstance(value, dict) and value.get("type") == "User" and \
             value.get("login") == ORG_ACTOR
 
-    @classmethod
-    def _trusted_run(cls, run: Any, repo: str) -> bool:
+    def _trusted_run(self, run: Any, repo: str, *,
+                     require_workflow: bool = True) -> bool:
         if not isinstance(run, dict):
             return False
         branch = run.get("head_branch")
@@ -902,11 +922,13 @@ class GitHubClient:
                              isinstance(associations[0]["number"], bool) or
                              associations[0]["number"] < 1):
             return False
+        if require_workflow and not self._trusted_workflow_references(run):
+            return False
         return isinstance(run.get("id"), int) and \
             not isinstance(run["id"], bool) and run.get("event") == "pull_request" and \
             bool(re.fullmatch(r"[a-f0-9]{40}", str(run.get("head_sha", "")))) and \
-            cls._trusted_user(run.get("actor")) and \
-            cls._trusted_user(run.get("triggering_actor")) and \
+            self._trusted_user(run.get("actor")) and \
+            self._trusted_user(run.get("triggering_actor")) and \
             isinstance(run.get("repository"), dict) and \
             run["repository"].get("full_name") == repo and \
             run["repository"].get("private") is True and \
@@ -914,6 +936,24 @@ class GitHubClient:
             run["head_repository"].get("full_name") == repo and \
             run["head_repository"].get("private") is True and \
             run["head_repository"].get("fork") is False
+
+    def _trusted_workflow_references(self, run: dict[str, Any]) -> bool:
+        return self._verified_workflow_ref(run) is not None
+
+    def _verified_workflow_ref(self, run: dict[str, Any]) -> str | None:
+        refs = run.get("referenced_workflows")
+        if not self._org_workflow_refs or not isinstance(refs, list):
+            return None
+        central = [item for item in refs if isinstance(item, dict) and
+                   isinstance(item.get("path"), str) and
+                   item["path"].startswith(ORG_WORKFLOW_PREFIX)]
+        if len(central) != 1:
+            return None
+        item = central[0]
+        if item["path"] not in self._org_workflow_refs or \
+                item.get("sha") != item["path"][len(ORG_WORKFLOW_PREFIX):]:
+            return None
+        return item["path"]
 
     @classmethod
     def _trusted_pull_request(cls, pr: Any, repo: str, head_sha: str,
@@ -990,7 +1030,10 @@ class GitHubClient:
                 group.get("inherited") is not False or \
                 group.get("allows_public_repositories") is not False or \
                 group.get("restricted_to_workflows") is not True or \
-                group.get("selected_workflows") != [cfg["org_workflow_ref"]]:
+                not isinstance(group.get("selected_workflows"), list) or \
+                not all(isinstance(ref, str) for ref in group["selected_workflows"]) or \
+                len(group["selected_workflows"]) != len(configured_org_workflow_refs(cfg)) or \
+                set(group["selected_workflows"]) != set(configured_org_workflow_refs(cfg)):
             raise RunnerError("organization runner group policy is not verified")
         selected = self.request("GET", base + "/repositories?per_page=100&page=1")
         expected = cfg["org_repository_ids"]
@@ -1120,6 +1163,9 @@ class GitHubClient:
         run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
         if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
             raise RunnerError("organization runner assignment is not a trusted PR run")
+        if "workflow_ref" in state and \
+                state["workflow_ref"] != self._verified_workflow_ref(run):
+            raise RunnerError("organization runner assignment workflow changed")
         if self._resolve_trusted_pull_request(run, repo) is None:
             raise RunnerError("organization runner assignment is not a trusted PR")
 
@@ -1755,6 +1801,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
         for job in client.candidate_jobs(repo, label):
             if launched >= available_slots:
                 break
+            if scope == "organization" and \
+                    job.get("workflow_ref") not in configured_org_workflow_refs(cfg):
+                raise RunnerError("organization candidate workflow reference is invalid")
             key = f"{repo}:{job['job_id']}"
             with with_lock(lifecycle_lock):
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
@@ -1805,7 +1854,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
             }
             if scope == "organization":
                 registration.update({"scope": scope, "org": ORG_NAME,
-                                     "runner_group_id": cfg["org_runner_group_id"]})
+                                     "runner_group_id": cfg["org_runner_group_id"],
+                                     "workflow_ref": job["workflow_ref"]})
             registration["runner_name"] = runner_name
             if not isinstance(encoded, str) or not isinstance(runner_id, int) \
                     or runner_name_conflicts:
@@ -1988,8 +2038,10 @@ def organization_client(cfg: dict[str, Any]) -> GitHubClient | None:
     credential = Path(path)
     if not org_routing_enabled(cfg) and not credential.is_file():
         return None
-    return GitHubClient(read_token(credential),
-                        str(cfg.get("github_api_url", "https://api.github.com")))
+    return GitHubClient(
+        read_token(credential), str(cfg.get("github_api_url", "https://api.github.com")),
+        org_workflow_refs=configured_org_workflow_refs(cfg) if org_routing_enabled(cfg) else (),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

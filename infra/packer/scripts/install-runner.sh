@@ -98,7 +98,8 @@ sudo apt-get install --yes --no-install-recommends \
   "php8.3-cli=${PHP83_VERSION}" "php8.3-curl=${PHP83_VERSION}" \
   "php8.3-mbstring=${PHP83_VERSION}" "php8.3-xml=${PHP83_VERSION}" "php8.3-zip=${PHP83_VERSION}" \
   "php8.4-cli=${PHP84_VERSION}" "php8.4-curl=${PHP84_VERSION}" \
-  "php8.4-mbstring=${PHP84_VERSION}" "php8.4-xml=${PHP84_VERSION}" "php8.4-zip=${PHP84_VERSION}"
+  "php8.4-mbstring=${PHP84_VERSION}" "php8.4-xml=${PHP84_VERSION}" "php8.4-zip=${PHP84_VERSION}" \
+  "php8.4-intl=${PHP84_VERSION}" "php8.4-pgsql=${PHP84_VERSION}"
 
 sudo corepack enable
 sudo npm install --global --ignore-scripts "playwright@${PLAYWRIGHT_VERSION}"
