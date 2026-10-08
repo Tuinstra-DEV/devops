@@ -24,7 +24,7 @@
     "gitleaks.toml": "sha256:27630a96d6c55755cc37620f3933d5cab94b1eb78a726a32e11212972525d76e",
     "osv/osv-scanner/Packagist/all.zip": "sha256:80040a4b371e876eed43bb736e235d08e3783aa95fc2e48387e7f2f5440a0d30",
     "osv/osv-scanner/npm/all.zip": "sha256:f28ab42d60c2cd13dc4196aebaa28bc4364a6a63e056c9994173b4b009426e1b",
-    "policy.json": "sha256:1fc6f66fa2e39f58c4cedd290275e5d0715b2858a541477a5fd5abc882997f2f",
+    "policy.json": "sha256:4cb64334618d558d08da5cd4ef3fe33ab7055b6f430013e20f7508d642d75bff",
     "semgrep-rules.yml": "sha256:e7d97c1018aa7c6d7846427d1e3719423586c59e796fd5a7e210e5c802870323",
     "semgrep-severity-map.json": "sha256:5d4a154077b2bb0bf0efc5d8f28bff23f8c11fb626754de92034a9190f37494a"
   },
