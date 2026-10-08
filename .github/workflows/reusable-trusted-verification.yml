@@ -469,11 +469,7 @@ jobs:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REPOSITORY" == 'Tuinstra-DEV/tracker' && "$RUNNER_ENVIRONMENT" == 'self-hosted' ]]; then
-            cache_path="$RUNNER_TEMP/composer-cache"
-          else
-            cache_path="$(composer config cache-files-dir)"
-          fi
+          cache_path="$RUNNER_TEMP/composer-cache"
           mkdir -p "$cache_path"
           echo "path=$cache_path" >> "$GITHUB_OUTPUT"
           echo "COMPOSER_CACHE_DIR=$cache_path" >> "$GITHUB_ENV"
@@ -714,11 +710,7 @@ jobs:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REPOSITORY" == 'Tuinstra-DEV/tracker' && "$RUNNER_ENVIRONMENT" == 'self-hosted' ]]; then
-            cache_path="$RUNNER_TEMP/composer-cache"
-          else
-            cache_path="$(composer config cache-files-dir)"
-          fi
+          cache_path="$RUNNER_TEMP/composer-cache"
           mkdir -p "$cache_path"
           echo "path=$cache_path" >> "$GITHUB_OUTPUT"
           echo "COMPOSER_CACHE_DIR=$cache_path" >> "$GITHUB_ENV"
