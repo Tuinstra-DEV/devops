@@ -259,7 +259,11 @@ class OrgRoutingTests(unittest.TestCase):
             org_client.verify_org_group.side_effect = manager.RunnerError("group unavailable")
             adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
                                                          org_client, "medium")
-            with self.assertRaisesRegex(manager.OrgPreflightRejected, "group preflight failed"):
+            def healthy_helper(_cfg, operation, **_kwargs):
+                return mock.Mock(stdout=b"{}" if operation == "list" else b"[]")
+            with mock.patch.object(manager, "helper", side_effect=healthy_helper), \
+                    mock.patch.object(manager, "capacity_errors", return_value=[]), \
+                    self.assertRaisesRegex(manager.OrgPreflightRejected, "group preflight failed"):
                 manager.dispatch_once(cfg, adapter, profile="medium",
                                       scope="organization")
             self.assertFalse(manager.DispatchHistory(Path(cfg["state_dir"])).contains(
@@ -276,7 +280,11 @@ class OrgRoutingTests(unittest.TestCase):
             org_client.generate_org_jit.side_effect = manager.RunnerError("POST ambiguous")
             adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
                                                          org_client, "medium")
-            with self.assertRaisesRegex(manager.RunnerError, "POST ambiguous"):
+            def healthy_helper(_cfg, operation, **_kwargs):
+                return mock.Mock(stdout=b"{}" if operation == "list" else b"[]")
+            with mock.patch.object(manager, "helper", side_effect=healthy_helper), \
+                    mock.patch.object(manager, "capacity_errors", return_value=[]), \
+                    self.assertRaisesRegex(manager.RunnerError, "POST ambiguous"):
                 manager.dispatch_once(cfg, adapter, profile="medium",
                                       scope="organization")
             self.assertTrue(manager.DispatchHistory(Path(cfg["state_dir"])).contains(
