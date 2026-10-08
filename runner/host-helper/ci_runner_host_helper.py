@@ -555,6 +555,7 @@ ethernets:
     match:
       name: "en*"
     dhcp4: true
+    dhcp-identifier: mac
     dhcp6: false
 """
 

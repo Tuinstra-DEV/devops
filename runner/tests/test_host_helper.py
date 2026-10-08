@@ -545,6 +545,7 @@ class HostHelperTests(unittest.TestCase):
 
         self.assertIn('name: "en*"', network_config)
         self.assertIn("dhcp4: true", network_config)
+        self.assertIn("dhcp-identifier: mac", network_config)
         self.assertIn("dhcp6: false", network_config)
         self.assertNotIn("ens3", network_config)
 
