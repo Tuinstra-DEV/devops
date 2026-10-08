@@ -29,6 +29,14 @@ def preflight_script():
     return textwrap.dedent(match.group("script"))
 
 
+def contract_script():
+    source = WORKFLOW.read_text()
+    match = re.search(r"^          python3 - <<'CONTRACT'\n(?P<script>.*?)^          CONTRACT$", source, re.M | re.S)
+    if not match:
+        raise AssertionError("fixed consumer contract missing")
+    return textwrap.dedent(match.group("script"))
+
+
 def consumer_verdict(call_result, preflight_trusted, trusted_proof, hosted_proof):
     """Required alias predicate; no skipped call or ambiguous proof may pass."""
     return call_result == "success" and (
@@ -64,6 +72,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         }
         self.run = {
             "id": 123, "event": "pull_request", "head_sha": SHA,
+            "head_branch": "feat/DEV-50-job-routing",
             "actor": {"login": "marcel-tuinstra", "type": "User"},
             "triggering_actor": {"login": "marcel-tuinstra", "type": "User"},
             "repository": repo, "head_repository": repo,
@@ -80,6 +89,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             "base": {"sha": BASE, "repo": repo},
         }
         self.ref = {"ref": "refs/heads/feat/DEV-50-job-routing", "object": {"type": "commit", "sha": SHA}}
+        self.open_prs = [{"number": 17}]
         self.merge = {"sha": MERGE, "parents": [{"sha": BASE}, {"sha": SHA}]}
         self.env = {
             "GITHUB_EVENT_PATH": str(self.event_path), "GITHUB_OUTPUT": str(self.output_path),
@@ -105,6 +115,9 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                 raise OSError("private API failure with a secret that must not escape")
             if "/actions/runs/123" in request.full_url:
                 value = self.run
+            elif "/pulls?state=open&head=" in request.full_url:
+                self.assertIn("Tuinstra-DEV%3Afeat%2FDEV-50-job-routing&per_page=100", request.full_url)
+                value = self.open_prs
             elif "/pulls/17" in request.full_url:
                 value = self.pr
             elif "/git/ref/heads/" in request.full_url:
@@ -121,6 +134,99 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         outputs = dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
         return outputs, requests
 
+    def execute_contract(self, repo, key, profile, plan=""):
+        self.output_path.write_text("")
+        env = {"GITHUB_REPOSITORY": repo, "JOB_KEY": key, "PROFILE": profile,
+               "PLAN_JSON": plan, "GITHUB_OUTPUT": str(self.output_path)}
+        with patch.dict(os.environ, env, clear=True):
+            exec(compile(contract_script(), str(WORKFLOW), "exec"), {"__name__": "__main__"})
+        return dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
+
+    def test_fixed_consumer_contract_maps_exact_repository_key_and_toolchain(self):
+        wodiq_plan = {"version": 2, **{key: False for key in ("core", "migration", "api", "management", "worker", "client")},
+                      "builds": {key: False for key in ("api", "management", "worker")},
+                      "proofs": {key: False for key in ("all", "activity", "coach", "managementAuth", "garmin")}}
+        cases = [
+            (REPO, "wodiq-runtime-build", "medium", json.dumps(wodiq_plan), ("24", "", "")),
+            (REPO, "wodiq-api", "heavy", json.dumps(wodiq_plan), ("24", "", "")),
+            ("Tuinstra-DEV/gate", "gate-php", "medium", '{"backendSuites":"Unit,Integration"}', ("", "", "8.3")),
+            ("Tuinstra-DEV/gate", "gate-frontend-static", "heavy", '{"frontendTests":"all","frontendBuild":true}', ("24", "10.28.2", "")),
+            ("Tuinstra-DEV/tracker", "tracker-backend-postgres", "heavy", "", ("", "", "8.4")),
+            ("Tuinstra-DEV/tracker", "tracker-frontend-static", "medium", "", ("24.18.0", "11.1.1", "")),
+            ("Tuinstra-DEV/tracker", "tracker-container-api", "heavy", "", ("24.18.0", "", "")),
+            ("Tuinstra-DEV/notify", "notify-quality", "heavy", "", ("", "", "")),
+            ("Tuinstra-DEV/console", "console-php-lint", "medium", "", ("", "", "8.4")),
+            ("Tuinstra-DEV/console", "console-php-postgres", "heavy", "", ("", "", "8.4")),
+            ("Tuinstra-DEV/marcel-site", "site-node", "medium", "", ("24", "", "")),
+            ("Tuinstra-DEV/tuinstra-site", "site-node", "medium", "", ("24", "", "")),
+            ("Tuinstra-DEV/wodiq-site", "site-node", "medium", "", ("24", "", "")),
+            ("Tuinstra-DEV/openairco-site", "site-node", "medium", "", ("24", "", "")),
+            ("Tuinstra-DEV/wodiq-app", "wodiq-app-checks", "heavy", "", ("24", "", "")),
+            ("Tuinstra-DEV/status", "status-quality", "heavy", "", ("", "", "")),
+            ("Tuinstra-DEV/openairco", "openairco-flutter", "heavy", "", ("", "", "")),
+        ]
+        for repo, key, profile, plan, expected in cases:
+            with self.subTest(repo=repo, key=key):
+                output = self.execute_contract(repo, key, profile, plan)
+                self.assertEqual(tuple(output[name] for name in ("node-version", "pnpm-version", "php-version")), expected)
+                expected_plan = (json.dumps(json.loads(plan), separators=(",", ":")) if plan else
+                                 '{"frontend-web":true,"frontend-unit":true,"frontend-component":true,"frontend-site":true}'
+                                 if key == "tracker-frontend-static" else "")
+                self.assertEqual(output["plan-json"], expected_plan)
+                self.assertEqual(output["runtime-download"], "false")
+                self.assertEqual(output["gate-frontend-output"], "true" if key == "gate-frontend-static" else "false")
+
+        wodiq_plan["builds"]["api"] = True
+        output = self.execute_contract(REPO, "wodiq-api", "heavy", json.dumps(wodiq_plan))
+        self.assertEqual(output["runtime-download"], "true")
+        gate_no_build = self.execute_contract("Tuinstra-DEV/gate", "gate-frontend-static", "heavy",
+                                              '{"frontendTests":"unit","frontendBuild":false}')
+        self.assertEqual(gate_no_build["gate-frontend-output"], "false")
+
+    def test_tracker_frontend_plan_preserves_selected_suites_and_full_fallback(self):
+        repo, key, profile = "Tuinstra-DEV/tracker", "tracker-frontend-static", "medium"
+        selected = '{"frontend-web":true,"frontend-unit":false,"frontend-component":false,"frontend-site":true}'
+        output = self.execute_contract(repo, key, profile, selected)
+        self.assertEqual(json.loads(output["plan-json"]), json.loads(selected))
+        full = self.execute_contract(repo, key, profile)
+        self.assertEqual(json.loads(full["plan-json"]), {
+            "frontend-web": True, "frontend-unit": True, "frontend-component": True, "frontend-site": True,
+        })
+        for bad in (
+            '{"frontend-web":false,"frontend-unit":false,"frontend-component":false,"frontend-site":false}',
+            '{"frontend-web":false,"frontend-unit":true,"frontend-component":false,"frontend-site":true}',
+            '{"frontend-web":false,"frontend-unit":false,"frontend-component":true,"frontend-site":true}',
+            '{"frontend-web":"true","frontend-unit":false,"frontend-component":false,"frontend-site":true}',
+            '{"frontend-web":true,"frontend-unit":false,"frontend-component":false,"frontend-site":true,"command":"id"}',
+        ):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                self.execute_contract(repo, key, profile, bad)
+
+    def test_fixed_consumer_contract_rejects_unknown_pair_profile_and_plan(self):
+        cases = [
+            (REPO, "wodiq-api", "medium", "{}"),
+            (REPO, "wodiq-api", "heavy", '{"command":"id"}'),
+            ("Tuinstra-DEV/gate", "gate-frontend-static", "medium", '{"frontendTests":"all","frontendBuild":true}'),
+            ("Tuinstra-DEV/gate", "gate-php", "medium", '{"backendSuites":"Functional,Unit"}'),
+            ("Tuinstra-DEV/gate", "gate-php", "medium", '{"backendSuites":[]}'),
+            ("Tuinstra-DEV/gate", "gate-frontend-static", "medium", '{"frontendTests":"all","frontendBuild":"true"}'),
+            ("Tuinstra-DEV/gate", "gate-frontend-static", "medium", '{"frontendTests":[],"frontendBuild":true}'),
+            ("Tuinstra-DEV/tracker", "tracker-frontend-static", "medium", '{"path":"/tmp"}'),
+            ("Tuinstra-DEV/notify", "notify-quality", "heavy", '{"service":"postgres"}'),
+            ("Tuinstra-DEV/console", "console-php-lint", "heavy", ""),
+            ("Tuinstra-DEV/marcel-site", "site-docker", "heavy", ""),
+            ("Tuinstra-DEV/wodiq-app", "wodiq-app-checks", "medium", ""),
+            ("Tuinstra-DEV/status", "status-quality", "medium", ""),
+            ("Tuinstra-DEV/openairco", "openairco-flutter", "medium", ""),
+            ("Tuinstra-DEV/status", "status-quality", "heavy", '{"command":"id"}'),
+            ("Tuinstra-DEV/openairco", "openairco-flutter", "heavy", '{"path":"/tmp"}'),
+            ("Tuinstra-DEV/unknown", "wodiq-api", "heavy", ""),
+        ]
+        for repo, key, profile, plan in cases:
+            with self.subTest(repo=repo, key=key, plan=plan):
+                with self.assertRaises(SystemExit):
+                    self.execute_contract(repo, key, profile, plan)
+
     def test_trusted_medium_and_heavy_route_to_fixed_labels(self):
         for profile in ("medium", "heavy"):
             with self.subTest(profile=profile):
@@ -133,6 +239,42 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                                  ["self-hosted", f"trusted-{profile}", "sanctuary-wodiq-platform"])
                 self.assertEqual(len(requests), 4)
 
+    def test_empty_run_pr_associations_still_verify_exact_current_pr(self):
+        self.run["pull_requests"] = []
+        outputs, requests = self.execute()
+        self.assertEqual(outputs["trusted"], "true")
+        self.assertEqual(outputs["source-sha"], MERGE)
+        self.assertEqual(len(requests), 5)
+
+    def test_empty_run_association_requires_unique_current_branch_pr(self):
+        self.run["pull_requests"] = []
+        for candidates in ([], [{"number": 17}, {"number": 18}], [{"number": 18}],
+                           [{"number": True}], [{"number": "17"}]):
+            with self.subTest(candidates=candidates):
+                self.open_prs = candidates
+                outputs, _ = self.execute()
+                self.assertEqual(outputs["trusted"], "false")
+                self.assertEqual(outputs["reason"], "run-pr-ambiguous")
+
+    def test_unsupported_branch_or_multiple_run_associations_reject_trusted_route(self):
+        self.run["pull_requests"].append({"number": 18})
+        outputs, _ = self.execute()
+        self.assertEqual(outputs["reason"], "run-pr-mismatch")
+        self.run["pull_requests"] = []
+        for branch in ("a+b", "a@b", "a//b", "a/", ".hidden", "a..b", "a" * 256):
+            with self.subTest(branch=branch):
+                self.event["pull_request"]["head"]["ref"] = branch
+                self.run["head_branch"] = branch
+                outputs, _ = self.execute()
+                self.assertEqual(outputs["trusted"], "false")
+                self.assertEqual(outputs["reason"], "event-ref-invalid")
+
+    def test_nonempty_wrong_run_pr_association_remains_untrusted(self):
+        self.run["pull_requests"] = [{"number": 999, "head": {"sha": SHA}, "base": {"sha": BASE}}]
+        outputs, _ = self.execute()
+        self.assertEqual(outputs["trusted"], "false")
+        self.assertEqual(outputs["reason"], "run-pr-mismatch")
+
     def test_untrusted_contexts_use_hosted_fallback(self):
         cases = {
             "fork": lambda: self.event["pull_request"]["head"]["repo"].update(full_name="elsewhere/devops", fork=True),
@@ -143,6 +285,8 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             "unknown_repo": lambda: self.env.update(GITHUB_REPOSITORY="Tuinstra-DEV/unknown"),
             "stale_head": lambda: self.ref["object"].update(sha="d" * 40),
             "run_mismatch": lambda: self.run.update(head_sha="d" * 40),
+            "run_head_branch_mismatch": lambda: self.run.update(head_branch="other/head"),
+            "run_head_branch_missing": lambda: self.run.pop("head_branch"),
             "run_pr_mismatch": lambda: self.run["pull_requests"][0].update(number=18),
             "current_pr_author_mismatch": lambda: self.pr["user"].update(login="other"),
             "current_pr_fork": lambda: self.pr["head"]["repo"].update(full_name="elsewhere/devops", fork=True),
@@ -199,6 +343,15 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.assertIn("contents: read", source)
         self.assertIn("actions: read", source)
         self.assertIn("pull-requests: read", source)
+        preflight = source.split("  preflight:", 1)[1].split("  trusted-verification:", 1)[0]
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        self.assertIn("actions: read", preflight)
+        self.assertIn("pull-requests: read", preflight)
+        for route in (trusted, hosted):
+            self.assertIn("permissions:\n      contents: read", route)
+            self.assertNotIn("actions: read", route)
+            self.assertNotIn("pull-requests: read", route)
         self.assertNotIn("job.workflow_ref", source)
         self.assertNotIn("job.workflow_sha", source)
         self.assertNotIn('"Tuinstra-DEV/devops": "sanctuary-devops"', source)
@@ -245,6 +398,80 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.assertNotIn("  finalize:", source)
         self.assertEqual(source.count("timeout-minutes: 5"), 1)
         self.assertEqual(source.count("timeout-minutes: 60"), 2)
+
+    def test_artifact_handoff_is_same_run_and_precedes_proof_on_both_routes(self):
+        source = WORKFLOW.read_text()
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            self.assertLess(route.index("Download exact current-run WODIQ runtime artifact"),
+                            route.index("bash .github/ci/sanctuary-ci --strict"))
+            self.assertLess(route.index("bash .github/ci/sanctuary-ci --strict"),
+                            route.index("Upload exact current-run WODIQ runtime artifact"))
+            self.assertLess(route.index("Upload exact current-run Gate frontend output"),
+                            route.index("run: echo 'verified=true'"))
+            self.assertIn("ci-runtime-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", route)
+            self.assertIn("gate-frontend-output-${{ github.run_id }}-${{ github.run_attempt }}", route)
+            self.assertIn("if-no-files-found: error", route)
+            self.assertIn("include-hidden-files: true", route)
+
+    def test_download_caches_use_fixed_lockfile_identities_on_both_routes(self):
+        source = WORKFLOW.read_text()
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            self.assertIn("cache: npm\n          cache-dependency-path: package-lock.json", route)
+            self.assertIn("cache: pnpm\n          cache-dependency-path: frontend/pnpm-lock.yaml", route)
+            self.assertIn("code/web/pnpm-lock.yaml\n            code/site/pnpm-lock.yaml", route)
+            self.assertIn("gate-${{ runner.os }}-${{ runner.arch }}-php83-composer-${{ hashFiles('backend/composer.lock') }}", route)
+            self.assertIn("tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}", route)
+            self.assertIn("console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}", route)
+            self.assertIn("echo \"COMPOSER_CACHE_DIR=$cache_path\" >> \"$GITHUB_ENV\"", route)
+            self.assertEqual(route.count("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"), 4)
+            self.assertIn("~/.gradle/caches/modules-2", route)
+            self.assertIn("~/.gradle/wrapper/dists", route)
+            self.assertIn("flutter/pubspec.lock', 'flutter/android/gradle.properties'", route)
+            self.assertNotIn("restore-keys:", route)
+            self.assertNotIn("node_modules", route)
+            self.assertNotIn("vendor/", route)
+
+    def test_fixed_docker_layer_cache_is_local_bounded_and_after_verification(self):
+        source = WORKFLOW.read_text()
+        self.assertNotIn("ghaction-github-runtime", source)
+        self.assertNotIn("type=gha", source)
+        self.assertNotIn("ACTIONS_RUNTIME_TOKEN", source)
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            self.assertIn("CI_BUILDKIT_CACHE_ROOT=$RUNNER_TEMP/ci-buildkit-cache", route)
+            self.assertIn("hashFiles('**/composer.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/Dockerfile', '**/Dockerfile.*')", route)
+            self.assertIn("pr-ci-v1-${repo_slug}-${JOB_KEY}-${RUNNER_OS}-${RUNNER_ARCH}-${SOURCE_DIGEST}-${engine_digest}", route)
+            self.assertIn("docker buildx version", route)
+            self.assertIn("docker version --format '{{.Server.Version}}'", route)
+            self.assertIn("uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", route)
+            self.assertIn("uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", route)
+            self.assertIn("size_kib > 2097152", route)
+            self.assertIn("size_kib <= 2097152", route)
+            self.assertIn("find \"$cache_root\" -type l", route)
+            self.assertIn("steps.docker-cache-restore.outputs.cache-hit != 'true'", route)
+            self.assertNotIn("restore-keys:", route)
+            self.assertLess(route.index("Restore exact local Docker layer cache"), route.index("Run fixed consumer adapter"))
+            self.assertLess(route.index("Run fixed consumer adapter"), route.index("Save bounded local Docker layers after verification"))
+            self.assertLess(route.index("Save bounded local Docker layers after verification"), route.index("run: echo 'verified=true'"))
+
+    def test_openairco_and_status_fixed_heavy_toolchains_on_both_routes(self):
+        source = WORKFLOW.read_text()
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            self.assertIn("github.repository == 'Tuinstra-DEV/status'", route)
+            self.assertIn("actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3", route)
+            self.assertIn("java-version: '17'", route)
+            self.assertIn("android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407", route)
+            self.assertIn("run: sdkmanager 'platforms;android-37'", route)
+            self.assertIn("subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2", route)
+            self.assertIn("flutter-version: 3.47.1", route)
+            self.assertIn("pub-cache-key: openairco-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable-pub", route)
 
 
 if __name__ == "__main__":

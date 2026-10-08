@@ -23,6 +23,288 @@ POLICY = {
 
 
 class OrgRoutingTests(unittest.TestCase):
+    @staticmethod
+    def empty_association_evidence():
+        sha = "b" * 40
+        repository = {"full_name": REPO, "private": True, "fork": False}
+        run = {"id": 11, "event": "pull_request", "head_sha": sha,
+               "head_branch": "feat/verified-head", "repository": repository,
+               "head_repository": repository,
+               "actor": {"login": "marcel-tuinstra", "type": "User"},
+               "triggering_actor": {"login": "marcel-tuinstra", "type": "User"},
+               "pull_requests": []}
+        pr = {"number": 7, "state": "open", "merged": False,
+              "user": {"login": "marcel-tuinstra", "type": "User"},
+              "head": {"ref": "feat/verified-head", "sha": sha,
+                       "repo": repository},
+              "base": {"repo": repository}}
+        job = {"id": 22, "status": "queued", "run_id": 11,
+               "labels": ["self-hosted", "trusted-medium", "sanctuary-tracker"]}
+        return run, pr, job
+
+    def test_empty_run_association_resolves_one_current_private_pr_for_admission(self):
+        run, pr, job = self.empty_association_evidence()
+        client = manager.GitHubClient("repo-token")
+        paths = []
+
+        def response(_method, path):
+            paths.append(path)
+            if "status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/jobs?" in path:
+                return {"jobs": [job]}
+            if "/pulls?" in path:
+                return [{"number": 7}]
+            if path.endswith("/pulls/7"):
+                return pr
+            raise AssertionError(path)
+
+        with mock.patch.object(client, "request", side_effect=response):
+            self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"),
+                             [{"repo": REPO, "run_id": 11, "job_id": 22}])
+        self.assertIn(f"/repos/{REPO}/pulls?state=open&head=Tuinstra-DEV%3Afeat%2Fverified-head&per_page=100", paths)
+        self.assertIn(f"/repos/{REPO}/pulls/7", paths)
+        self.assertFalse(any("/git/ref/" in path for path in paths))
+
+    def test_empty_run_association_revalidates_current_pr_at_assignment(self):
+        run, pr, job = self.empty_association_evidence()
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42,
+                    "runner_group_name": "sanctuary-trusted-verification"}
+        state = {"repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22"}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        client = manager.GitHubClient("repo-token")
+        with mock.patch.object(client, "request", side_effect=[assigned, run,
+                               [{"number": 7}], pr]) as request:
+            client.verify_org_assignment(state, assignment)
+        self.assertTrue(any("/pulls?" in call.args[1]
+                            for call in request.call_args_list))
+
+    def test_one_dispatch_shares_only_workflow_list_reads_across_profiles(self):
+        run, pr, medium_job = self.empty_association_evidence()
+        heavy_job = {**medium_job, "id": 23,
+                     "labels": ["self-hosted", "trusted-heavy", "sanctuary-tracker"]}
+        client = manager.GitHubClient("org-token")
+        paths = []
+
+        def response(_method, path):
+            paths.append(path)
+            if "status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/jobs?" in path:
+                return {"jobs": [medium_job, heavy_job]}
+            if "/pulls?" in path:
+                return [{"number": 7}]
+            if path.endswith("/pulls/7"):
+                return pr
+            raise AssertionError(path)
+
+        def inspect_adapter(_cfg, adapter, *, profile, scope):
+            self.assertEqual(scope, "organization")
+            expected = 23 if profile == "heavy" else 22
+            self.assertEqual(adapter.candidate_jobs(REPO, f"trusted-{profile}"),
+                             [{"repo": REPO, "run_id": 11, "job_id": expected}])
+            return False
+
+        with mock.patch.object(client, "request", side_effect=response), \
+                mock.patch.object(client, "verify_org_group") as group, \
+                mock.patch.object(manager, "dispatch_once", side_effect=inspect_adapter):
+            for cycle in (1, 2):
+                self.assertFalse(manager.dispatch_organization_once(POLICY,
+                                                                     mock.Mock(), client))
+                self.assertEqual(sum("status=queued" in path for path in paths), cycle)
+                self.assertEqual(sum("status=in_progress" in path for path in paths), cycle)
+                self.assertEqual(sum("/jobs?" in path for path in paths), cycle)
+                # PR list and detail are security reads, so both profiles revalidate.
+                self.assertEqual(sum("/pulls?" in path for path in paths), 2 * cycle)
+                self.assertEqual(sum(path.endswith("/pulls/7") for path in paths),
+                                 2 * cycle)
+                self.assertEqual(group.call_count, cycle)
+
+    def test_idle_dispatch_reads_two_run_lists_per_repository(self):
+        repositories = {f"{ORG}/repo-{number}": number
+                        for number in range(1, 13)}
+        cfg = {**POLICY, "org_repository_ids": repositories}
+        client = manager.GitHubClient("org-token")
+        paths = []
+
+        def response(_method, path):
+            paths.append(path)
+            if "/actions/runs?status=" in path:
+                return {"workflow_runs": []}
+            raise AssertionError(path)
+
+        def inspect_adapter(_cfg, adapter, *, profile, scope):
+            self.assertEqual(scope, "organization")
+            for repo in repositories:
+                self.assertEqual(adapter.candidate_jobs(repo, f"trusted-{profile}"), [])
+            return False
+
+        with mock.patch.object(client, "request", side_effect=response), \
+                mock.patch.object(client, "verify_org_group") as group, \
+                mock.patch.object(manager, "dispatch_once", side_effect=inspect_adapter):
+            self.assertFalse(manager.dispatch_organization_once(cfg, mock.Mock(), client))
+
+        self.assertEqual(len(paths), 24)
+        self.assertEqual(len(set(paths)), 24)
+        self.assertEqual(group.call_count, 1)
+
+    def test_cached_lists_do_not_cache_current_pr_at_assignment(self):
+        run, pr, job = self.empty_association_evidence()
+        client = manager.GitHubClient("org-token")
+        snapshot = manager.WorkflowListSnapshot()
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42,
+                    "runner_group_name": "sanctuary-trusted-verification"}
+        state = {"repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22"}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        detail_reads = 0
+
+        def response(_method, path):
+            nonlocal detail_reads
+            if "/actions/runs?status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "/actions/runs?status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/actions/runs/11/jobs?" in path:
+                return {"jobs": [job]}
+            if path.endswith("/actions/jobs/22"):
+                return assigned
+            if path.endswith("/actions/runs/11"):
+                return run
+            if "/pulls?" in path:
+                return [{"number": 7}]
+            if path.endswith("/pulls/7"):
+                detail_reads += 1
+                if detail_reads == 1:
+                    return pr
+                return {**pr, "head": {**pr["head"], "sha": "c" * 40}}
+            raise AssertionError(path)
+
+        with mock.patch.object(client, "request", side_effect=response):
+            self.assertEqual(client.candidate_trusted_jobs(REPO, "medium",
+                                                            snapshot=snapshot),
+                             [assignment])
+            with self.assertRaises(manager.RunnerError):
+                client.verify_org_assignment(state, assignment)
+        self.assertEqual(detail_reads, 2)
+
+    def test_empty_run_association_rejects_bad_or_ambiguous_current_pr(self):
+        run, pr, job = self.empty_association_evidence()
+        client = manager.GitHubClient("repo-token")
+        for changed_run, returned_prs in (
+                ({}, []),
+                ({}, [pr, {**pr, "number": 8}]),
+                ({}, [{**pr, "head": {**pr["head"], "ref": "other"}}]),
+                ({}, [{**pr, "head": {**pr["head"], "sha": "c" * 40}}]),
+                ({}, [{**pr, "user": {"login": "someone", "type": "User"}}]),
+                ({}, [{**pr, "head": {**pr["head"], "repo":
+                                  {"full_name": "other/fork", "private": True,
+                                   "fork": True}}}]),
+                ({}, [{**pr, "head": {**pr["head"], "repo":
+                                  {"full_name": REPO, "private": False,
+                                   "fork": False}}}]),
+                ({}, [{**pr, "merged": True}]),
+                ({"head_branch": "other"}, [pr]),
+                ({"repository": {"full_name": REPO, "private": False}}, [pr]),
+                ({"head_repository": {"full_name": REPO, "private": False,
+                                        "fork": False}}, [pr]),
+        ):
+            with self.subTest(run=changed_run, prs=returned_prs):
+                def response(_method, path):
+                    if "status=queued" in path:
+                        return {"workflow_runs": [{**run, **changed_run}]}
+                    if "status=in_progress" in path:
+                        return {"workflow_runs": []}
+                    if "/jobs?" in path:
+                        return {"jobs": [job]}
+                    if "/pulls?" in path:
+                        return returned_prs
+                    if "/pulls/" in path:
+                        return returned_prs[0]
+                    raise AssertionError(path)
+                with mock.patch.object(client, "request", side_effect=response):
+                    self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"), [])
+
+        def unavailable(_method, path):
+            if "status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/jobs?" in path:
+                return {"jobs": [job]}
+            raise manager.RunnerError("PR lookup unavailable")
+        with mock.patch.object(client, "request", side_effect=unavailable), \
+                self.assertRaisesRegex(manager.RunnerError, "PR lookup unavailable"):
+            client.candidate_trusted_jobs(REPO, "medium")
+
+    def test_empty_run_association_assignment_rejects_changed_or_ambiguous_pr(self):
+        run, pr, job = self.empty_association_evidence()
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42,
+                    "runner_group_name": "sanctuary-trusted-verification"}
+        state = {"repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22"}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        client = manager.GitHubClient("repo-token")
+        for returned in ([], [pr, {**pr, "number": 8}],
+                         [{**pr, "head": {**pr["head"], "sha": "c" * 40}}]):
+            detail = [returned[0]] if len(returned) == 1 else []
+            with self.subTest(prs=returned), \
+                    mock.patch.object(client, "request", side_effect=[assigned, run,
+                                                                       returned, *detail]), \
+                    self.assertRaisesRegex(manager.RunnerError, "not a trusted PR"):
+                client.verify_org_assignment(state, assignment)
+        with mock.patch.object(client, "request", side_effect=[assigned, run,
+                               manager.RunnerError("PR lookup unavailable")]), \
+                self.assertRaisesRegex(manager.RunnerError, "PR lookup unavailable"):
+            client.verify_org_assignment(state, assignment)
+
+    def test_nonempty_run_association_never_falls_back_to_branch_lookup(self):
+        run, pr, job = self.empty_association_evidence()
+        run["pull_requests"] = [{"number": 8}]
+        client = manager.GitHubClient("repo-token")
+        paths = []
+
+        def response(_method, path):
+            paths.append(path)
+            if "status=queued" in path:
+                return {"workflow_runs": [run]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": []}
+            if "/jobs?" in path:
+                return {"jobs": [job]}
+            if path.endswith("/pulls/8"):
+                return {**pr, "number": 8, "head": {**pr["head"],
+                                                    "sha": "c" * 40}}
+            raise AssertionError(path)
+
+        with mock.patch.object(client, "request", side_effect=response):
+            self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"), [])
+        self.assertNotIn(f"/repos/{REPO}/pulls?state=open&head=Tuinstra-DEV%3Afeat%2Fverified-head&per_page=100", paths)
+
+        for association in (
+                {"number": 7, "head": {"sha": "c" * 40}},
+                {"number": 7, "head": {"sha": "b" * 40,
+                                       "ref": "other"}},
+                {"number": 7, "head": {"sha": "b" * 40,
+                                       "repo": {"full_name": "other/fork"}}},
+                {"number": 7, "base": {"repo": {"full_name": "other/fork"}}},
+        ):
+            with self.subTest(association=association):
+                run["pull_requests"] = [association]
+                with mock.patch.object(client, "request", side_effect=response):
+                    self.assertEqual(client.candidate_trusted_jobs(REPO, "medium"), [])
+
     def test_policy_is_disabled_by_default_and_requires_distinct_credential(self):
         self.assertFalse(manager.org_routing_enabled({}))
         for change in ({"pool_mode": "legacy"},
@@ -83,16 +365,8 @@ class OrgRoutingTests(unittest.TestCase):
                 client.verify_org_group(POLICY)
 
     def test_trusted_job_requires_human_same_repo_pr_and_fixed_labels(self):
-        run = {"id": 11, "event": "pull_request", "status": "queued",
-               "head_sha": "b" * 40, "actor": {"login": "marcel-tuinstra", "type": "User"},
-               "triggering_actor": {"login": "marcel-tuinstra", "type": "User"},
-               "head_repository": {"full_name": REPO},
-               "pull_requests": [{"number": 7}]}
-        job = {"id": 22, "status": "queued", "run_id": 11,
-               "labels": ["self-hosted", "trusted-medium", "sanctuary-tracker"]}
-        pr = {"number": 7, "state": "open", "user": {"login": "marcel-tuinstra", "type": "User"},
-              "head": {"sha": "b" * 40, "repo": {"full_name": REPO}},
-              "base": {"repo": {"full_name": REPO}}}
+        run, pr, job = self.empty_association_evidence()
+        run["pull_requests"] = [{"number": 7}]
         client = manager.GitHubClient("repo-token")
         def candidates(candidate_run=run, candidate_job=job, candidate_pr=pr):
             def response(_method, path):
@@ -176,15 +450,8 @@ class OrgRoutingTests(unittest.TestCase):
                "runner_name": "sanctuary-22", "runner_group_id": 42,
                "runner_group_name": "sanctuary-trusted-verification",
                "labels": ["self-hosted", "trusted-medium", "sanctuary-tracker"]}
-        run = {"id": 11, "event": "pull_request", "head_sha": "b" * 40,
-               "actor": {"login": "marcel-tuinstra", "type": "User"},
-               "triggering_actor": {"login": "marcel-tuinstra", "type": "User"},
-               "head_repository": {"full_name": REPO},
-               "pull_requests": [{"number": 7}]}
-        pr = {"number": 7, "state": "open",
-              "user": {"login": "marcel-tuinstra", "type": "User"},
-              "head": {"sha": "b" * 40, "repo": {"full_name": REPO}},
-              "base": {"repo": {"full_name": REPO}}}
+        run, pr, _ = self.empty_association_evidence()
+        run["pull_requests"] = [{"number": 7}]
         with mock.patch.object(client, "request", side_effect=[job, run, pr]):
             client.verify_org_assignment(state, assignment)
         for altered in ({"labels": ["self-hosted", "trusted-medium"]},
