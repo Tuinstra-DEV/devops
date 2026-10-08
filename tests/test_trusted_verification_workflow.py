@@ -514,6 +514,29 @@ else:
             self.assertNotIn("node_modules", route)
             self.assertNotIn("vendor/", route)
 
+    def test_composer_cache_does_not_require_a_root_manifest(self):
+        source = WORKFLOW.read_text()
+        for route in (source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0],
+                      source.split("  hosted-fallback:", 1)[1]):
+            step = route.split("      - name: Resolve fixed Composer download cache", 1)[1]
+            script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for repository in ("Tuinstra-DEV/gate", "Tuinstra-DEV/tracker", "Tuinstra-DEV/console"):
+                    for environment in ("self-hosted", "github-hosted"):
+                        output, export = root / "output", root / "export"
+                        output.write_text("")
+                        export.write_text("")
+                        env = {**os.environ, "RUNNER_TEMP": str(root), "GITHUB_OUTPUT": str(output),
+                               "GITHUB_ENV": str(export), "GITHUB_REPOSITORY": repository,
+                               "RUNNER_ENVIRONMENT": environment}
+                        result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                                capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output.read_text(), f"path={root}/composer-cache\n")
+                        self.assertEqual(export.read_text(), f"COMPOSER_CACHE_DIR={root}/composer-cache\n")
+                        self.assertTrue((root / "composer-cache").is_dir())
+
     def test_fixed_docker_layer_cache_is_local_bounded_and_after_verification(self):
         source = WORKFLOW.read_text()
         self.assertNotIn("ghaction-github-runtime", source)
