@@ -29,6 +29,7 @@ LOG = logging.getLogger("ci-runner-manager")
 REGISTRATION_GRACE_SECONDS = 300
 HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
+VERIFIED_HANDOFF_RETRY_SECONDS = 30
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
 DISPATCH_HISTORY_SECONDS = 86400
@@ -576,6 +577,17 @@ class DispatchHistory:
         entry["blocked_until"] = now + delay
         self.write(values)
         return delay
+
+    def retry_after_verified_handoff(self, key: str, now: int,
+                                     attempts_hint: int = 1) -> int:
+        values = self.load()
+        entry = values.get(key)
+        if entry is None:
+            entry = {"blocked_until": now, "attempts": max(1, attempts_hint)}
+            values[key] = entry
+        entry["blocked_until"] = now + VERIFIED_HANDOFF_RETRY_SECONDS
+        self.write(values)
+        return VERIFIED_HANDOFF_RETRY_SECONDS
 
 
 class GitHubClient:
@@ -1470,9 +1482,24 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
         return
     if status == "queued":
         key = f"{repo}:{job_id}"
-        delay = DispatchHistory(store.directory).retry_after_cooldown(
-            key, now, int(state.get("dispatch_attempts", 1))
-        )
+        verified_other_job = isinstance(state.get("actual_job_id"), int) and \
+            not isinstance(state["actual_job_id"], bool) and \
+            state["actual_job_id"] != job_id
+        trigger_run_id = state.get("trigger_run_id", state.get("run_id"))
+        unassigned_trigger = isinstance(trigger_run_id, int) and \
+            not isinstance(trigger_run_id, bool) and \
+            job.get("id") == job_id and job.get("run_id") == trigger_run_id and \
+            job.get("runner_id") is None and job.get("runner_name") in (None, "")
+        clean_handoff = state.get("local_cleanup_verified") is True and \
+            verified_other_job and unassigned_trigger and \
+            not any(item.get("lease") == state.get("lease") for item in store.leases())
+        history = DispatchHistory(store.directory)
+        if clean_handoff:
+            delay = history.retry_after_verified_handoff(
+                key, now, int(state.get("dispatch_attempts", 1)))
+        else:
+            delay = history.retry_after_cooldown(
+                key, now, int(state.get("dispatch_attempts", 1)))
         store.remove_cleanup(state)
         LOG.info(
             "dispatch handoff trigger queued for retry repo=%s trigger_job_id=%s retry_after=%s",
@@ -1494,6 +1521,7 @@ def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None,
         LOG.info("destroy requested lease=%s", lease)
         state = next((item for item in store.leases() if item.get("lease") == lease), {"lease": lease})
         helper(cfg, "destroy", lease)
+        state["local_cleanup_verified"] = True
         try:
             cleanup_github_runner(client, state, org_client)
         except RunnerError:
@@ -1560,6 +1588,7 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
         def cleanup_local(lease: str) -> None:
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
+            states[lease]["local_cleanup_verified"] = True
             try:
                 cleanup_github_runner(client, states[lease], org_client)
             except RunnerError as exc:
@@ -1607,6 +1636,38 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
         retry_pending_cleanup(store, client, now, store.leases(), org_client)
 
 
+def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
+                            profile: str) -> list[str]:
+    """Read current four-pool capacity without creating a GitHub runner."""
+    states = store.leases()
+    state_by_lease: dict[str, dict[str, Any]] = {}
+    for state in states:
+        lease = state.get("lease")
+        if not isinstance(lease, str) or lease in state_by_lease:
+            raise RunnerError("runner lifecycle state requires reconciliation")
+        state_by_lease[validate_lease_id(lease)] = state
+    inventory = validate_inventory(json.loads(
+        helper(cfg, "list").stdout.decode("utf-8")))
+    if set(state_by_lease) != set(inventory) or any(
+            state.get("phase") != "running" or inventory[lease] != "running"
+            for lease, state in state_by_lease.items()):
+        raise RunnerError("runner lifecycle state requires reconciliation")
+    active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
+    if not isinstance(active, list) or len(active) != len(inventory) or \
+            any(not isinstance(item, dict) or
+                not isinstance(item.get("lease"), str) or
+                item["lease"] not in state_by_lease or
+                item.get("profile") != state_by_lease[item["lease"]].get("profile", "heavy") or
+                item.get("bounded") is not True
+                for item in active) or \
+            {item["lease"] for item in active} != set(inventory):
+        raise RunnerError("runner resource inventory requires reconciliation")
+    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active)
+    if any(error.startswith("active runner") for error in errors):
+        raise RunnerError("runner resource inventory requires reconciliation")
+    return errors
+
+
 def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
                   profile: str = "heavy", scope: str = "repository") -> bool:
     if scope == "organization":
@@ -1648,6 +1709,12 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
             with with_lock(lifecycle_lock):
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
                     continue
+                if four_pool(cfg):
+                    failures = pre_jit_capacity_errors(cfg, store, profile)
+                    if failures:
+                        LOG.info("pre-JIT capacity unavailable profile=%s reasons=%s",
+                                 profile, "; ".join(failures))
+                        return launched > 0
                 history.quarantine(key, now)
             try:
                 response = client.generate_jit(
