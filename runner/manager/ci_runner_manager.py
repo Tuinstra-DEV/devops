@@ -856,31 +856,26 @@ class GitHubClient:
                         candidates.append({"repo": repo, "run_id": int(run["id"]), "job_id": int(job["id"])})
         return candidates
 
-    def candidate_trusted_jobs(self, repo: str, profile: str) -> list[dict[str, Any]]:
+    def candidate_trusted_jobs(self, repo: str, profile: str, *,
+                               snapshot: WorkflowListSnapshot | None = None) -> list[dict[str, Any]]:
         if profile not in POOL_LIMITS:
             raise RunnerError("invalid organization runner profile")
+        listings = snapshot if snapshot is not None else WorkflowListSnapshot()
         candidates: list[dict[str, Any]] = []
         for status in ("queued", "in_progress"):
-            runs = self.request("GET", f"{self.repo_path(repo)}/actions/runs?status={status}&per_page=100")
-            if not isinstance(runs, dict) or not isinstance(runs.get("workflow_runs"), list):
-                raise RunnerError("GitHub returned invalid workflow runs")
-            for run in runs["workflow_runs"]:
+            for run in listings.workflow_runs(self, repo, status):
                 if not self._trusted_run(run, repo):
                     continue
                 run_id = run["id"]
-                jobs = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
-                if not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list):
-                    raise RunnerError("GitHub returned invalid workflow jobs")
-                matching = [job for job in jobs["jobs"] if isinstance(job, dict)
+                matching = [job for job in listings.workflow_jobs(self, repo, run_id)
+                            if isinstance(job, dict)
                             and job.get("status") == "queued"
                             and job.get("run_id") == run_id
                             and isinstance(job.get("id"), int)
                             and organization_labels_match(job.get("labels"), repo, profile)]
                 if not matching:
                     continue
-                number = run["pull_requests"][0]["number"]
-                pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
-                if not self._trusted_pull_request(pr, repo, run["head_sha"], number):
+                if self._resolve_trusted_pull_request(run, repo) is None:
                     continue
                 candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"]}
                                   for job in matching)
@@ -893,32 +888,89 @@ class GitHubClient:
 
     @classmethod
     def _trusted_run(cls, run: Any, repo: str) -> bool:
-        return isinstance(run, dict) and isinstance(run.get("id"), int) and \
+        if not isinstance(run, dict):
+            return False
+        branch = run.get("head_branch")
+        associations = run.get("pull_requests")
+        if not isinstance(branch, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
+                ".." in branch or "//" in branch or branch.endswith("/") or \
+                not isinstance(associations, list) or len(associations) > 1:
+            return False
+        if associations and (not isinstance(associations[0], dict) or
+                             not isinstance(associations[0].get("number"), int) or
+                             isinstance(associations[0]["number"], bool) or
+                             associations[0]["number"] < 1):
+            return False
+        return isinstance(run.get("id"), int) and \
             not isinstance(run["id"], bool) and run.get("event") == "pull_request" and \
             bool(re.fullmatch(r"[a-f0-9]{40}", str(run.get("head_sha", "")))) and \
             cls._trusted_user(run.get("actor")) and \
             cls._trusted_user(run.get("triggering_actor")) and \
+            isinstance(run.get("repository"), dict) and \
+            run["repository"].get("full_name") == repo and \
+            run["repository"].get("private") is True and \
             isinstance(run.get("head_repository"), dict) and \
             run["head_repository"].get("full_name") == repo and \
-            isinstance(run.get("pull_requests"), list) and \
-            len(run["pull_requests"]) == 1 and \
-            isinstance(run["pull_requests"][0], dict) and \
-            isinstance(run["pull_requests"][0].get("number"), int) and \
-            not isinstance(run["pull_requests"][0]["number"], bool)
+            run["head_repository"].get("private") is True and \
+            run["head_repository"].get("fork") is False
 
     @classmethod
     def _trusted_pull_request(cls, pr: Any, repo: str, head_sha: str,
-                              number: int) -> bool:
-        if not isinstance(pr, dict) or pr.get("number") != number or \
-                pr.get("state") != "open" or not cls._trusted_user(pr.get("user")):
+                              branch: str, number: int) -> bool:
+        if not isinstance(pr, dict) or type(pr.get("number")) is not int or \
+                pr["number"] != number or pr.get("state") != "open" or \
+                pr.get("merged") is not False or not cls._trusted_user(pr.get("user")):
             return False
         head, base = pr.get("head"), pr.get("base")
         return isinstance(head, dict) and isinstance(base, dict) and \
-            head.get("sha") == head_sha and \
+            head.get("sha") == head_sha and head.get("ref") == branch and \
             isinstance(head.get("repo"), dict) and \
             isinstance(base.get("repo"), dict) and \
             head["repo"].get("full_name") == repo and \
-            base["repo"].get("full_name") == repo
+            head["repo"].get("private") is True and \
+            head["repo"].get("fork") is False and \
+            base["repo"].get("full_name") == repo and \
+            base["repo"].get("private") is True
+
+    def _resolve_trusted_pull_request(self, run: Any, repo: str) -> dict[str, Any] | None:
+        if not self._trusted_run(run, repo):
+            return None
+        branch = run["head_branch"]
+        associations = run["pull_requests"]
+        if associations:
+            association = associations[0]
+            associated_head = association.get("head")
+            if associated_head is not None and (not isinstance(associated_head, dict) or
+                    associated_head.get("sha", run["head_sha"]) != run["head_sha"] or
+                    associated_head.get("ref", branch) != branch):
+                return None
+            for side, metadata in (("head", associated_head),
+                                   ("base", association.get("base"))):
+                if metadata is None:
+                    continue
+                if not isinstance(metadata, dict):
+                    return None
+                related_repo = metadata.get("repo")
+                if related_repo is not None and (not isinstance(related_repo, dict) or
+                        related_repo.get("full_name", repo) != repo or
+                        related_repo.get("private", True) is not True or
+                        (side == "head" and related_repo.get("fork", False) is not False)):
+                    return None
+            number = association["number"]
+            pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
+        else:
+            head = urllib.parse.quote(f"{ORG_NAME}:{branch}", safe="")
+            found = self.request("GET", f"{self.repo_path(repo)}/pulls?state=open&head={head}&per_page=100")
+            if not isinstance(found, list) or len(found) != 1 or \
+                    not isinstance(found[0], dict) or type(found[0].get("number")) is not int or \
+                    found[0]["number"] < 1:
+                return None
+            number = found[0]["number"]
+            pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
+        if not self._trusted_pull_request(pr, repo, run["head_sha"], branch, number):
+            return None
+        return pr
 
     def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
         return self.request("POST", f"{self.repo_path(repo)}/actions/runners/generate-jitconfig", {
@@ -1068,9 +1120,7 @@ class GitHubClient:
         run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
         if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
             raise RunnerError("organization runner assignment is not a trusted PR run")
-        number = run["pull_requests"][0]["number"]
-        pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
-        if not self._trusted_pull_request(pr, repo, run["head_sha"], number):
+        if self._resolve_trusted_pull_request(run, repo) is None:
             raise RunnerError("organization runner assignment is not a trusted PR")
 
 
@@ -1840,20 +1890,54 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
     return launched > 0
 
 
+class WorkflowListSnapshot:
+    """Share only Actions run/job list responses within one dispatch cycle."""
+
+    def __init__(self) -> None:
+        self._runs: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self._jobs: dict[tuple[str, int], tuple[Any, ...]] = {}
+
+    def workflow_runs(self, client: GitHubClient, repo: str,
+                      status: str) -> tuple[Any, ...]:
+        key = (repo, status)
+        if key not in self._runs:
+            runs = client.request("GET", f"{client.repo_path(repo)}/actions/runs?status={status}&per_page=100")
+            if not isinstance(runs, dict) or not isinstance(runs.get("workflow_runs"), list):
+                raise RunnerError("GitHub returned invalid workflow runs")
+            self._runs[key] = tuple(runs["workflow_runs"])
+        return self._runs[key]
+
+    def workflow_jobs(self, client: GitHubClient, repo: str,
+                      run_id: int) -> tuple[Any, ...]:
+        key = (repo, run_id)
+        if key not in self._jobs:
+            jobs = client.request("GET", f"{client.repo_path(repo)}/actions/runs/"
+                                  f"{run_id}/jobs?filter=latest&per_page=100")
+            if not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list):
+                raise RunnerError("GitHub returned invalid workflow jobs")
+            self._jobs[key] = tuple(jobs["jobs"])
+        return self._jobs[key]
+
+
 class OrganizationDispatchClient:
     """Use repository metadata for candidates and separate organization JIT rights."""
 
     def __init__(self, cfg: dict[str, Any], repo_client: GitHubClient,
-                 org_client: GitHubClient, profile: str) -> None:
+                 org_client: GitHubClient, profile: str,
+                 snapshot: WorkflowListSnapshot | None = None) -> None:
         self.cfg = cfg
         self.repo_client = repo_client
         self.org_client = org_client
         self.profile = profile
+        self.snapshot = snapshot
 
     def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
         if repo not in self.cfg["org_repository_ids"] or label != f"trusted-{self.profile}":
             raise RunnerError("organization dispatch candidate policy is invalid")
-        return self.org_client.candidate_trusted_jobs(repo, self.profile)
+        if self.snapshot is None:
+            return self.org_client.candidate_trusted_jobs(repo, self.profile)
+        return self.org_client.candidate_trusted_jobs(repo, self.profile,
+                                                      snapshot=self.snapshot)
 
     def generate_jit(self, repo: str, job_id: int, group_id: int,
                      label: str) -> dict[str, Any]:
@@ -1880,8 +1964,10 @@ def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,
     validate_org_config(cfg)
     org_client.verify_org_group(cfg)
     launched = False
+    snapshot = WorkflowListSnapshot()
     for profile in ("heavy", "medium"):
-        adapter = OrganizationDispatchClient(cfg, repo_client, org_client, profile)
+        adapter = OrganizationDispatchClient(cfg, repo_client, org_client,
+                                             profile, snapshot)
         launched = dispatch_once(cfg, adapter, profile=profile,
                                  scope="organization") or launched
     return launched
