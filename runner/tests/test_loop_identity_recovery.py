@@ -80,6 +80,15 @@ class RecoveryTests(unittest.TestCase):
             mock.patch.object(recovery, "atomic_write", side_effect=self.fake_write),
         )
 
+    def test_socket_status_has_no_main_pid(self):
+        reply = subprocess.CompletedProcess([], 0, "ControlPID=0\nActiveState=active\n", "")
+        self.assertEqual(recovery.service_state(recovery.SOCKET, lambda *_: reply), ("active", 0, 0))
+
+    def test_service_missing_main_pid_still_fails_closed(self):
+        reply = subprocess.CompletedProcess([], 0, "ControlPID=0\nActiveState=active\n", "")
+        with self.assertRaises(recovery.RecoveryError):
+            recovery.service_state(recovery.SERVICE, lambda *_: reply)
+
     def test_wrong_hash_rejected_before_any_service_change(self):
         with mock.patch.object(recovery, "directory"), \
              mock.patch.object(recovery, "regular", side_effect=[
