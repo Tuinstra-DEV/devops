@@ -14,6 +14,16 @@ on:
         description: Slug selecting a fixed job inside the consumer adapter
         required: true
         type: string
+    outputs:
+      preflight-trusted:
+        description: Server-side trust route decision
+        value: ${{ jobs.preflight.outputs.trusted }}
+      trusted-proof:
+        description: True only after the trusted adapter completes successfully
+        value: ${{ jobs.trusted-verification.outputs.verified }}
+      hosted-proof:
+        description: True only after the hosted fallback adapter completes successfully
+        value: ${{ jobs.hosted-fallback.outputs.verified }}
 
 permissions:
   contents: read
@@ -27,6 +37,7 @@ jobs:
   preflight:
     name: Verify current PR and run on GitHub
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       trusted: ${{ steps.trust.outputs.trusted }}
       source-sha: ${{ steps.trust.outputs.source-sha }}
@@ -184,9 +195,12 @@ jobs:
     name: Trusted verification
     needs: preflight
     if: ${{ needs.preflight.outputs.trusted == 'true' && github.event_name == 'pull_request' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.repository.private == true && github.event.sender.login == 'marcel-tuinstra' && github.event.sender.type == 'User' && github.event.pull_request.user.login == 'marcel-tuinstra' && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.base.repo.private == true && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.sha == needs.preflight.outputs.head-sha && github.sha == needs.preflight.outputs.source-sha }}
+    outputs:
+      verified: ${{ steps.proof.outputs.verified }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: ${{ fromJSON(needs.preflight.outputs.runner-labels) }}
+    timeout-minutes: 60
     steps:
       - name: Checkout exact verified PR merge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -199,12 +213,19 @@ jobs:
           JOB_KEY: ${{ inputs.job-key }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: bash .github/ci/sanctuary-ci --strict "$JOB_KEY"
+      - name: Mark completed trusted verification
+        id: proof
+        shell: bash
+        run: echo 'verified=true' >> "$GITHUB_OUTPUT"
 
   hosted-fallback:
     name: Hosted verification fallback
     needs: preflight
     if: ${{ needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.proof.outputs.verified }}
     steps:
       - name: Checkout ordinary event revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -215,3 +236,7 @@ jobs:
         env:
           JOB_KEY: ${{ inputs.job-key }}
         run: bash .github/ci/sanctuary-ci --strict "$JOB_KEY"
+      - name: Mark completed hosted verification
+        id: proof
+        shell: bash
+        run: echo 'verified=true' >> "$GITHUB_OUTPUT"

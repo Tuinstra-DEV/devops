@@ -27,3 +27,13 @@ allowed_owner = "Tuinstra-DEV"
 repositories = {{ runner_allowed_repositories | to_json }}
 runner_label = "trusted-heavy"
 runner_group_id = 1
+{% if runner_org_routing_enabled | bool %}
+org_routing_enabled = true
+org_github_token_file = "/run/credentials/ci-runner-manager.service/org_github_token"
+org_runner_group_id = {{ runner_org_runner_group_id | int }}
+org_workflow_ref = {{ runner_org_workflow_ref | to_json }}
+[org_repository_ids]
+{% for repository, repository_id in runner_org_repository_ids | dictsort %}
+{{ repository | to_json }} = {{ repository_id | int }}
+{% endfor %}
+{% endif %}

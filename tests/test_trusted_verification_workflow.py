@@ -29,6 +29,14 @@ def preflight_script():
     return textwrap.dedent(match.group("script"))
 
 
+def consumer_verdict(call_result, preflight_trusted, trusted_proof, hosted_proof):
+    """Required alias predicate; no skipped call or ambiguous proof may pass."""
+    return call_result == "success" and (
+        (preflight_trusted == "true" and trusted_proof == "true" and hosted_proof == "") or
+        (preflight_trusted == "false" and trusted_proof == "" and hosted_proof == "true")
+    )
+
+
 class FakeResponse(io.BytesIO):
     def __enter__(self):
         return self
@@ -200,6 +208,43 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         allowlisted = ast.literal_eval(textwrap.dedent(mapping_source.group(1)))
         manifest = WORKFLOW.parents[2] / "runner/policy/org-routing-repositories.json"
         self.assertEqual(set(allowlisted), set(json.loads(manifest.read_text())))
+
+    def test_consumer_verdict_truth_table(self):
+        cases = [
+            ("success", "true", "true", "", True),
+            ("success", "false", "", "true", True),
+            ("failure", "true", "true", "", False),
+            ("skipped", "false", "", "true", False),
+            ("cancelled", "true", "true", "", False),
+            ("success", "true", "", "", False),
+            ("success", "false", "", "", False),
+            ("success", "true", "false", "", False),
+            ("success", "false", "", "false", False),
+            ("success", "true", "true", "true", False),
+            ("success", "false", "true", "true", False),
+            ("success", "true", "true", "false", False),
+            ("success", "false", "false", "true", False),
+            ("success", "unknown", "", "true", False),
+        ]
+        for result, route, trusted, hosted, expected in cases:
+            with self.subTest(results=(result, route, trusted, hosted)):
+                self.assertEqual(consumer_verdict(result, route, trusted, hosted), expected)
+
+    def test_direct_proof_contract_and_timeouts(self):
+        source = WORKFLOW.read_text()
+        self.assertIn("value: ${{ jobs.preflight.outputs.trusted }}", source)
+        self.assertIn("value: ${{ jobs.trusted-verification.outputs.verified }}", source)
+        self.assertIn("value: ${{ jobs.hosted-fallback.outputs.verified }}", source)
+        self.assertEqual(source.count("verified: ${{ steps.proof.outputs.verified }}"), 2)
+        self.assertEqual(source.count("run: echo 'verified=true' >> \"$GITHUB_OUTPUT\""), 2)
+        trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
+        hosted = source.split("  hosted-fallback:", 1)[1]
+        for route in (trusted, hosted):
+            self.assertLess(route.index("bash .github/ci/sanctuary-ci --strict"), route.index("run: echo 'verified=true'"))
+            self.assertNotIn("always()", route)
+        self.assertNotIn("  finalize:", source)
+        self.assertEqual(source.count("timeout-minutes: 5"), 1)
+        self.assertEqual(source.count("timeout-minutes: 60"), 2)
 
 
 if __name__ == "__main__":

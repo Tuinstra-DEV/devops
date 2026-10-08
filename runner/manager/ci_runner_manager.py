@@ -73,6 +73,10 @@ class RunnerError(RuntimeError):
     pass
 
 
+class OrgPreflightRejected(RunnerError):
+    """The organization guard failed before a JIT POST was attempted."""
+
+
 class CapacityUnavailable(RunnerError):
     """A definitive admission rejection before runner host state is mutated."""
 
@@ -1651,6 +1655,10 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
                     cfg["org_runner_group_id"] if scope == "organization" else
                     int(cfg.get("runner_group_id", 1)), label
                 )
+            except OrgPreflightRejected:
+                with with_lock(lifecycle_lock):
+                    history.remove(key, now)
+                raise
             except RateLimited:
                 with with_lock(lifecycle_lock):
                     history.remove(key, now)
@@ -1785,8 +1793,13 @@ class OrganizationDispatchClient:
         if repo not in self.cfg["org_repository_ids"] or \
                 group_id != self.cfg["org_runner_group_id"] or \
                 label != f"trusted-{self.profile}":
-            raise RunnerError("organization dispatch JIT policy is invalid")
-        self.org_client.verify_org_group(self.cfg)
+            raise OrgPreflightRejected("organization dispatch JIT policy is invalid")
+        try:
+            self.org_client.verify_org_group(self.cfg)
+        except RateLimited:
+            raise
+        except RunnerError as exc:
+            raise OrgPreflightRejected("organization group preflight failed") from exc
         return self.org_client.generate_org_jit(job_id, group_id, repo, self.profile)
 
     def delete_runner(self, repo: str, runner_id: int) -> None:

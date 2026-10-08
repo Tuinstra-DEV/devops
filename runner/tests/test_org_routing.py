@@ -249,6 +249,40 @@ class OrgRoutingTests(unittest.TestCase):
         legacy_client.get_job.assert_not_called()
         legacy_client.get_runner.assert_not_called()
 
+    def test_pre_jit_group_failure_releases_only_its_dispatch_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {**POLICY, "state_dir": str(Path(temporary) / "state"),
+                   "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
+            org_client = mock.Mock()
+            org_client.candidate_trusted_jobs.return_value = [
+                {"repo": REPO, "run_id": 11, "job_id": 22}]
+            org_client.verify_org_group.side_effect = manager.RunnerError("group unavailable")
+            adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
+                                                         org_client, "medium")
+            with self.assertRaisesRegex(manager.OrgPreflightRejected, "group preflight failed"):
+                manager.dispatch_once(cfg, adapter, profile="medium",
+                                      scope="organization")
+            self.assertFalse(manager.DispatchHistory(Path(cfg["state_dir"])).contains(
+                f"{REPO}:22", 10000))
+            org_client.generate_org_jit.assert_not_called()
+
+    def test_ambiguous_org_jit_post_keeps_dispatch_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {**POLICY, "state_dir": str(Path(temporary) / "state"),
+                   "max_concurrency": 4, "medium_runner_label": "trusted-medium"}
+            org_client = mock.Mock()
+            org_client.candidate_trusted_jobs.return_value = [
+                {"repo": REPO, "run_id": 11, "job_id": 22}]
+            org_client.generate_org_jit.side_effect = manager.RunnerError("POST ambiguous")
+            adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
+                                                         org_client, "medium")
+            with self.assertRaisesRegex(manager.RunnerError, "POST ambiguous"):
+                manager.dispatch_once(cfg, adapter, profile="medium",
+                                      scope="organization")
+            self.assertTrue(manager.DispatchHistory(Path(cfg["state_dir"])).contains(
+                f"{REPO}:22", 10000))
+            org_client.verify_org_group.assert_called_once_with(cfg)
+
     def test_legacy_candidate_does_not_claim_org_labeled_job(self):
         client = manager.GitHubClient("repo-token")
         with mock.patch.object(client, "request", side_effect=[

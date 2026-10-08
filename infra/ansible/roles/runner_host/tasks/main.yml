@@ -27,6 +27,26 @@
       - ansible_memtotal_mb | int >= (18432 if runner_pool_mode == 'four' else 6144) + (runner_host_memory_reserve_mib | int)
     fail_msg: Host capacity or immutable runner pool policy does not fit the selected mode.
 
+- name: Require explicit restricted organization routing policy
+  ansible.builtin.assert:
+    that:
+      - runner_org_routing_enabled is boolean
+      - >-
+        not (runner_org_routing_enabled | bool) or
+        (runner_pool_mode == 'four' and
+         runner_org_runner_group_id is integer and
+         runner_org_runner_group_id is not boolean and
+         runner_org_runner_group_id | int > 1 and
+         runner_org_workflow_ref is string and
+         runner_org_workflow_ref is match('^Tuinstra-DEV/devops/[.]github/workflows/reusable-trusted-verification[.]yml@[a-f0-9]{40}$') and
+         runner_org_repository_ids ==
+         (lookup('ansible.builtin.file', runner_manager_source_root ~ '/runner/policy/org-routing-repositories.json') | from_json))
+    fail_msg: >-
+      Organization routing requires four-pool mode, a selected non-default
+      group, the full immutable central workflow SHA, and the exact reviewed
+      twelve-repository identity manifest. No organization credential is
+      provisioned by this role.
+
 - name: Check KVM device
   ansible.builtin.stat:
     path: /dev/kvm
@@ -71,7 +91,21 @@
     runner_existing_disk_threshold_lines: >-
       {{ (runner_existing_manager_config.content | b64decode).splitlines()
          | select('match', '^min_free_disk_gib = [0-9]+$') | list }}
+    runner_existing_org_routing_lines: >-
+      {{ (runner_existing_manager_config.content | b64decode).splitlines()
+         | select('match', '^org_routing_enabled = (true|false)$') | list }}
   when: runner_existing_manager_policy.stat.exists
+
+- name: Refuse to silently turn off existing organization routing
+  ansible.builtin.assert:
+    that:
+      - >-
+        not runner_existing_manager_policy.stat.exists or
+        (runner_org_routing_enabled | bool) or
+        'org_routing_enabled = true' not in runner_existing_org_routing_lines
+    fail_msg: >-
+      Existing organization routing is enabled. Supply the reviewed opt-in
+      inventory policy or use the dedicated drained rollback procedure.
 
 - name: Refuse capacity drift or insufficient NVMe capacity
   ansible.builtin.assert:
@@ -100,6 +134,43 @@
     fail_msg: >-
       Refusing unreviewed runner capacity drift or deployment when the main
       NVMe has less than 60 GiB free.
+
+- name: Inspect independently provisioned organization credential
+  ansible.builtin.stat:
+    path: /etc/ci-runner/org-github.token
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: runner_org_github_credential
+  when: runner_org_routing_enabled | bool
+
+- name: Require private, regular organization credential before enabling routing
+  ansible.builtin.assert:
+    that:
+      - runner_org_github_credential.stat.exists
+      - runner_org_github_credential.stat.isreg
+      - not runner_org_github_credential.stat.islnk
+      - (runner_org_github_credential.stat.pw_name | default('')) == 'root'
+      - (runner_org_github_credential.stat.gr_name | default('')) == 'root'
+      - (runner_org_github_credential.stat.mode | default('')) == '0600'
+    fail_msg: >-
+      Privately provision /etc/ci-runner/org-github.token as a regular
+      root:root mode 0600 file before enabling organization routing.
+  when: runner_org_routing_enabled | bool
+
+- name: Inspect the organization credential unit drop-in
+  ansible.builtin.stat:
+    path: /etc/systemd/system/ci-runner-manager.service.d/20-org-credential.conf
+    follow: false
+  register: runner_org_credential_dropin
+
+- name: Refuse an orphaned organization credential drop-in
+  ansible.builtin.assert:
+    that:
+      - (runner_org_routing_enabled | bool) or not runner_org_credential_dropin.stat.exists
+    fail_msg: >-
+      An organization credential unit drop-in exists while organization
+      routing is disabled. Resolve this drift through the drained rollback.
 
 - name: Install virtualization and policy packages
   ansible.builtin.apt:
@@ -343,6 +414,26 @@
     group: ci-runner-manager
     mode: '0640'
     backup: true
+  notify: Restart runner manager
+
+- name: Create the manager drop-in directory for organization routing
+  ansible.builtin.file:
+    path: /etc/systemd/system/ci-runner-manager.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: runner_org_routing_enabled | bool
+
+- name: Add only the separate organization credential to the manager unit
+  ansible.builtin.template:
+    src: ci-runner-manager-org-credential.conf.j2
+    dest: /etc/systemd/system/ci-runner-manager.service.d/20-org-credential.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  when: runner_org_routing_enabled | bool
   notify: Restart runner manager
 
 - name: Remove obsolete runner manager sudo policy

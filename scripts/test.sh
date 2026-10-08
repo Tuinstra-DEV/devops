@@ -75,3 +75,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source
 ruby scripts/gate-pr-security-contract-test.rb
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py

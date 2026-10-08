@@ -15,6 +15,13 @@ runner_allowed_repositories:
 runner_max_concurrency: 1
 runner_pool_mode: legacy
 runner_allow_pool_policy_transition: false
+# Organization JIT routing is a separate, explicitly provisioned opt-in.
+# Supply the exact selected group ID, pinned workflow ref and repository IDs
+# only after the restricted GitHub group and private credential are ready.
+runner_org_routing_enabled: false
+runner_org_runner_group_id: 0
+runner_org_workflow_ref: ""
+runner_org_repository_ids: {}
 runner_vcpus: 4
 runner_memory_mib: 6144
 runner_medium_vcpus: 2
