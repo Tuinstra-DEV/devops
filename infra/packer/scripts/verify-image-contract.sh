@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# libguestfs may omit local tool directories from its command environment.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 required_commands=(
   composer
   corepack
@@ -26,13 +29,13 @@ done
 
 docker buildx version
 docker compose version
-node --version | grep -Eq '^v24\.'
-php8.3 --version | grep -Eq '^PHP 8\.3\.'
-php8.4 --version | grep -Eq '^PHP 8\.4\.'
+node --version | grep -E '^v24\.' >/dev/null
+php8.3 --version | grep -E '^PHP 8\.3\.' >/dev/null
+php8.4 --version | grep -E '^PHP 8\.4\.' >/dev/null
 # Fail the image build before a no-new-privileges job discovers a missing module.
 php8.3 -r 'foreach (["ctype", "iconv", "openssl", "Zend OPcache", "zip"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); } }'
 php8.4 -r 'foreach (["ctype", "fileinfo", "iconv", "intl", "mbstring", "openssl", "pdo_pgsql", "zip", "dom", "SimpleXML", "xml", "xmlwriter", "tokenizer"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.4 missing $ext\n"); exit(1); } }'
-composer --version | grep -Eq '^Composer version 2\.'
+composer --version | grep -E '^Composer version 2\.' >/dev/null
 playwright --version
 chromium --version
 trivy --version
@@ -56,7 +59,7 @@ test -z "$unsafe_runner_entry" || {
 }
 test -d /opt/ms-playwright
 test -x /usr/local/bin/chromium
-readlink -f /usr/local/bin/chromium | grep -q '^/opt/ms-playwright/'
+readlink -f /usr/local/bin/chromium | grep -E '^/opt/ms-playwright/' >/dev/null
 test -s /etc/ci-runner-image-manifest
 
 echo "immutable runner image contract passed"
