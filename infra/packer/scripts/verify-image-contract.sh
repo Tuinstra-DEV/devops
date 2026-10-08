@@ -14,6 +14,7 @@ required_commands=(
   php8.3
   php8.4
   trivy
+  unzip
 )
 
 for command in "${required_commands[@]}"; do

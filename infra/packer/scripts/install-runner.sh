@@ -88,6 +88,7 @@ EOF
 
 sudo apt-get update
 sudo apt-get install --yes --no-install-recommends \
+  unzip \
   "docker-ce=${DOCKER_CE_VERSION}" \
   "docker-ce-cli=${DOCKER_CLI_VERSION}" \
   "containerd.io=${CONTAINERD_VERSION}" \
