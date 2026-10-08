@@ -73,3 +73,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_es
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source.py tests/test_gate_pr_security_evidence.py tests/test_gate_pr_security_local_integration.py
 ruby scripts/gate-pr-security-contract-test.rb
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py

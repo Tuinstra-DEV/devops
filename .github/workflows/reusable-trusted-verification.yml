@@ -1,0 +1,217 @@
+name: Reusable Trusted Verification
+
+# Consumers must invoke this workflow at an exact commit SHA. The fixed adapter
+# is part of the checked-out consumer repository; callers cannot supply a shell
+# command, runner label, path, token, or trust assertion.
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: Fixed Sanctuary capacity profile (medium or heavy)
+        required: true
+        type: string
+      job-key:
+        description: Slug selecting a fixed job inside the consumer adapter
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  preflight:
+    name: Verify current PR and run on GitHub
+    runs-on: ubuntu-24.04
+    outputs:
+      trusted: ${{ steps.trust.outputs.trusted }}
+      source-sha: ${{ steps.trust.outputs.source-sha }}
+      head-sha: ${{ steps.trust.outputs.head-sha }}
+      runner-labels: ${{ steps.trust.outputs.runner-labels }}
+      reason: ${{ steps.trust.outputs.reason }}
+    steps:
+      - name: Validate inputs and server-side trust
+        id: trust
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          JOB_KEY: ${{ inputs.job-key }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          REPO_LABELS = {
+              "Tuinstra-DEV/console": "sanctuary-console",
+              "Tuinstra-DEV/gate": "sanctuary-gate",
+              "Tuinstra-DEV/marcel-site": "sanctuary-marcel-site",
+              "Tuinstra-DEV/notify": "sanctuary-notify",
+              "Tuinstra-DEV/openairco": "sanctuary-openairco",
+              "Tuinstra-DEV/openairco-site": "sanctuary-openairco-site",
+              "Tuinstra-DEV/status": "sanctuary-status",
+              "Tuinstra-DEV/tracker": "sanctuary-tracker",
+              "Tuinstra-DEV/tuinstra-site": "sanctuary-tuinstra-site",
+              "Tuinstra-DEV/wodiq-app": "sanctuary-wodiq-app",
+              "Tuinstra-DEV/wodiq-platform": "sanctuary-wodiq-platform",
+              "Tuinstra-DEV/wodiq-site": "sanctuary-wodiq-site",
+          }
+          TRUSTED_LOGIN = "marcel-tuinstra"
+
+          class Untrusted(Exception):
+              pass
+
+          def require(condition, reason):
+              if not condition:
+                  raise Untrusted(reason)
+
+          def api(path):
+              root = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+              request = urllib.request.Request(
+                  root + path,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  return json.load(response)
+
+          def same_private_repo(repo, expected):
+              return isinstance(repo, dict) and repo.get("full_name") == expected and repo.get("private") is True
+
+          def user(value):
+              return isinstance(value, dict) and value.get("login") == TRUSTED_LOGIN and value.get("type") == "User"
+
+          def output(trusted, reason, source_sha="", head_sha="", labels=None):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write("trusted=" + ("true" if trusted else "false") + "\n")
+                  out.write("reason=" + reason + "\n")
+                  out.write("source-sha=" + source_sha + "\n")
+                  out.write("head-sha=" + head_sha + "\n")
+                  out.write("runner-labels=" + json.dumps(labels or [], separators=(",", ":")) + "\n")
+
+          def main():
+              profile = os.environ["PROFILE"]
+              key = os.environ["JOB_KEY"]
+              if profile not in ("medium", "heavy") or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", key) or len(key) > 48:
+                  raise SystemExit("invalid fixed profile or job-key contract")
+              try:
+                  repo = os.environ.get("GITHUB_REPOSITORY", "")
+                  require(repo in REPO_LABELS, "repo-not-allowlisted")
+                  require(os.environ.get("GITHUB_EVENT_NAME") == "pull_request", "non-pr-event")
+                  require(os.environ.get("GITHUB_ACTOR") == TRUSTED_LOGIN, "actor-mismatch")
+                  require(os.environ.get("GITHUB_TRIGGERING_ACTOR") == TRUSTED_LOGIN, "triggering-actor-mismatch")
+                  with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+                      event = json.load(source)
+                  require(same_private_repo(event.get("repository"), repo), "event-repo-mismatch")
+                  require(user(event.get("sender")), "sender-mismatch")
+                  event_pr = event.get("pull_request") or {}
+                  number = event_pr.get("number")
+                  require(type(number) is int and number > 0, "event-pr-missing")
+                  require(user(event_pr.get("user")), "event-author-mismatch")
+                  event_head, event_base = event_pr.get("head") or {}, event_pr.get("base") or {}
+                  event_sha = event_head.get("sha")
+                  require(isinstance(event_sha, str) and re.fullmatch(r"[0-9a-f]{40}", event_sha), "event-sha-invalid")
+                  require(same_private_repo(event_head.get("repo"), repo) and
+                          event_head["repo"].get("fork") is False and
+                          same_private_repo(event_base.get("repo"), repo), "event-fork-or-repo")
+                  head_ref = event_head.get("ref")
+                  require(isinstance(head_ref, str) and bool(head_ref) and ".." not in head_ref, "event-ref-invalid")
+                  run_id = os.environ.get("GITHUB_RUN_ID", "")
+                  require(re.fullmatch(r"[0-9]+", run_id) is not None, "run-id-invalid")
+                  run = api(f"/repos/{repo}/actions/runs/{run_id}")
+                  require(run.get("id") == int(run_id) and run.get("event") == "pull_request" and
+                          run.get("head_sha") == event_sha and user(run.get("actor")) and
+                          user(run.get("triggering_actor")) and
+                          same_private_repo(run.get("repository"), repo) and
+                          same_private_repo(run.get("head_repository"), repo), "run-mismatch")
+                  central = "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@"
+                  references = [item for item in (run.get("referenced_workflows") or [])
+                                if isinstance(item, dict) and
+                                isinstance(item.get("path"), str) and
+                                item["path"].startswith(central.rsplit("@", 1)[0] + "@")]
+                  require(len(references) == 1 and
+                          re.fullmatch(r"[0-9a-f]{40}", references[0]["path"][len(central):]) is not None and
+                          references[0].get("sha") == references[0]["path"][len(central):],
+                          "workflow-not-pinned")
+                  associated = run.get("pull_requests") or []
+                  require(any(item.get("number") == number and
+                              (item.get("head") or {}).get("sha") == event_sha and
+                              (item.get("base") or {}).get("sha") == event_base.get("sha")
+                              for item in associated), "run-pr-mismatch")
+                  pr = api(f"/repos/{repo}/pulls/{number}")
+                  head, base = pr.get("head") or {}, pr.get("base") or {}
+                  require(pr.get("number") == number and pr.get("state") == "open" and
+                          pr.get("merged") is False and user(pr.get("user")) and
+                          head.get("sha") == event_sha and head.get("ref") == head_ref and
+                          base.get("sha") == event_base.get("sha") and
+                          same_private_repo(head.get("repo"), repo) and
+                          head["repo"].get("fork") is False and
+                          same_private_repo(base.get("repo"), repo), "current-pr-mismatch")
+                  encoded_ref = urllib.parse.quote(head_ref, safe="/")
+                  current_ref = api(f"/repos/{repo}/git/ref/heads/{encoded_ref}")
+                  require(current_ref.get("ref") == "refs/heads/" + head_ref and
+                          (current_ref.get("object") or {}).get("type") == "commit" and
+                          current_ref["object"].get("sha") == event_sha, "stale-head")
+                  merge_sha = os.environ.get("GITHUB_SHA", "")
+                  require(re.fullmatch(r"[0-9a-f]{40}", merge_sha) is not None and
+                          os.environ.get("GITHUB_REF") == f"refs/pull/{number}/merge", "merge-context-invalid")
+                  merge = api(f"/repos/{repo}/git/commits/{merge_sha}")
+                  parents = merge.get("parents") or []
+                  require(merge.get("sha") == merge_sha and len(parents) == 2 and
+                          {item.get("sha") for item in parents} == {event_base.get("sha"), event_sha},
+                          "merge-parents-mismatch")
+                  output(True, "verified", merge_sha, event_sha,
+                         ["self-hosted", "trusted-" + profile, REPO_LABELS[repo]])
+              except Untrusted as failure:
+                  output(False, str(failure))
+              except (OSError, ValueError, KeyError, TypeError, TimeoutError):
+                  output(False, "api-unavailable")
+
+          main()
+          PY
+
+  trusted-verification:
+    name: Trusted verification
+    needs: preflight
+    if: ${{ needs.preflight.outputs.trusted == 'true' && github.event_name == 'pull_request' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.repository.private == true && github.event.sender.login == 'marcel-tuinstra' && github.event.sender.type == 'User' && github.event.pull_request.user.login == 'marcel-tuinstra' && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.base.repo.private == true && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.sha == needs.preflight.outputs.head-sha && github.sha == needs.preflight.outputs.source-sha }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: ${{ fromJSON(needs.preflight.outputs.runner-labels) }}
+    steps:
+      - name: Checkout exact verified PR merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ needs.preflight.outputs.source-sha }}
+          persist-credentials: false
+      - name: Run fixed consumer adapter
+        shell: bash
+        env:
+          JOB_KEY: ${{ inputs.job-key }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: bash .github/ci/sanctuary-ci --strict "$JOB_KEY"
+
+  hosted-fallback:
+    name: Hosted verification fallback
+    needs: preflight
+    if: ${{ needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout ordinary event revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run fixed consumer adapter on hosted runner
+        shell: bash
+        env:
+          JOB_KEY: ${{ inputs.job-key }}
+        run: bash .github/ci/sanctuary-ci --strict "$JOB_KEY"
