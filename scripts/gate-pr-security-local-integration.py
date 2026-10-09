@@ -10,6 +10,7 @@ case evidence is retained there and results.json records compact outcomes.
 The verified-absence case requires the publisher correction covered by this proof.
 """
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -42,6 +43,9 @@ OCI_ARCHIVE_MAX_BYTES = 4 * 1024 * 1024 * 1024
 OCI_RECEIPT_MAX_BYTES = 64 * 1024
 OCI_METADATA_MAX_BYTES = 4 * 1024 * 1024
 OCI_MAX_MEMBERS = 50000
+NATIVE_BASE_IMAGE_ID = "sha256:233fb39e26c4560a390d89e7068761451d02286cdddc7914d47cbd1d190edc11"
+NATIVE_BASE_REFERENCE = "ghcr.io/tuinstra-dev/gate/php@sha256:85d0c3c875740254f6ed86b3eb20001fe4697716b909c622f1ef1dfae8658ec6"
+NATIVE_SOURCE_COMMIT = "0c9eabe7475c588f2c85521346dcf3e26a618273"
 BASE_FILES = {
     "safe.php": b'<?php $stmt=$PDO->prepare("SELECT name FROM users WHERE id = ?"); $stmt->execute([$id]);\n',
     "safe.js": b'export function display(req) { return String(req.query.value); }\n',
@@ -92,7 +96,7 @@ def fixture_tree(store, files):
 
 
 
-def fixture(work, head_files, base_files):
+def fixture(work, head_files, base_files, repository):
     work.mkdir(mode=0o700)
     marker = {"version": 1, "id": uuid.uuid4().hex, "path": str(work), "uid": os.getuid()}
     (work / ".gate-work.json").write_text(json.dumps(marker), encoding="utf-8")
@@ -104,7 +108,9 @@ def fixture(work, head_files, base_files):
         "GIT_COMMITTER_NAME": "Synthetic fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
         "GIT_AUTHOR_DATE": "2026-09-27T00:00:00Z", "GIT_COMMITTER_DATE": "2026-09-27T00:00:00Z",
     }
-    state = {"repository": "Tuinstra-DEV/gate", "repository_id": "42", "owner_id": "12", "pull_request": 7,
+    repository_ids = {"Tuinstra-DEV/gate": "42", "Tuinstra-DEV/tracker": "43"}
+    source.require(repository in repository_ids, "unknown_repository")
+    state = {"repository": repository, "repository_id": repository_ids[repository], "owner_id": "12", "pull_request": 7,
         "run_id": "900", "run_attempt": 2, "prepare_duration_ms": 0}
     for side, files in [("base", base_files), ("head", head_files)]:
         tree = fixture_tree(store, files)
@@ -222,22 +228,32 @@ def _verify_blob(tar, members, descriptor, expected_media_type, *, maximum=None)
     return bytes(raw) if raw is not None else None
 
 
-def verify_oci_archive(archive_path, receipt_path, image_ref):
+def verify_oci_archive(archive_path, receipt_path, profile):
     """Bind a clean-source build receipt, OCI manifest, pinned ref, and loaded config ID."""
+    if not isinstance(profile, Mapping) or profile.get("platform") != "linux/amd64" or \
+            not isinstance(profile.get("image"), str):
+        raise LocalIntegrationError("scanner_profile_invalid")
+    image_ref = profile.get("image")
     receipt = _json_object(_read_regular(receipt_path, OCI_RECEIPT_MAX_BYTES, "build_receipt"),
                            "build_receipt_invalid")
     required = {"artifact", "artifact_sha256", "oci_manifest_digest", "loaded_image_id",
                 "loaded_image_size_bytes", "base_image_id", "base_oci_manifest_digest",
-                "base_oci_config_digest", "platform", "runner_source_manifest_sha256",
-                "runner_source_file_count", "source_commit", "source_worktree_clean"}
+                "base_oci_config_digest", "base_registry_reference", "runtime_profile",
+                "platform", "runner_source_manifest_sha256", "runner_source_file_count",
+                "source_commit", "source_worktree_clean"}
     if not required.issubset(receipt) or not isinstance(receipt["artifact"], str) or not receipt["artifact"]:
         raise LocalIntegrationError("build_receipt_invalid")
-    if receipt["source_worktree_clean"] is not True or receipt["platform"] != "linux/arm64":
+    if receipt["source_worktree_clean"] is not True or receipt["platform"] != profile["platform"]:
         raise LocalIntegrationError("build_source_or_platform_invalid")
     if (not re.fullmatch(r"[a-f0-9]{40}", str(receipt["source_commit"]))
             or not _digest(receipt["artifact_sha256"]) or not _digest(receipt["oci_manifest_digest"])
             or not _digest(receipt["loaded_image_id"]) or not _digest(receipt["base_image_id"])
-            or not _digest(receipt["base_oci_manifest_digest"]) or not _digest(receipt["base_oci_config_digest"])
+            or receipt["base_image_id"] != NATIVE_BASE_IMAGE_ID
+            or receipt["runtime_profile"] != "native-amd64"
+            or receipt["base_registry_reference"] != NATIVE_BASE_REFERENCE
+            or receipt["source_commit"] != NATIVE_SOURCE_COMMIT
+            or receipt["base_oci_manifest_digest"] is not None
+            or receipt["base_oci_config_digest"] is not None
             or not _digest(receipt["runner_source_manifest_sha256"])
             or type(receipt["runner_source_file_count"]) is not int or receipt["runner_source_file_count"] < 1
             or type(receipt["loaded_image_size_bytes"]) is not int or receipt["loaded_image_size_bytes"] < 1):
@@ -295,9 +311,9 @@ def verify_oci_archive(archive_path, receipt_path, image_ref):
             descriptor = descriptors[0]
             platform = descriptor.get("platform") if isinstance(descriptor, dict) else None
             if (not isinstance(platform, dict) or platform.get("os") != "linux"
-                    or platform.get("architecture") != "arm64"
+                    or platform.get("architecture") != "amd64"
                     or set(platform) - {"os", "architecture", "variant"}
-                    or platform.get("variant") not in (None, "v8")):
+                    or platform.get("variant") is not None):
                 raise LocalIntegrationError("oci_platform_mismatch")
             manifest_digest = descriptor.get("digest")
             manifest_raw = _verify_blob(tar, members, descriptor,
@@ -309,7 +325,7 @@ def verify_oci_archive(archive_path, receipt_path, image_ref):
                                       "application/vnd.oci.image.config.v1+json", maximum=OCI_METADATA_MAX_BYTES)
             config_digest = manifest["config"]["digest"]
             config = _json_object(config_raw, "oci_config_invalid")
-            if config.get("os") != "linux" or config.get("architecture") != "arm64":
+            if config.get("os") != "linux" or config.get("architecture") != "amd64":
                 raise LocalIntegrationError("oci_platform_mismatch")
             layers = manifest.get("layers")
             if not isinstance(layers, list):
@@ -335,7 +351,14 @@ def verify_oci_archive(archive_path, receipt_path, image_ref):
     return config_digest, manifest_digest
 
 
-def configure_docker(output, oci_archive=None, build_receipt=None):
+def configure_docker(output, oci_archive=None, build_receipt=None, repository="Tuinstra-DEV/gate"):
+    try:
+        profile = constants.profile_for(repository)
+    except ValueError:
+        raise LocalIntegrationError("unknown_repository") from None
+    image_ref = profile["image"]
+    platform = profile["platform"]
+    source.require(platform == "linux/amd64", "scanner_profile_invalid")
     docker = shutil.which("docker")
     source.require(docker is not None, "docker_unavailable")
     host = os.environ.get("DOCKER_HOST")
@@ -349,9 +372,9 @@ def configure_docker(output, oci_archive=None, build_receipt=None):
         host = raw.decode().strip()
     source.require(host.startswith("unix://") and Path(host[7:]).is_absolute()
                    and Path(host[7:]).is_socket(), "local_unix_docker_socket_required")
-    source.require(re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", constants.IMAGE), "invalid_scanner_pin")
+    source.require(re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", image_ref), "invalid_scanner_pin")
     source.require((oci_archive is None) == (build_receipt is None), "oci_archive_receipt_pair_required")
-    verified_ids = verify_oci_archive(oci_archive, build_receipt, constants.IMAGE) if oci_archive else None
+    verified_ids = verify_oci_archive(oci_archive, build_receipt, profile) if oci_archive else None
     empty_config = output / "empty-docker-config"
     empty_config.mkdir(mode=0o700)
     docker_env = source.clean_env() | {"DOCKER_HOST": host, "DOCKER_CONFIG": str(empty_config)}
@@ -369,7 +392,7 @@ def configure_docker(output, oci_archive=None, build_receipt=None):
                 descriptor = json.loads(fields[3]) if is_manifest and len(fields) == 4 else None
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
                 image_id, image_os, image_arch, descriptor = "", "", "", None
-            if (code != 0 or image_id != candidate or image_os != "linux" or image_arch != "arm64"
+            if (code != 0 or image_id != candidate or image_os != "linux" or image_arch != "amd64"
                     or re.fullmatch(r"sha256:[a-f0-9]{64}", image_id) is None):
                 continue
             if is_manifest and (not isinstance(descriptor, dict) or descriptor.get("digest") != manifest_id
@@ -380,7 +403,7 @@ def configure_docker(output, oci_archive=None, build_receipt=None):
         source.require(accepted_id is not None, "reviewed_scanner_image_not_loaded")
         image = accepted_id
     else:
-        code, raw = original_run([docker, "image", "inspect", constants.IMAGE,
+        code, raw = original_run([docker, "image", "inspect", image_ref,
                                   "--format", "{{.Id}}|{{.Os}}|{{.Architecture}}|{{json .RepoDigests}}"],
                                  env=docker_env, max_bytes=4096)
         try:
@@ -391,24 +414,24 @@ def configure_docker(output, oci_archive=None, build_receipt=None):
         if not isinstance(repo_digests, list):
             repo_digests = []
         source.require(code == 0 and re.fullmatch(r"sha256:[a-f0-9]{64}", image_id) is not None
-                       and image_os == "linux" and image_arch == "arm64"
-                       and constants.IMAGE in repo_digests, "reviewed_scanner_image_not_loaded")
-        image = constants.IMAGE
+                       and image_os == "linux" and image_arch == "amd64"
+                       and image_ref in repo_digests, "reviewed_scanner_image_not_loaded")
+        image = image_ref
     source.DOCKER = docker
 
     def local_run(command, **kwargs):
         if command[0] == docker:
-            command = [image if value == constants.IMAGE else value for value in command]
+            command = [image if value == image_ref else value for value in command]
             kwargs["env"] = docker_env
         return original_run(command, **kwargs)
 
     source.run = local_run
 
 
-def run_case(name, expected, head_files, base_files, output, backend, php):
+def run_case(name, expected, head_files, base_files, output, backend, php, repository):
     work = output / name
     try:
-        fixture(work, head_files, base_files)
+        fixture(work, head_files, base_files, repository)
         source.scan(work)
         report = json.loads((work / "output/pair/result.json").read_text(encoding="utf-8"))
         staging = evidence.package(work, CONTEXT)
@@ -417,7 +440,7 @@ def run_case(name, expected, head_files, base_files, output, backend, php):
             for entry in ["evidence.json", "reports/result.json"]:
                 zipped.write(staging / entry, entry)
         profile = "exclusions" if name in EXCLUSION_CASES else "ordinary"
-        code, raw = source.run([php, str(BRIDGE), str(backend), str(work / "state.json"), str(archive), expected, profile],
+        code, raw = source.run([php, str(BRIDGE), str(backend), str(work / "state.json"), str(archive), expected, repository, profile],
                                max_bytes=4096)
         bridge = json.loads(raw)
         source.require(isinstance(bridge, dict), "invalid_bridge_result")
@@ -449,6 +472,8 @@ def main():
     parser.add_argument("--gate-backend", type=Path, required=True, help="Existing trusted Gate backend directory with vendor/autoload.php; never cloned.")
     parser.add_argument("--output-dir", type=Path, required=True, help="New dedicated directory for synthetic fixtures and results.json (must not exist).")
     parser.add_argument("--case", action="append", choices=["pass", "blocked", "incomplete", "verified-absence", "existing-debt", "unsupported-yarn", "unknown-input", *sorted(EXCLUSION_CASES)], help="Run selected synthetic scenarios; repeat to select more than one.")
+    parser.add_argument("--repository", choices=sorted(constants.PROFILES), default="Tuinstra-DEV/gate",
+                        help="Exact repository profile to exercise (Gate or Tracker).")
     parser.add_argument("--scanner-oci-archive", type=Path, help="Exact local OCI archive already loaded into Docker; requires its build receipt.")
     parser.add_argument("--scanner-build-receipt", type=Path, help="Build receipt corresponding to --scanner-oci-archive.")
     args = parser.parse_args()
@@ -465,7 +490,8 @@ def main():
         source.require(not candidate.exists() and not candidate.is_symlink(), "output_directory_already_exists")
         candidate.mkdir(mode=0o700, parents=True)
         output = candidate.resolve()
-        configure_docker(output, args.scanner_oci_archive, args.scanner_build_receipt)
+        profile = constants.profile_for(args.repository)
+        configure_docker(output, args.scanner_oci_archive, args.scanner_build_receipt, args.repository)
         debt = dict(BASE_FILES, **{"legacy.php": b'<?php eval($_GET["legacy"]);\n'})
         excluded = dict(BASE_FILES, **{
             "backend/src/Controller/.placeholder": b"",
@@ -487,9 +513,15 @@ def main():
             ("removed-exclusions", "pass", dict(BASE_FILES), excluded),
             ("blocked-with-exclusions", "blocked", dict(excluded, **{"unsafe.php": b'<?php eval($_GET["input"]);\n'}), excluded),
         ]
-        selected = [case for case in cases if not args.case or case[0] in args.case]
-        results = [run_case(name, expected, files, base, output, backend, php) for name, expected, files, base in selected]
-        summary = {"synthetic": True, "scanner_image": constants.IMAGE, "policy_digest": constants.POLICY_DIGEST, "bundle_digest": constants.BUNDLE_DIGEST, "ok": all(result["ok"] for result in results), "results": results}
+        requested = set(args.case or ())
+        if args.repository == "Tuinstra-DEV/tracker" and requested & EXCLUSION_CASES:
+            raise LocalIntegrationError("profile_exclusions_unsupported")
+        selected = [case for case in cases if (not requested or case[0] in requested)
+                    and (args.repository != "Tuinstra-DEV/tracker" or case[0] not in EXCLUSION_CASES)]
+        results = [run_case(name, expected, files, base, output, backend, php, args.repository) for name, expected, files, base in selected]
+        summary = {"synthetic": True, "proof_scope": "synthetic-common-source-scopes", "repository": args.repository, "scanner_image": profile["image"],
+                   "policy_digest": profile["policy_digest"], "bundle_digest": profile["bundle_digest"],
+                   "ok": all(result["ok"] for result in results), "results": results}
     except Exception as error:
         summary = {"synthetic": True, "ok": False, "reason": safe_reason(error), "results": results}
     if output is not None:

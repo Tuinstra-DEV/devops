@@ -3,30 +3,30 @@
   "tools": {
     "semgrep": {
       "path": "/usr/local/bin/semgrep",
-      "version": "1.178.0",
+      "version": "1.179.0",
       "sha256": "sha256:b62de90872dfba81835241ed983279815aec6a66c1d092fc42835ce74d62edc7"
     },
     "gitleaks": {
       "path": "/usr/local/bin/gitleaks",
       "version": "8.30.1",
-      "sha256": "sha256:d42d50248dab2b72f44638341470b2e824cd23a9d119be990f7c21c1666d502e"
+      "sha256": "sha256:ef62e5885c2e877b15fcbdf038bb766a835022923fc9a07f590a306c91e04616"
     },
     "osv": {
       "path": "/usr/local/bin/osv-scanner",
       "version": "2.3.8",
-      "sha256": "sha256:8158b18edd2d03b1a30d905ca91b032bc62262167be8f206c27114f08823e27c"
+      "sha256": "sha256:bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc"
     }
   },
   "files": {
     ".gitleaksignore": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "acquisition-lock.json": "sha256:c6c20ed63771c95e18ddc6a649fe51029b8f804c4d60c18ada612823045b90d5",
-    "gate-scope-inventory.json": "sha256:dfa9788ddb6d1eda6360188566a60253a934e230e9b5f7f561bb8b2ac46c4fb0",
+    "gate-scope-inventory.json": "sha256:2067f7b6513053c0f75b753190ff2bfc717858f294b06e6336de3d449b2768b2",
     "gitleaks.toml": "sha256:27630a96d6c55755cc37620f3933d5cab94b1eb78a726a32e11212972525d76e",
     "osv/osv-scanner/Packagist/all.zip": "sha256:80040a4b371e876eed43bb736e235d08e3783aa95fc2e48387e7f2f5440a0d30",
     "osv/osv-scanner/npm/all.zip": "sha256:f28ab42d60c2cd13dc4196aebaa28bc4364a6a63e056c9994173b4b009426e1b",
     "policy.json": "sha256:4cb64334618d558d08da5cd4ef3fe33ab7055b6f430013e20f7508d642d75bff",
-    "semgrep-rules.yml": "sha256:e7d97c1018aa7c6d7846427d1e3719423586c59e796fd5a7e210e5c802870323",
-    "semgrep-severity-map.json": "sha256:5d4a154077b2bb0bf0efc5d8f28bff23f8c11fb626754de92034a9190f37494a"
+    "semgrep-rules.yml": "sha256:72d6fd74394f942f49ee6189418e782dc04a95515bcfd9ddb601b38f8517c1e9",
+    "semgrep-severity-map.json": "sha256:fec1672fb303cb9eb33ac9fa3433b9b998fcf79aba271ee4bf366898e02d6328"
   },
   "semgrep": {
     "rules_file": "semgrep-rules.yml",
@@ -44,22 +44,26 @@
   },
   "gate_inventory_file": "gate-scope-inventory.json",
   "supported_scopes": [
-    "secrets",
-    "php",
-    "javascript-typescript",
-    "embedded-web",
-    "composer",
-    "npm",
-    "pnpm",
-    "configuration",
-    "shell-infrastructure",
-    "dockerfile",
-    "web-assets",
-    "template",
-    "php-framework",
     "build-configuration",
+    "composer",
+    "configuration",
+    "dockerfile",
+    "embedded-code",
+    "embedded-web",
+    "javascript-typescript",
+    "npm",
     "opaque-input",
+    "php",
+    "php-framework",
+    "pnpm",
+    "python",
+    "secrets",
+    "shell-infrastructure",
+    "template",
     "unknown-input",
-    "embedded-code"
-  ]
+    "web-assets"
+  ],
+  "platform": "linux/amd64",
+  "base_image_id": "sha256:233fb39e26c4560a390d89e7068761451d02286cdddc7914d47cbd1d190edc11",
+  "python_embedded_php": false
 }

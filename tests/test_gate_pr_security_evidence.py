@@ -54,8 +54,8 @@ def setup_work(work: Path, fixture: str, exit_code: int | None = None):
     work.mkdir()
     (work / "output/pair").mkdir(parents=True)
     report_path = ROOT / "tests/fixtures/gate-pr-security" / fixture
-    raw = report_path.read_bytes()
-    report = json.loads(raw)
+    report = current_profile(json.loads(report_path.read_bytes()))
+    raw = (json.dumps(report, indent=2) + "\n").encode()
     code = {"pass": 0, "blocked": 1, "incomplete": 2}[report["outcome"]] if exit_code is None else exit_code
     (work / "state.json").write_text(json.dumps(state(code)), encoding="utf-8")
     (work / "output/pair/result.json").write_bytes(raw)
@@ -329,7 +329,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
             state_data = json.loads((work / "state.json").read_text())
             state_data["repository"] = "acme/app"
             (work / "state.json").write_text(json.dumps(state_data))
-            with self.assertRaisesRegex(evidence.EvidenceError, "invalid_content_bound_exceptions"):
+            with self.assertRaisesRegex(evidence.EvidenceError, "unknown_repository"):
                 evidence.package(work, environment())
             self.assertFalse((work / "staging").exists())
 

@@ -47,6 +47,37 @@ class SourceTests(unittest.TestCase):
                "repository": repo, "head_repository": {"id": 99}, "pull_requests": []}
         return [repo, pr, run, run.copy()]
 
+    def test_scan_selects_native_tracker_profile_from_verified_state(self):
+        marker, report = self.scan_fixture()
+        state = self.state()
+        state["repository"] = "Tuinstra-DEV/tracker"
+        source.save_state(self.work, state)
+        invoke, calls = self.docker(marker, report)
+        with patch.object(source, "run", side_effect=invoke):
+            source.scan(self.work)
+        profile = source.constants.profile_for(state["repository"])
+        create = next(command for command, _ in calls if command[1] == "create")
+        self.assertIn(profile["image"], create)
+        self.assertEqual(create[create.index("--platform") + 1], "linux/amd64")
+        self.assertEqual(json.loads((self.work / "state.json").read_text())["scanner_image"], profile["image"])
+
+    def test_unknown_repository_never_launches_scanner(self):
+        self.marker()
+        state = self.state()
+        state["repository"] = "other/repository"
+        source.save_state(self.work, state)
+        with patch.object(source, "run") as invoke:
+            with self.assertRaisesRegex(source.Failure, "repository_profile_not_enrolled"):
+                source.scan(self.work)
+        invoke.assert_not_called()
+
+    def test_prepared_image_uses_same_fixed_repository_profile(self):
+        self.marker()
+        state = self.state()
+        state["repository"] = "Tuinstra-DEV/tracker"
+        source.save_state(self.work, state)
+        self.assertEqual(source.prepared_image(self.work), source.constants.profile_for(state["repository"])["image"])
+
     def marker(self):
         self.work.mkdir()
         marker = {"version": 1, "id": "d" * 32, "path": str(self.work), "uid": os.getuid()}

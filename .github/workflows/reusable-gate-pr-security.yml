@@ -6,7 +6,7 @@ on:
 jobs:
   producer:
     name: Gate evidence producer
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -16,4 +16,4 @@ jobs:
       id-token: write
     steps:
       - name: Produce immutable PR security evidence
-        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@75a54fd965150bb267b96913cda68ae953d4cb08
+        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@0f247d92269d386b69e57ee8a240063615fb66c4

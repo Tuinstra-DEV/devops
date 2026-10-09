@@ -45,26 +45,8 @@ PUBLICATION_MAX_WAIT_SECONDS = 180
 PUBLICATION_POLL_INTERVAL_SECONDS = 1.5
 PUBLICATION_MAX_ATTEMPTS = 120
 TRANSIENT_RETRY_LIMIT = 3
-TOOL_VERSIONS = {"semgrep": "1.178.0", "gitleaks": "8.30.1", "osv": "2.3.8", "gate-text": "1", "policy-exclusion": "1"}
-SCOPE_SCANNERS = {
-    "secrets": "gitleaks",
-    "php": "semgrep",
-    "javascript-typescript": "semgrep",
-    "composer": "osv",
-    "npm": "osv",
-    "pnpm": "osv",
-    "embedded-web": "semgrep",
-    "configuration": "gate-text",
-    "shell-infrastructure": "gate-text",
-    "dockerfile": "gate-text",
-    "web-assets": "gate-text",
-    "template": "gate-text",
-    "php-framework": "gate-text",
-    "build-configuration": "gate-text",
-    "opaque-input": "policy-exclusion",
-    "unknown-input": "policy-exclusion",
-    "embedded-code": "policy-exclusion",
-}
+TOOL_VERSIONS = constants.TOOL_VERSIONS
+SCOPE_SCANNERS = constants.SCOPE_SCANNERS
 PAIR_OPTIONAL = {"content_bound_exceptions"}
 CONTENT_BOUND_RULES = {"GATE-TEXT-WORKFLOW-TRUST", "GATE-TEXT-WORKFLOW-WRITE"}
 CONTENT_BOUND_WORKFLOW = ".github/workflows/gate-heal-qa-gate.yml"
@@ -169,12 +151,21 @@ def _load_inputs(work_dir: Path) -> tuple[dict[str, Any], bytes, dict[str, Any]]
     return state, report_raw, report
 
 
-def _validate_state(state: dict[str, Any]) -> None:
-    if state["scanner_image"] != constants.IMAGE:
-        raise EvidenceError("scanner_image_mismatch")
+def _profile_for_state(state: dict[str, Any]) -> Any:
     repository = state["repository"]
     if not isinstance(repository, str) or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise EvidenceError("invalid_state")
+    try:
+        profile = constants.profile_for(repository)
+    except ValueError:
+        raise EvidenceError("unknown_repository") from None
+    if state["scanner_image"] != profile["image"]:
+        raise EvidenceError("scanner_image_mismatch")
+    return profile
+
+
+def _validate_state(state: dict[str, Any]) -> Any:
+    profile = _profile_for_state(state)
     for key in ("repository_id", "owner_id", "run_id"):
         _text(state[key], POSITIVE_RE, "invalid_state")
     _positive_int(state["pull_request"], "invalid_state")
@@ -186,9 +177,12 @@ def _validate_state(state: dict[str, Any]) -> None:
             raise EvidenceError("invalid_state")
     for key in ("base_sha", "head_sha", "base_tree", "head_tree"):
         _text(state[key], SHA_RE, "invalid_state")
+    return profile
 
 
-def _coverage(report: dict[str, Any], complete_outcome: bool) -> list[dict[str, Any]]:
+def _coverage(report: dict[str, Any], complete_outcome: bool, profile: Any = None) -> list[dict[str, Any]]:
+    if profile is None:
+        profile = constants.profile_for("Tuinstra-DEV/gate")
     coverage = report["coverage"]
     if not isinstance(coverage, list) or not coverage:
         raise EvidenceError("coverage_missing")
@@ -205,7 +199,7 @@ def _coverage(report: dict[str, Any], complete_outcome: bool) -> list[dict[str, 
         if scope in scopes:
             raise EvidenceError("duplicate_coverage_scope")
         scopes.add(scope)
-        if row["rules_digest"] != constants.BUNDLE_DIGEST:
+        if row["rules_digest"] != profile["bundle_digest"]:
             raise EvidenceError("untrusted_coverage")
         if not isinstance(row["base_result"], str) or row["base_result"] not in {"complete", "failed", "unsupported"} or not isinstance(row["head_result"], str) or row["head_result"] not in {"complete", "failed", "unsupported"}:
             raise EvidenceError("invalid_coverage")
@@ -217,10 +211,10 @@ def _coverage(report: dict[str, Any], complete_outcome: bool) -> list[dict[str, 
         # Preserve its nonpassing report; never treat it as supported coverage.
         unsupported_yarn = (not complete_outcome and scope == "yarn" and scanner == "osv"
                             and row["base_result"] == "unsupported" and row["head_result"] == "unsupported")
-        if ((SCOPE_SCANNERS.get(scope) != scanner and not unsupported_yarn)
-            or scanner not in TOOL_VERSIONS or row["version"] != TOOL_VERSIONS[scanner]):
+        if ((profile["scope_scanners"].get(scope) != scanner and not unsupported_yarn)
+            or scanner not in profile["tool_versions"] or row["version"] != profile["tool_versions"][scanner]):
             raise EvidenceError("untrusted_coverage")
-        expected_advisory = constants.BUNDLE_DIGEST if "osv" == scanner else None
+        expected_advisory = profile["bundle_digest"] if "osv" == scanner else None
         if row["advisory_digest"] != expected_advisory:
             raise EvidenceError("untrusted_coverage")
         if complete_outcome and (row["base_result"] != "complete" or row["head_result"] != "complete"):
@@ -374,13 +368,15 @@ def _inputs(report: dict[str, Any], coverage: list[dict[str, Any]], complete_out
                 raise EvidenceError("outcome_input_mismatch")
 
 
-def _trusted_exclusions() -> dict[tuple[str, str], set[str]]:
-    path = Path(__file__).with_name("excluded-inputs.json")
+def _trusted_exclusions(profile: Any = None) -> dict[tuple[str, str], set[str]]:
+    if profile is None:
+        profile = constants.profile_for("Tuinstra-DEV/gate")
+    path = Path(__file__).with_name(profile["exclusions_file"])
     raw = _read_regular(path, MAX_EXCLUDED_INPUTS_BYTES, "exclusion_allowlist_unavailable")
-    if "sha256:" + hashlib.sha256(raw).hexdigest() != constants.EXCLUDED_INPUTS_DIGEST:
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != profile["excluded_inputs_digest"]:
         raise EvidenceError("exclusion_allowlist_mismatch")
     document = _decode_json(raw, "exclusion_allowlist_invalid")
-    if set(document) != {"policy_digest", "excluded_inputs"} or document["policy_digest"] != constants.POLICY_DIGEST:
+    if set(document) != {"policy_digest", "excluded_inputs"} or document["policy_digest"] != profile["policy_digest"]:
         raise EvidenceError("exclusion_allowlist_invalid")
     entries = document["excluded_inputs"]
     if not isinstance(entries, list) or len(entries) > 1000:
@@ -406,6 +402,7 @@ def _trusted_exclusions() -> dict[tuple[str, str], set[str]]:
 
 def _source_exclusions(root: Path, state: dict[str, Any], report: dict[str, Any]) -> list[dict[str, str]]:
     """Bind every approved policy exclusion to exact base/head Git blobs."""
+    profile = _profile_for_state(state)
     candidates: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     coverage = {row["scope"]: row for row in report["coverage"]}
@@ -436,7 +433,7 @@ def _source_exclusions(root: Path, state: dict[str, Any], report: dict[str, Any]
     if not candidates:
         return []
 
-    allowlist = _trusted_exclusions()
+    allowlist = _trusted_exclusions(profile)
     for scope, _, path in candidates:
         if (scope, path) not in allowlist:
             raise EvidenceError("unregistered_exclusion")
@@ -505,7 +502,7 @@ def _source_exclusions(root: Path, state: dict[str, Any], report: dict[str, Any]
 
 
 def _validate_report(state: dict[str, Any], report: dict[str, Any]) -> None:
-    _validate_state(state)
+    profile = _validate_state(state)
     if (set(report) not in (PAIR_REQUIRED, PAIR_REQUIRED | PAIR_OPTIONAL)
         or report.get("schema_version") != "1.0" or report.get("document_type") != "ci-pair-result" or report.get("policy_version") != "gate-assurance-1"):
         raise EvidenceError("invalid_report")
@@ -515,7 +512,9 @@ def _validate_report(state: dict[str, Any], report: dict[str, Any]) -> None:
         _text(report[key], SHA_RE, "report_provenance_mismatch")
         if report[key] != state[key]:
             raise EvidenceError("report_provenance_mismatch")
-    if report["bundle_digest"] != constants.BUNDLE_DIGEST or report["dataset_manifest_digest"] != constants.DATASET_DIGEST or report["policy_digest"] != constants.POLICY_DIGEST:
+    if (report["bundle_digest"] != profile["bundle_digest"]
+        or report["dataset_manifest_digest"] != profile["dataset_digest"]
+        or report["policy_digest"] != profile["policy_digest"]):
         raise EvidenceError("report_profile_mismatch")
     outcome = report["outcome"]
     if not isinstance(outcome, str) or outcome not in OUTCOME_EXIT:
@@ -523,7 +522,7 @@ def _validate_report(state: dict[str, Any], report: dict[str, Any]) -> None:
     if state["scanner_exit"] != OUTCOME_EXIT[outcome]:
         raise EvidenceError("scanner_exit_mismatch")
     complete = outcome in {"pass", "blocked"}
-    coverage = _coverage(report, complete)
+    coverage = _coverage(report, complete, profile)
     _validate_findings(report["findings"])
     _inputs(report, coverage, complete)
     if not isinstance(report["reasons"], list) or not isinstance(report["uncompared_findings"], list):
@@ -583,6 +582,7 @@ def _load_context(environment: dict[str, str]) -> dict[str, str]:
 
 
 def _outer_evidence(state: dict[str, Any], report_raw: bytes, report: dict[str, Any], context: dict[str, str], exclusions: list[dict[str, str]]) -> bytes:
+    profile = _profile_for_state(state)
     evidence = {
         "schema_version": "1.1",
         "policy_version": "gate-assurance-1",
@@ -603,9 +603,9 @@ def _outer_evidence(state: dict[str, Any], report_raw: bytes, report: dict[str, 
             "workflow_ref": context["GATE_WORKFLOW_REF"],
             "workflow_sha": context["GATE_WORKFLOW_SHA"],
         },
-        "policy_digest": constants.POLICY_DIGEST,
-        "scanner_image": constants.IMAGE,
-        "dataset_manifest_digest": constants.DATASET_DIGEST,
+        "policy_digest": profile["policy_digest"],
+        "scanner_image": profile["image"],
+        "dataset_manifest_digest": profile["dataset_digest"],
         "coverage": report["coverage"],
         "findings": report["findings"],
         "exclusions": exclusions,

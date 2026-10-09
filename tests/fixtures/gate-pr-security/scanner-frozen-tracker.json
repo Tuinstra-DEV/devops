@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "tools": {
+    "gitleaks": {
+      "path": "/usr/local/bin/gitleaks",
+      "version": "8.30.1",
+      "sha256": "sha256:ef62e5885c2e877b15fcbdf038bb766a835022923fc9a07f590a306c91e04616"
+    },
+    "node": {
+      "path": "/usr/bin/node",
+      "version": "24.21.0",
+      "sha256": "sha256:7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c"
+    },
+    "osv": {
+      "path": "/usr/local/bin/osv-scanner",
+      "version": "2.3.8",
+      "sha256": "sha256:bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc"
+    },
+    "python": {
+      "path": "/usr/bin/python3.11",
+      "version": "3.11.2",
+      "sha256": "sha256:9bee109da0dce17a7c9eeaca9f420cc6770a9fe143b9382d73bd22fe59b21a5f"
+    },
+    "semgrep": {
+      "path": "/usr/local/bin/semgrep",
+      "version": "1.179.0",
+      "sha256": "sha256:b62de90872dfba81835241ed983279815aec6a66c1d092fc42835ce74d62edc7"
+    }
+  },
+  "files": {
+    ".gitleaksignore": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "README.md": "sha256:7a81be8ef4cfebadd7367d4a5e3b78400dda0649ddc9f17b9467eb43d66b319c",
+    "acquisition-lock.json": "sha256:c6c20ed63771c95e18ddc6a649fe51029b8f804c4d60c18ada612823045b90d5",
+    "astro-compiler/LICENSE": "sha256:41bf89dd8dffe96c4d833b7dabef397194a24f3c15c2ef4b050f875c6e9b7d29",
+    "astro-compiler/README.md": "sha256:614bb1f45931a18f3aee944825ef47c89388bdea0904c5e62ac52511aa6b562c",
+    "astro-compiler/dist/astro.wasm": "sha256:66f1affc6b574f14235119c959ffbdea474fa3ab9432fe810bf8bfca338ce139",
+    "astro-compiler/dist/browser/index.cjs": "sha256:7749628accf39cbc4a28b5bd4517e36be86e77102405cefe95f5414227d358ea",
+    "astro-compiler/dist/browser/index.d.ts": "sha256:83e4f47faa86aa3116e94ca4158fa70669f448d05e82cacebb741f9730d21c39",
+    "astro-compiler/dist/browser/index.js": "sha256:a36f59b7cc3a403a1a65bf9912d4680752c3db6e904af1d50a88bfcebe72b132",
+    "astro-compiler/dist/browser/utils.cjs": "sha256:0d2b223e816219a982815105791f9fefdea322181843423a3fb8b20a0c7bdc70",
+    "astro-compiler/dist/browser/utils.d.ts": "sha256:0f46657b7603be0af0defea458083e142133535a2d0f669efbda0886026929f9",
+    "astro-compiler/dist/browser/utils.js": "sha256:ba496b949298c19c6b62772ff37f6d61289392b07b5b9b6ea9ab884efe49b997",
+    "astro-compiler/dist/browser/wasm_exec.cjs": "sha256:5387634224e2a25c3774d3e0888f1cd5414d777b4bc545bfeb2025186f4fc33e",
+    "astro-compiler/dist/browser/wasm_exec.d.ts": "sha256:b2100aee7e459d9edebdd31d134360a581fed93adcf2ba63370658ce5214910e",
+    "astro-compiler/dist/browser/wasm_exec.js": "sha256:6e0bca2a432cbf3e370a0251a54cf58ac9bdf785850e63b4a5df00cfc9378680",
+    "astro-compiler/dist/chunk-QR6QDSEV.js": "sha256:a596f4f4071ca51a242741b09e0a77766e8f5f5e42e0342af3987c61eb0f668a",
+    "astro-compiler/dist/chunk-W5DTLHV4.js": "sha256:65495dd379ba33287966aacb24d14284b0db1b6e4d967249616ab87c003414fd",
+    "astro-compiler/dist/node/index.cjs": "sha256:b5f993cec9e0ad4957734f1f2d8894c296706f9f4256405788c48f1dc75ac3cc",
+    "astro-compiler/dist/node/index.d.ts": "sha256:bc5cbdfc8e61256f5d5892fef6e2394b36a0aa36b377a51841396db0a7ecc169",
+    "astro-compiler/dist/node/index.js": "sha256:273fbf7069a5bfd0ae1944ad6a3cafdb7df4a6557cc1cdc65acea2c4b8ef13e7",
+    "astro-compiler/dist/node/sync.cjs": "sha256:c5870e470e464c29a325975f39497839ffdafd9a1ec15fbb9615d6f43908815c",
+    "astro-compiler/dist/node/sync.d.ts": "sha256:5a45dadca21567588a36abb168dc1255b9d2743b3c69416351aabda497260918",
+    "astro-compiler/dist/node/sync.js": "sha256:294578caf62455f46e90484f3e4b107d7c5a48ed1474d8239b7364b503f8bc6a",
+    "astro-compiler/dist/node/utils.cjs": "sha256:f3628496dfddf0bf7118169566382415a40ebe9fe2f5dd4464971434244081eb",
+    "astro-compiler/dist/node/utils.d.ts": "sha256:0f46657b7603be0af0defea458083e142133535a2d0f669efbda0886026929f9",
+    "astro-compiler/dist/node/utils.js": "sha256:9871e851a1e0662ea3f7b39b829d73ad5beb524daf4024192562ed651ce8067d",
+    "astro-compiler/dist/node/wasm_exec.cjs": "sha256:1e807d71a1112be723f34c2e0bd3bfc939829c16c0c0d74130d54439686a3660",
+    "astro-compiler/dist/node/wasm_exec.d.ts": "sha256:b2100aee7e459d9edebdd31d134360a581fed93adcf2ba63370658ce5214910e",
+    "astro-compiler/dist/node/wasm_exec.js": "sha256:496e90245b84f88b362d4fc57aaa17c1cb7ce6b74e011b4fba93c668b721b4c3",
+    "astro-compiler/dist/shared/ast.cjs": "sha256:10522ccde89194e1e39343df60c45c68663684df9c3ccbc916b40234cedbacbb",
+    "astro-compiler/dist/shared/ast.d.ts": "sha256:3edd67b7989870f1186be4b5de7ccab551b5c7fd877c330533d0368c694891c2",
+    "astro-compiler/dist/shared/ast.js": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "astro-compiler/dist/shared/diagnostics.cjs": "sha256:4fafd21367c3a0f9c083a90e327027f69d6bd4606f82cd4bdc50ca8e0408d7b0",
+    "astro-compiler/dist/shared/diagnostics.d.ts": "sha256:b8e5307a0cbb9de3b6dd530f816e80e669a6c7c1507dd0ec3992ddef7bf8da84",
+    "astro-compiler/dist/shared/diagnostics.js": "sha256:f4f1d1105ca76df67a6160b41e72a97fa2fa4e929759a808e7f7d2cb92ad4ce8",
+    "astro-compiler/dist/shared/types.cjs": "sha256:62d9f037f794b3d138a0967d12d8cf95e781225bbb2bd84dda5403a716320f37",
+    "astro-compiler/dist/shared/types.d.ts": "sha256:77383db287e8d259bd37dec2c4a24324d9a756d28c077c7865b418eabcaaf84d",
+    "astro-compiler/dist/shared/types.js": "sha256:f3206f8a09e4738cc305f3848e4621e2d6f9e5103b3991fc27a9ff541e7f148b",
+    "astro-compiler/package.json": "sha256:e21b15ff0817f7c01bd27f0b0ceff9e15e721a792b6df934e7a7a149dbacbaa6",
+    "astro-compiler/sync.d.ts": "sha256:94db027e53741383fb29581cda0fd252894d96e6eef7a9316aca7352aaa8bc45",
+    "astro-compiler/types.d.ts": "sha256:7f481fed4e43eedbf6f0924b72602c94cef552a35f0d9f46a4e3ff204c22f568",
+    "astro-compiler/utils.d.ts": "sha256:c8af2e3e3451cfee00043ee583b3886c656d86e78e4a555368c95b218bfd9c65",
+    "astro-extract.mjs": "sha256:971ba66177e61ebca9b064d8e8992d645fc414dbf30f814ad6489f6e083bbc3f",
+    "gate-scope-inventory.json": "sha256:dfa9788ddb6d1eda6360188566a60253a934e230e9b5f7f561bb8b2ac46c4fb0",
+    "gitleaks.toml": "sha256:27630a96d6c55755cc37620f3933d5cab94b1eb78a726a32e11212972525d76e",
+    "osv/osv-scanner/Packagist/all.zip": "sha256:80040a4b371e876eed43bb736e235d08e3783aa95fc2e48387e7f2f5440a0d30",
+    "osv/osv-scanner/npm/all.zip": "sha256:f28ab42d60c2cd13dc4196aebaa28bc4364a6a63e056c9994173b4b009426e1b",
+    "patch-source-map.json": "sha256:ac93307f95d4c27c4e9d48edb4af561a4421b4f4b3c60feb81a452a0f7d1e774",
+    "patch-sources/0/index.js": "sha256:01b7d66c854b2fe53ac05c98feb6e0d64722ab8898a778e2d2426a8b468d178f",
+    "patch-sources/1/dist/chunks/module-main.mjs": "sha256:1118596e379498f0fc0d5e4d110f19bdd1066010c859cefa000c160825eff5fa",
+    "patch-sources/2/lib/compile.js": "sha256:dc98f22eee3d511785d92a00758d5f0d48efed5f5813bdecc2de430c529b5c9f",
+    "patch-sources/2/lib/constants.js": "sha256:c18ac5adb57308f1ce42a28552da3a31f5d83709743ebd9a636336813a744d4b",
+    "patch-sources/2/lib/expand.js": "sha256:41ccc196ebfa7b7781a634e721eb744e4e7bcb54cba427a7e3d6806a1b9e58f7",
+    "patch-sources/2/lib/parse.js": "sha256:e572166565f15fa6ad9865ae49d678218e32aabfd1b3720f6d0d43d39800d310",
+    "patch-sources/2/lib/stringify.js": "sha256:379f22d77bfa1478341ccd49c5e4267464aabcbba03558bab332aac23fc6f23a",
+    "patch-sources/3/lib/rsa.js": "sha256:fd4740238145ec26470eb3f06a627c72039538ce1307dbdce40521f94dfd0a50",
+    "policy.json": "sha256:70119e1c38a2598b4f2cfbcc69a3922819adff3c95ec492788a002e6087686e9",
+    "python-embedded.py": "sha256:43dd09e738653247776ec6def68a8dd90329c53e56928949fe7e53b0ee442981",
+    "semgrep-rules.yml": "sha256:d4eea1e9caa072a6196672f38e2dd72e1270c2af57410822b237d42a71323378",
+    "semgrep-severity-map.json": "sha256:fec1672fb303cb9eb33ac9fa3433b9b998fcf79aba271ee4bf366898e02d6328"
+  },
+  "semgrep": {
+    "rules_file": "semgrep-rules.yml",
+    "severity_map_file": "semgrep-severity-map.json"
+  },
+  "gitleaks": {
+    "config_file": "gitleaks.toml"
+  },
+  "osv": {
+    "db_dir": "osv",
+    "ecosystems": [
+      "Packagist",
+      "npm"
+    ]
+  },
+  "supported_scopes": [
+    "build-configuration",
+    "composer",
+    "configuration",
+    "dockerfile",
+    "embedded-code",
+    "embedded-web",
+    "javascript-typescript",
+    "npm",
+    "opaque-input",
+    "patched-javascript",
+    "php",
+    "php-framework",
+    "pnpm",
+    "python",
+    "secrets",
+    "shell-infrastructure",
+    "static-assets",
+    "template",
+    "unknown-input",
+    "web-assets"
+  ],
+  "platform": "linux/amd64",
+  "base_image_id": "sha256:233fb39e26c4560a390d89e7068761451d02286cdddc7914d47cbd1d190edc11",
+  "python_embedded_php": true
+}

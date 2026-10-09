@@ -20,7 +20,7 @@ ensure_contract(trigger.keys == ["workflow_call"], "only reusable invocation is 
 ensure_contract(trigger["workflow_call"].nil? || trigger["workflow_call"].empty?, "no caller commands, policy inputs or secrets")
 ensure_contract(workflow.fetch("jobs").keys == ["producer"], "one authenticated producer")
 producer = workflow.fetch("jobs").fetch("producer")
-ensure_contract(producer["runs-on"] == "ubuntu-24.04-arm", "untrusted PR data stays on the isolated hosted runner")
+ensure_contract(producer["runs-on"] == "ubuntu-24.04", "untrusted PR data stays on the isolated hosted runner")
 ensure_contract(producer["timeout-minutes"] == 20, "bounded job duration")
 ensure_contract(producer["permissions"] == permissions, "exact least-privilege job permissions")
 ensure_contract(!producer.key?("if") && !producer.key?("continue-on-error"), "no silently skipped or ignored producer failure")
@@ -30,6 +30,8 @@ ensure_contract(steps[0]["with"].nil?, "caller cannot configure helper execution
 ensure_contract(action["inputs"].nil?, "helper has no free commands or policy overrides")
 action_steps = action.fetch("runs").fetch("steps")
 ensure_contract(action_steps.none? { |step| step["continue-on-error"] }, "no ignored step failures")
+pull = action_steps.find { |step| step["name"] == "Pull fixed scanner image" }.fetch("run")
+ensure_contract(pull.include?('source.py" image --work-dir "$GATE_WORK_DIR"') && pull.include?('docker pull --platform linux/amd64 "$gate_image"'), "pull uses the prepared repository profile on its native platform")
 scan_index = action_steps.index { |step| step["run"].to_s.include?("source.py\" scan") }
 upload_index = action_steps.index { |step| step["uses"].to_s.start_with?("actions/upload-artifact@") }
 submit_index = action_steps.index { |step| step["run"].to_s.include?("evidence.py\" submit") }
