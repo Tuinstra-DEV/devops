@@ -6,9 +6,21 @@ import subprocess
 import unittest
 
 CONTRACT = Path(__file__).resolve().parents[2] / "infra/packer/scripts/verify-image-contract.sh"
+INSTALLER = Path(__file__).resolve().parents[2] / "infra/packer/scripts/install-runner.sh"
 
 
 class ImageContractTests(unittest.TestCase):
+    def test_gate_php83_sqlite_is_installed_and_probed(self):
+        installer = INSTALLER.read_text()
+        self.assertIn('"php8.3-sqlite3=${PHP83_VERSION}"', installer)
+        self.assertIn('php83_sqlite=${PHP83_VERSION}', installer)
+        source = CONTRACT.read_text()
+        self.assertIn('"pdo_sqlite"', source)
+        self.assertIn('"sqlite3"', source)
+        self.assertIn('sqlite::memory:', source)
+        self.assertIn('php83_sqlite=', source)
+        self.assertIn('dpkg-query -W -f=', source)
+
     def command_preflight(self, missing_composer=False):
         if not shutil.which("docker"):
             self.skipTest("Docker is required for the Linux PATH regression")
