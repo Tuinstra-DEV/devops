@@ -33,7 +33,19 @@ node --version | grep -E '^v24\.' >/dev/null
 php8.3 --version | grep -E '^PHP 8\.3\.' >/dev/null
 php8.4 --version | grep -E '^PHP 8\.4\.' >/dev/null
 # Fail the image build before a no-new-privileges job discovers a missing module.
-php8.3 -r 'foreach (["ctype", "iconv", "openssl", "Zend OPcache", "zip"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); } }'
+php8.3 -r '
+  foreach (["ctype", "iconv", "openssl", "pdo", "pdo_sqlite", "sqlite3", "Zend OPcache", "zip"] as $ext) {
+    if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); }
+  }
+  try {
+    $pdo = new PDO("sqlite::memory:");
+    $pdo->exec("CREATE TABLE ci_probe (value INTEGER NOT NULL)");
+    $pdo->exec("INSERT INTO ci_probe (value) VALUES (1)");
+    if ((int) $pdo->query("SELECT value FROM ci_probe")->fetchColumn() !== 1) {
+      throw new RuntimeException("query mismatch");
+    }
+  } catch (Throwable $error) { fwrite(STDERR, "PHP 8.3 SQLite PDO unusable\n"); exit(1); }
+'
 php8.4 -r 'foreach (["ctype", "fileinfo", "iconv", "intl", "mbstring", "openssl", "pdo_pgsql", "zip", "dom", "SimpleXML", "xml", "xmlwriter", "tokenizer"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.4 missing $ext\n"); exit(1); } }'
 composer --version | grep -E '^Composer version 2\.' >/dev/null
 playwright --version
@@ -61,5 +73,10 @@ test -d /opt/ms-playwright
 test -x /usr/local/bin/chromium
 readlink -f /usr/local/bin/chromium | grep -E '^/opt/ms-playwright/' >/dev/null
 test -s /etc/ci-runner-image-manifest
+php83_manifest_version="$(sed -n 's/^php83=//p' /etc/ci-runner-image-manifest)"
+php83_sqlite_manifest_version="$(sed -n 's/^php83_sqlite=//p' /etc/ci-runner-image-manifest)"
+test -n "$php83_manifest_version"
+test "$php83_manifest_version" = "$php83_sqlite_manifest_version"
+test "$php83_sqlite_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-sqlite3)"
 
 echo "immutable runner image contract passed"

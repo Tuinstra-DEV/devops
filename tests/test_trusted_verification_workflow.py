@@ -440,6 +440,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.assertNotIn("shivammathur/setup-php@", trusted)
         self.assertIn("shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240", hosted)
         self.assertNotIn("sudo", trusted_php_script())
+        self.assertIn('"gate-php": ("medium", "", "", "8.3", "ctype, iconv, pdo_sqlite, sqlite3")', source)
 
         fake_php = """#!/usr/bin/env python3
 import os
@@ -449,6 +450,9 @@ if len(sys.argv) >= 3 and sys.argv[1] == '-r':
         print(os.environ.get('FAKE_PHP_VERSION', '8.4'), end='')
     elif 'extension_loaded' in sys.argv[2]:
         if os.environ.get('FAKE_MISSING_EXTENSION') in sys.argv[3].split(','):
+            raise SystemExit(1)
+    elif 'sqlite::memory:' in sys.argv[2]:
+        if os.environ.get('FAKE_MISSING_EXTENSION') == 'sqlite-driver':
             raise SystemExit(1)
 elif len(sys.argv) >= 2 and sys.argv[1] == os.environ['FAKE_COMPOSER_PATH']:
     print('Composer version ' + os.environ.get('FAKE_COMPOSER_VERSION', '2.9.0'))
@@ -468,14 +472,16 @@ else:
         script = script.replace("/usr/local/bin/composer", str(fake_composer))
 
         cases = (
-            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.3", "", "", True),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "", "", True),
             ("Tuinstra-DEV/tracker", "tracker-backend-postgres", "8.4",
              "ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip", "8.4", "", "", True),
             ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "", "", True),
-            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.4", "", "", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.4", "", "", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "pdo_sqlite", "", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "sqlite-driver", "", False),
             ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "intl", "", False),
-            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv", "8.3", "", "3.0.0", False),
-            ("Tuinstra-DEV/gate", "gate-php", "8.4", "ctype, iconv", "8.4", "", "", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "", "3.0.0", False),
+            ("Tuinstra-DEV/gate", "gate-php", "8.4", "ctype, iconv, pdo_sqlite, sqlite3", "8.4", "", "", False),
         )
         for index, (repo, key, version, extensions, actual, missing, composer_version, succeeds) in enumerate(cases):
             with self.subTest(repo=repo, key=key, index=index):
