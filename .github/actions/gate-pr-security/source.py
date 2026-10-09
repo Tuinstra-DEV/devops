@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+import constants
 from constants import IMAGE
 
 API = "https://api.github.com"
@@ -178,6 +179,7 @@ def provider_state(environ):
     require(decimal(repo.get("id")) == state["repository_id"]
             and decimal(repo.get("owner", {}).get("id")) == state["owner_id"]
             and repo.get("full_name", "").lower() == repository.lower(), "repository_mismatch")
+    profile_for_state(state)
     pr = api(prefix + "/pulls/" + str(state["pull_request"]), token)
     require(pr.get("number") == state["pull_request"] and pr.get("state") == "open"
             and pr.get("merged") is False, "pr_not_current")
@@ -344,14 +346,34 @@ def cleanup(work):
     shutil.rmtree(work)
 
 
+def profile_for_state(state):
+    require(isinstance(state, dict), "invalid_state")
+    try:
+        profile = constants.profile_for(state.get("repository"))
+    except ValueError:
+        raise Failure("repository_profile_not_enrolled") from None
+    require(re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", profile["image"]) is not None,
+            "invalid_scanner_pin")
+    require(profile["platform"] == "linux/amd64", "invalid_scanner_platform")
+    return profile
+
+
+def prepared_image(work):
+    marker_for(work)
+    state_path = work / "state.json"
+    require(state_path.is_file() and not state_path.is_symlink()
+            and state_path.stat().st_size <= 65536, "invalid_work_directory")
+    return profile_for_state(decode_json(state_path.read_bytes()))["image"]
+
+
 def scan(work):
     started = time.monotonic()
     marker = marker_for(work)
     require(os.getuid() != 0, "root_scanner_forbidden")
-    require(re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", IMAGE) is not None, "invalid_scanner_pin")
     require(work.is_dir() and not (work / "state.json").is_symlink(), "invalid_work_directory")
     state = decode_json((work / "state.json").read_bytes())
-    require(isinstance(state, dict) and "scanner_exit" not in state, "scan_already_recorded")
+    profile = profile_for_state(state)
+    require("scanner_exit" not in state, "scan_already_recorded")
     for side in ("base", "head"):
         sha(state.get(side + "_sha"))
     for name in ("objects.git", "base", "head", "output"):
@@ -359,13 +381,13 @@ def scan(work):
     require(not (work / "output/pair").exists(), "scan_output_exists")
     name = "gate-ci-" + marker["id"]
     command = [DOCKER, "create", "--name", name, "--label", "io.tuinstra.gate.work=" + marker["id"],
-               "--user", str(os.getuid()) + ":" + str(os.getgid()), "--pull", "never", "--platform", "linux/arm64",
+               "--user", str(os.getuid()) + ":" + str(os.getgid()), "--pull", "never", "--platform", profile["platform"],
                "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                "--memory", "3g", "--cpus", "2", "--pids-limit", "128",
                "--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=512m,mode=1777"]
     for source, target in [("objects.git", "objects.git"), ("base", "base"), ("head", "head")]:
         command.extend(["--mount", f"type=bind,src={work / source},dst=/input/{target},readonly"])
-    command.extend(["--mount", f"type=bind,src={work / 'output'},dst=/output", IMAGE,
+    command.extend(["--mount", f"type=bind,src={work / 'output'},dst=/output", profile["image"],
                     "--git-dir", "/input/objects.git", "--base-dir", "/input/base", "--head-dir", "/input/head",
                     "--base", state["base_sha"], "--head", state["head_sha"], "--bundle", "/opt/gate-ci",
                     "--output", "/output/pair"])
@@ -388,7 +410,7 @@ def scan(work):
             "scanner_report_invalid")
     for field in ("coverage", "findings", "inputs", "reasons", "uncompared_findings"):
         require(isinstance(report.get(field), list), "scanner_report_invalid")
-    state["scanner_image"] = IMAGE
+    state["scanner_image"] = profile["image"]
     state["scanner_exit"] = code
     state["scan_duration_ms"] = int((time.monotonic() - started) * 1000)
     save_state(work, state)
@@ -402,12 +424,15 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "scan", "cleanup"))
+    parser.add_argument("operation", choices=("prepare", "image", "scan", "cleanup"))
     parser.add_argument("--work-dir", required=True)
     arguments = parser.parse_args()
     try:
         work = work_path(arguments.work_dir)
-        {"prepare": prepare, "scan": scan, "cleanup": cleanup}[arguments.operation](work)
+        if arguments.operation == "image":
+            print(prepared_image(work))
+        else:
+            {"prepare": prepare, "scan": scan, "cleanup": cleanup}[arguments.operation](work)
     except Failure as error:
         parser.exit(2, "Gate preparation failed: " + str(error) + "\n")
     except Exception:
