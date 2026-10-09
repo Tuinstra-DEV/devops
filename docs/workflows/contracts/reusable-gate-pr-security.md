@@ -32,6 +32,12 @@ heavy application tests use Sanctuary separately. The current Sanctuary admissio
 policy does not admit this `pull_request_target` producer, so its runner is not
 changed to self-hosted by this delivery.
 
+The local producer/publisher bridge uses the 14 scopes present in its synthetic
+web fixture. It proves common source handling and outcome preservation, not full
+Tracker runtime coverage. The separate native real-source and capability reports
+cover Python, patched dependencies and static assets. Production scope policy is
+unchanged by this test registration.
+
 ### Historical DEV-49 / IN-28 profile
 
 The earlier reviewed profile remains attributable to its original evidence:

@@ -60,7 +60,6 @@ try {
                 'shell-infrastructure' => 'gate-text', 'dockerfile' => 'gate-text',
                 'web-assets' => 'gate-text', 'template' => 'gate-text',
                 'php-framework' => 'gate-text', 'build-configuration' => 'gate-text',
-                'python' => 'semgrep',
             ],
         ],
         'Tuinstra-DEV/tracker' => [
@@ -76,8 +75,6 @@ try {
                 'shell-infrastructure' => 'gate-text', 'dockerfile' => 'gate-text',
                 'web-assets' => 'gate-text', 'template' => 'gate-text',
                 'php-framework' => 'gate-text', 'build-configuration' => 'gate-text',
-                'python' => 'semgrep', 'patched-javascript' => 'semgrep',
-                'static-assets' => 'gate-assets',
             ],
         ],
     ];
@@ -135,7 +132,10 @@ try {
     }
     $sha = str_repeat('a', 40);
     $workflow = 'Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@'.$sha;
-    // Fixed synthetic-fixture profile; never derive required coverage from the ZIP.
+    // Fixed required scopes for BASE_FILES in the synthetic integration fixture.
+    // Extra Python, patch and binary capabilities are proved by the separate
+    // full-source/capability reports, not falsely required from this web fixture.
+    // Never derive required coverage from the ZIP.
     $coverage = [];
     foreach ($selected['scopes'] as $scope => $scanner) {
         $version = $selected['versions'][$scanner];

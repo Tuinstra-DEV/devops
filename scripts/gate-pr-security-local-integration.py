@@ -519,7 +519,7 @@ def main():
         selected = [case for case in cases if (not requested or case[0] in requested)
                     and (args.repository != "Tuinstra-DEV/tracker" or case[0] not in EXCLUSION_CASES)]
         results = [run_case(name, expected, files, base, output, backend, php, args.repository) for name, expected, files, base in selected]
-        summary = {"synthetic": True, "repository": args.repository, "scanner_image": profile["image"],
+        summary = {"synthetic": True, "proof_scope": "synthetic-common-source-scopes", "repository": args.repository, "scanner_image": profile["image"],
                    "policy_digest": profile["policy_digest"], "bundle_digest": profile["bundle_digest"],
                    "ok": all(result["ok"] for result in results), "results": results}
     except Exception as error:
