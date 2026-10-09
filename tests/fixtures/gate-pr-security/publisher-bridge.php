@@ -39,11 +39,52 @@ function localBytes(string $path, int $limit): string
 }
 
 try {
-    if (!in_array($argc, [5, 6], true) || !in_array($argv[4], ['pass', 'blocked', 'incomplete'], true)
-        || (6 === $argc && !in_array($argv[5], ['ordinary', 'exclusions'], true))) {
+    if (!in_array($argc, [6, 7], true) || !in_array($argv[4], ['pass', 'blocked', 'incomplete'], true)
+        || !in_array($argv[5], ['Tuinstra-DEV/gate', 'Tuinstra-DEV/tracker'], true)
+        || (7 === $argc && !in_array($argv[6], ['ordinary', 'exclusions'], true))) {
         emit(['ok' => false, 'reason' => 'bridge_invalid_arguments'], 2);
     }
-    $profile = 6 === $argc ? $argv[5] : 'ordinary';
+    $repository = $argv[5];
+    $caseProfile = 7 === $argc ? $argv[6] : 'ordinary';
+    $profiles = [
+        'Tuinstra-DEV/gate' => [
+            'repositoryId' => '42',
+            'bundle' => 'sha256:4f004763e61e1e52c4e1c20188d87fb725273a2f187be580e662760dfefb6217',
+            'policy' => 'sha256:4cb64334618d558d08da5cd4ef3fe33ab7055b6f430013e20f7508d642d75bff',
+            'image' => 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:7c8e368736a4fe78026b6f42509be15d0bcabb45cc3c87a2cad9cc0d6fd53289',
+            'versions' => ['osv' => '2.3.8', 'semgrep' => '1.179.0', 'gitleaks' => '8.30.1', 'gate-text' => '1'],
+            'scopes' => [
+                'composer' => 'osv', 'javascript-typescript' => 'semgrep', 'npm' => 'osv',
+                'php' => 'semgrep', 'secrets' => 'gitleaks', 'pnpm' => 'osv',
+                'embedded-web' => 'semgrep', 'configuration' => 'gate-text',
+                'shell-infrastructure' => 'gate-text', 'dockerfile' => 'gate-text',
+                'web-assets' => 'gate-text', 'template' => 'gate-text',
+                'php-framework' => 'gate-text', 'build-configuration' => 'gate-text',
+                'python' => 'semgrep',
+            ],
+        ],
+        'Tuinstra-DEV/tracker' => [
+            'repositoryId' => '43',
+            'bundle' => 'sha256:57c42d26810429cfff7d122c2001930c9f3fa64c977912a73020da162f751037',
+            'policy' => 'sha256:70119e1c38a2598b4f2cfbcc69a3922819adff3c95ec492788a002e6087686e9',
+            'image' => 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:fe54383ae144931c798391568a17d6585c5a231b766c57d94158fb457db0e66b',
+            'versions' => ['osv' => '2.3.8', 'semgrep' => '1.179.0', 'gitleaks' => '8.30.1', 'gate-text' => '1', 'gate-assets' => '1'],
+            'scopes' => [
+                'composer' => 'osv', 'javascript-typescript' => 'semgrep', 'npm' => 'osv',
+                'php' => 'semgrep', 'secrets' => 'gitleaks', 'pnpm' => 'osv',
+                'embedded-web' => 'semgrep', 'configuration' => 'gate-text',
+                'shell-infrastructure' => 'gate-text', 'dockerfile' => 'gate-text',
+                'web-assets' => 'gate-text', 'template' => 'gate-text',
+                'php-framework' => 'gate-text', 'build-configuration' => 'gate-text',
+                'python' => 'semgrep', 'patched-javascript' => 'semgrep',
+                'static-assets' => 'gate-assets',
+            ],
+        ],
+    ];
+    $selected = $profiles[$repository];
+    if ('Tuinstra-DEV/tracker' === $repository && 'exclusions' === $caseProfile) {
+        throw new PublisherFailure('bridge_profile_exclusions_unsupported');
+    }
     $backend = realpath($argv[1]);
     if (false === $backend || !is_file($backend.'/vendor/autoload.php')) {
         emit(['ok' => false, 'reason' => 'bridge_backend_unavailable'], 2);
@@ -51,8 +92,8 @@ try {
     require $backend.'/vendor/autoload.php';
     $state = json_decode(localBytes($argv[2], 65_536), true, 128, JSON_THROW_ON_ERROR);
     if (!is_array($state)
-        || ($state['repository'] ?? null) !== 'Tuinstra-DEV/gate'
-        || ($state['repository_id'] ?? null) !== '42'
+        || ($state['repository'] ?? null) !== $repository
+        || ($state['repository_id'] ?? null) !== $selected['repositoryId']
         || ($state['owner_id'] ?? null) !== '12'
         || ($state['run_id'] ?? null) !== '900'
         || ($state['run_attempt'] ?? null) !== 2
@@ -65,78 +106,64 @@ try {
         }
     }
 
-    // Reviewed DevOps constants.py literals; never derive policy from the ZIP.
-    $bundle = 'sha256:6d48a8ebf88802e888e5bd527f8bdece0d91cff340c9064efb3592cecdd8362d';
-    $policy = 'sha256:4cb64334618d558d08da5cd4ef3fe33ab7055b6f430013e20f7508d642d75bff';
-    $image = 'ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:85cef5779d1323b12ad561542d1c7fa1ac52007f79ee28879ac40b9d352242bc';
-    // This is the trusted local Gate policy, pinned by the published scanner's
-    // exact digest. ZIP contents never select the server-side exclusion allowlist.
-    $policyBytes = localBytes($backend.'/ci-scanner/policy.json', 262_144);
-    if ('sha256:'.hash('sha256', $policyBytes) !== $policy) {
-        throw new PublisherFailure('bridge_policy_mismatch');
-    }
-    $policyData = json_decode($policyBytes, true, 128, JSON_THROW_ON_ERROR);
-    if (!is_array($policyData) || !is_array($policyData['excluded_inputs'] ?? null)
-        || !array_is_list($policyData['excluded_inputs'])) {
-        throw new PublisherFailure('bridge_policy_invalid');
-    }
+    // Repository profile bindings and required coverage are fixed above, never
+    // read from the untrusted evidence archive.
+    $bundle = $selected['bundle'];
+    $policy = $selected['policy'];
+    $image = $selected['image'];
     $excludedInputs = [];
-    foreach ($policyData['excluded_inputs'] as $excluded) {
-        if (!is_array($excluded) || array_keys($excluded) !== ['scope', 'path', 'sha256', 'reason']) {
+    if ('Tuinstra-DEV/gate' === $repository) {
+        // Keep Gate's current source-policy check. Tracker's exact policy digest
+        // is independently pinned above; its profile source is not in this checkout.
+        $policyBytes = localBytes($backend.'/ci-scanner/policy.json', 262_144);
+        if ('sha256:'.hash('sha256', $policyBytes) !== $policy) {
+            throw new PublisherFailure('bridge_policy_mismatch');
+        }
+        $policyData = json_decode($policyBytes, true, 128, JSON_THROW_ON_ERROR);
+        if (!is_array($policyData) || !is_array($policyData['excluded_inputs'] ?? null)
+            || !array_is_list($policyData['excluded_inputs'])) {
             throw new PublisherFailure('bridge_policy_invalid');
         }
-        $excludedInputs[] = ['scope' => $excluded['scope'], 'path' => $excluded['path'], 'sha256' => $excluded['sha256']];
-    }
-    if ('ordinary' === $profile) {
-        $excludedInputs = [];
+        if ('exclusions' === $caseProfile) {
+            foreach ($policyData['excluded_inputs'] as $excluded) {
+                if (!is_array($excluded) || array_keys($excluded) !== ['scope', 'path', 'sha256', 'reason']) {
+                    throw new PublisherFailure('bridge_policy_invalid');
+                }
+                $excludedInputs[] = ['scope' => $excluded['scope'], 'path' => $excluded['path'], 'sha256' => $excluded['sha256']];
+            }
+        }
     }
     $sha = str_repeat('a', 40);
     $workflow = 'Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@'.$sha;
     // Fixed synthetic-fixture profile; never derive required coverage from the ZIP.
     $coverage = [];
-    $requiredCoverage = [
-        ['osv', '2.3.8', 'composer', $bundle],
-        ['semgrep', '1.178.0', 'javascript-typescript', null],
-        ['osv', '2.3.8', 'npm', $bundle],
-        ['semgrep', '1.178.0', 'php', null],
-        ['gitleaks', '8.30.1', 'secrets', null],
-        ['osv', '2.3.8', 'pnpm', $bundle],
-        ['semgrep', '1.178.0', 'embedded-web', null],
-        ['gate-text', '1', 'configuration', null],
-        ['gate-text', '1', 'shell-infrastructure', null],
-        ['gate-text', '1', 'dockerfile', null],
-        ['gate-text', '1', 'web-assets', null],
-        ['gate-text', '1', 'template', null],
-        ['gate-text', '1', 'php-framework', null],
-        ['gate-text', '1', 'build-configuration', null],
-    ];
-    if ('exclusions' === $profile) {
-        $requiredCoverage = [
-            ...$requiredCoverage,
-            ['policy-exclusion', '1', 'opaque-input', null],
-            ['policy-exclusion', '1', 'unknown-input', null],
-            ['policy-exclusion', '1', 'embedded-code', null],
-        ];
-    }
-    foreach ($requiredCoverage as [$scanner, $version, $scope, $advisory]) {
+    foreach ($selected['scopes'] as $scope => $scanner) {
+        $version = $selected['versions'][$scanner];
+        $advisory = 'osv' === $scanner ? $bundle : null;
         $coverage[] = ['scanner' => $scanner, 'version' => $version, 'scope' => $scope,
             'rules_digest' => $bundle, 'advisory_digest' => $advisory];
     }
+    if ('Tuinstra-DEV/gate' === $repository && 'exclusions' === $caseProfile) {
+        foreach (['opaque-input', 'unknown-input', 'embedded-code'] as $scope) {
+            $coverage[] = ['scanner' => 'policy-exclusion', 'version' => '1', 'scope' => $scope,
+                'rules_digest' => $bundle, 'advisory_digest' => null];
+        }
+    }
     $registration = new PublisherRegistration(
-        repository: 'Tuinstra-DEV/gate', repositoryId: '42', ownerId: '12', installationId: '9',
+        repository: $repository, repositoryId: $selected['repositoryId'], ownerId: '12', installationId: '9',
         workflowRef: $workflow, workflowSha: $sha, audience: 'https://gate.tuinstra.dev/pr-security',
         policyDigest: $policy, scannerImage: $image, bundleDigest: $bundle, datasetManifestDigest: $bundle,
         requiredJobs: ['gate-pr-security'], coverage: $coverage, eventName: 'pull_request_target',
         assuranceVersion: '1.1', excludedInputs: $excludedInputs,
     );
     $identity = new ActionsIdentity(
-        repositoryId: '42', ownerId: '12', runId: '900', runAttempt: 2, checkRunId: '80',
+        repositoryId: $selected['repositoryId'], ownerId: '12', runId: '900', runAttempt: 2, checkRunId: '80',
         workflowRef: $workflow, workflowSha: $sha, eventName: 'pull_request_target',
         ref: 'refs/heads/main', executionSha: str_repeat('d', 40),
         issuedAt: 1790500000, expiresAt: 1790500600, jtiHash: hash('sha256', 'dev46-local-artifact-bridge'),
     );
     $archive = localBytes($argv[3], 8_388_608);
-    $request = new PrSecurityReceiptInput('42', $state['pull_request'], $state['base_sha'], $state['head_sha'],
+    $request = new PrSecurityReceiptInput($selected['repositoryId'], $state['pull_request'], $state['base_sha'], $state['head_sha'],
         '5001', 'sha256:'.hash('sha256', $archive));
     $verified = (new ArtifactVerifier())->verify($archive, $registration, $identity, $request);
     if ($verified->outcome !== $argv[4]) {

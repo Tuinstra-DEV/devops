@@ -9,15 +9,28 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 
 ## Review and enrollment
 
-This delivery supplies the reviewed producer for the Gate-only pilot. Server
-enrollment and App-specific branch enforcement are separate operational steps.
-The current private scanner image is `ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:3fcdefee1936f3e973209fd8f7ed1cb476935f6b0ee6cd7f7d591c0084481355`.
-IN-29 published and verified it through protected Gate run `37227722419`, source
-`c2faed94053b449948242fedf0950c7a9763fbf1`, including exact OCI provenance,
-read-only digest pull and anonymous access refusal. Its policy is
-`sha256:eb75f555e8d08280cbb658c9317020c24196e67148267bc6a957a16f45374a0b` and bundle/dataset `sha256:baede296ee579f2a6b7a171816641b2584cf4915ca2e314cd092cb298f327bf9`.
-Only Gate currently has package Actions access. No mutable image override is accepted.
-Another consumer requires its own approved enrollment.
+The producer now has two repository-bound Linux AMD64 profiles. Selection follows
+validated GitHub repository identity; callers and PR files cannot supply an image,
+policy or scanner configuration. Unknown repositories fail closed. The immutable
+profiles and tool/scope inventories are in
+`.github/actions/gate-pr-security/constants.py`.
+
+| Repository | Scanner manifest digest |
+| --- | --- |
+| `Tuinstra-DEV/gate` | `sha256:7c8e368736a4fe78026b6f42509be15d0bcabb45cc3c87a2cad9cc0d6fd53289` |
+| `Tuinstra-DEV/tracker` | `sha256:fe54383ae144931c798391568a17d6585c5a231b766c57d94158fb457db0e66b` |
+
+Both images use `ghcr.io/tuinstra-dev/gate/ci-scanner`. Gate preserves its exact
+reviewed exclusions; Tracker has its own policy-bound empty exclusion list.
+Reports cannot mix an image, policy, dataset or scanner inventory from the other
+profile. Server enrollment, repository package access and App-specific branch
+checks remain separate operational steps; merging this producer does not enable
+Tracker or automatic Heal fixes.
+
+This short PR security producer runs on isolated hosted `ubuntu-24.04`. Gate's
+heavy application tests use Sanctuary separately. The current Sanctuary admission
+policy does not admit this `pull_request_target` producer, so its runner is not
+changed to self-hosted by this delivery.
 
 ### Historical DEV-49 / IN-28 profile
 
@@ -85,7 +98,7 @@ object identities, symlinks, submodules and LFS pointers are checked against the
 strict scanner contract. No repository hooks, filters, scripts, package manager,
 plugins, submodule initialization or PR scanner configuration are executed.
 
-The scanner uses the fixed Linux ARM64 image and a non-root host UID/GID so the
+The scanner uses the repository-selected fixed Linux AMD64 image and a non-root host UID/GID so the
 host can read its owner-only result. Only the object store and base/head source
 mounts are read-only; its output mount and bounded scratch are writable. Root
 filesystem is read-only, networking is disabled, capabilities are dropped,
@@ -94,7 +107,8 @@ runner workspace, authentication directory or environment credentials are passed
 into the container. Registry credentials exist only during the trusted pull.
 
 The fixed profile covers secrets, PHP/Symfony, JavaScript/TypeScript, strict Vue
-script/template processing, Composer, npm and supported pnpm v9 locks. Its bounded
+script/template processing, Python, Composer, npm and supported pnpm v9 locks.
+Tracker additionally supports its registered patched JavaScript and static asset scopes. Its bounded
 `gate-text` rules process configuration, shell/workflows/infrastructure, Dockerfiles,
 web text assets, Twig, framework markers and build configuration. The named scopes
 and rules in the image inventory define the capability; complete does not promise
@@ -157,7 +171,7 @@ alone does not prove that an older same-head success cannot be reused.
 
 ## Operations and cost
 
-Use the hosted ARM64 runner with the fixed job timeout. Retries are bounded,
+Use the hosted AMD64 runner with the fixed job timeout. Retries are bounded,
 reuse the same immutable artifact and preserve receipt identity. GitHub Actions
 run/job timings and the job summary provide runner and scan-duration evidence;
 no new billing service is introduced. During the pilot, record the actual
@@ -207,14 +221,14 @@ Select individual scenarios with repeatable `--case NAME` when investigating a c
 
 The optional integration command requires the existing Gate backend dependencies,
 PHP with ZIP support, Git, Docker with a local Unix socket and the already loaded
-reviewed ARM64 scanner image. It does not pull an image or access GitHub/Gate.
+reviewed AMD64 scanner image. It does not pull an image or access GitHub/Gate.
 It creates only synthetic Git objects and regular source fixtures, never another
 application checkout. The scanner runs with the production restrictions and its
 actual report is packaged and verified by Gate's real PHP artifact verifier.
 
 With both optional archive/receipt arguments, the local adapter verifies the full archive
 checksum and immutable manifest/config/layers. It validates the receipt's declared
-clean source and ARM64 platform; authenticating its source commit against the
+clean source and the selected AMD64 platform; authenticating its source commit against the
 protected build run remains an independent operator check. It checks the already
 loaded immutable Docker identity (classic config or containerd platform
 manifest) and maps only the fixed registry reference to that identity. Without those
