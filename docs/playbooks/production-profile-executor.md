@@ -63,8 +63,10 @@ non-blocking lock gedurende de volledige check of apply. Back-up-, restore- en
 deployhelpers gebruiken dezelfde buitenste lock voordat ze een app- of
 Restic-lock nemen.
 
-Resultaten worden atomair en met `fsync` gejournaled op job- en planhash. Een
-herhaald verzoek krijgt hetzelfde terminale resultaat. Een afgebroken apply
+Resultaten worden atomair en met `fsync` gejournaled op job- en planhash. De
+gezamenlijke hostlock blijft vastgehouden totdat ook de terminale receipt
+duurzaam is opgeslagen. Een fout bij de eerste journalwrite geeft de lock vrij
+zonder Ansible te starten. Een herhaald verzoek krijgt hetzelfde terminale resultaat. Een afgebroken apply
 zonder terminaal resultaat blijft `uncertain` en moet worden gereconcilieerd;
 de worker mag hem niet blind opnieuw uitvoeren.
 
@@ -74,3 +76,24 @@ en het verwijderen van uitsluitend de forced key voor
 voor onderzoek. Draai de oude profielversie niet terug als dat actuele Caddy-
 of applicatieroutes zou verwijderen; publiceer daarvoor een nieuwe beoordeelde
 profielversie.
+
+
+## DEV-36: status na verbroken verbinding
+
+De vaste `status`-opcode bindt het oorspronkelijke `job_id`, `plan_hash`, host,
+profiel/SHA en `execution_operation` plus de oorspronkelijke checkhash. Deze
+leest uitsluitend het bestaande journal. Ontbrekend, incompleet of onzeker
+bewijs start geen Ansible en blijft geblokkeerd voor onderzoek. Gebruik nooit
+een nieuwe apply als statusprobe.
+
+SIGHUP/SIGTERM/SIGINT stoppen de hele Ansible-procesgroep, inclusief
+achtergebleven kinderen, voordat een onzeker resultaat duurzaam wordt
+vastgelegd en de hostlock wordt vrijgegeven. De Ansible-leider erft bovendien
+de flockdescriptor: na onvangbare SIGKILL houdt een nog lopende leider de
+hostlock vast. Een incompleet journal blijft daarna onzeker; onderzoek vereist
+een bevoegde OS-operator. Geen automatische retry, start of rollback.
+
+Console kan uitsluitend een terminale receipt van de oorspronkelijke scoped
+worker reconciliëren: geverifieerde apply met nul drift of falen in preflight
+vóór mutatie. Bewaar de oorspronkelijke attempt en audit. Een ontbrekende
+receipt, fout na configuratie of resterende drift mag niet worden vrijgegeven.
