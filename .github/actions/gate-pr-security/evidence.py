@@ -64,6 +64,7 @@ STATE_REQUIRED = {
     "run_attempt", "base_sha", "head_sha", "base_tree", "head_tree", "scanner_exit",
     "prepare_duration_ms", "scan_duration_ms", "scanner_image",
 }
+TRACKER_BINDING_STATE_KEY = "scanner_binding"
 
 
 class EvidenceError(Exception):
@@ -138,7 +139,9 @@ def _safe_work_dir(value: str | Path) -> Path:
 def _load_inputs(work_dir: Path) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     state_raw = _read_regular(work_dir / "state.json", 64 * 1024, "state_unavailable")
     state = _decode_json(state_raw, "invalid_state")
-    if set(state) != STATE_REQUIRED:
+    expected_state = STATE_REQUIRED | ({TRACKER_BINDING_STATE_KEY}
+                                      if state.get("repository") == "Tuinstra-DEV/tracker" else set())
+    if set(state) != expected_state:
         raise EvidenceError("invalid_state")
     report_path = work_dir / "output" / "pair" / "result.json"
     report_raw = _read_regular(report_path, MAX_REPORT_BYTES, "report_unavailable")
@@ -155,16 +158,26 @@ def _profile_for_state(state: dict[str, Any]) -> Any:
     repository = state["repository"]
     if not isinstance(repository, str) or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise EvidenceError("invalid_state")
+    binding = state.get(TRACKER_BINDING_STATE_KEY)
     try:
-        profile = constants.profile_for(repository)
-    except ValueError:
-        raise EvidenceError("unknown_repository") from None
+        profile = constants.profile_for_binding(repository, binding)
+    except ValueError as error:
+        reason = str(error)
+        if reason == "unknown_repository":
+            raise EvidenceError("unknown_repository") from None
+        if reason in {"tracker_binding_required", "invalid_tracker_scanner_binding", "binding_repository_mismatch"}:
+            raise EvidenceError("invalid_scanner_binding") from None
+        raise EvidenceError("invalid_state") from None
     if state["scanner_image"] != profile["image"]:
         raise EvidenceError("scanner_image_mismatch")
     return profile
 
 
 def _validate_state(state: dict[str, Any]) -> Any:
+    expected_state = STATE_REQUIRED | ({TRACKER_BINDING_STATE_KEY}
+                                      if state.get("repository") == "Tuinstra-DEV/tracker" else set())
+    if set(state) != expected_state:
+        raise EvidenceError("invalid_state")
     profile = _profile_for_state(state)
     for key in ("repository_id", "owner_id", "run_id"):
         _text(state[key], POSITIVE_RE, "invalid_state")

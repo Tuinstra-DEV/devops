@@ -179,7 +179,7 @@ def provider_state(environ):
     require(decimal(repo.get("id")) == state["repository_id"]
             and decimal(repo.get("owner", {}).get("id")) == state["owner_id"]
             and repo.get("full_name", "").lower() == repository.lower(), "repository_mismatch")
-    profile_for_state(state)
+    profile_for_state(state, environ.get("GATE_TRACKER_SCANNER_BINDING"))
     pr = api(prefix + "/pulls/" + str(state["pull_request"]), token)
     require(pr.get("number") == state["pull_request"] and pr.get("state") == "open"
             and pr.get("merged") is False, "pr_not_current")
@@ -346,10 +346,31 @@ def cleanup(work):
     shutil.rmtree(work)
 
 
-def profile_for_state(state):
+def profile_for_state(state, binding_json=None):
     require(isinstance(state, dict), "invalid_state")
+    repository = state.get("repository")
+    binding = None
+    if repository == "Tuinstra-DEV/tracker":
+        if "scanner_binding" in state:
+            require(binding_json in (None, ""), "scanner_binding_already_frozen")
+            try:
+                binding = constants.validate_tracker_scanner_binding(state["scanner_binding"])
+            except ValueError:
+                raise Failure("invalid_tracker_scanner_binding") from None
+        else:
+            try:
+                binding = constants.parse_tracker_scanner_binding(binding_json)
+            except ValueError as error:
+                reason = str(error)
+                if reason not in {"tracker_scanner_binding_required", "invalid_tracker_scanner_binding"}:
+                    reason = "invalid_tracker_scanner_binding"
+                raise Failure(reason) from None
+            state["scanner_binding"] = binding
+    else:
+        require("scanner_binding" not in state and binding_json in (None, ""),
+                "scanner_binding_repository_mismatch")
     try:
-        profile = constants.profile_for(state.get("repository"))
+        profile = constants.profile_for_binding(repository, binding)
     except ValueError:
         raise Failure("repository_profile_not_enrolled") from None
     require(re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", profile["image"]) is not None,

@@ -10,15 +10,15 @@ identity. Receipt acceptance is not a security pass. Gate publishes the App-owne
 ## Review and enrollment
 
 The producer now has two repository-bound Linux AMD64 profiles. Selection follows
-validated GitHub repository identity; callers and PR files cannot supply an image,
-policy or scanner configuration. Unknown repositories fail closed. The immutable
-profiles and tool/scope inventories are in
+validated GitHub repository identity. PR files and workflow inputs cannot supply
+an image, policy or scanner configuration. Unknown repositories fail closed. The
+profiles and fixed tool/scope inventories are in
 `.github/actions/gate-pr-security/constants.py`.
 
 | Repository | Scanner manifest digest |
 | --- | --- |
 | `Tuinstra-DEV/gate` | `sha256:7c8e368736a4fe78026b6f42509be15d0bcabb45cc3c87a2cad9cc0d6fd53289` |
-| `Tuinstra-DEV/tracker` | `sha256:fe54383ae144931c798391568a17d6585c5a231b766c57d94158fb457db0e66b` |
+| `Tuinstra-DEV/tracker` | Exact operator snapshot from `GATE_TRACKER_SCANNER_BINDING`; independently pinned in publisher enrollment |
 
 Both images use `ghcr.io/tuinstra-dev/gate/ci-scanner`. Gate preserves its exact
 reviewed exclusions; Tracker has its own policy-bound empty exclusion list.
@@ -26,6 +26,30 @@ Reports cannot mix an image, policy, dataset or scanner inventory from the other
 profile. Server enrollment, repository package access and App-specific branch
 checks remain separate operational steps; merging this producer does not enable
 Tracker or automatic Heal fixes.
+
+### Tracker scanner updates without a circular workflow/image pin
+
+Tracker preparation reads the repository Actions variable
+`GATE_TRACKER_SCANNER_BINDING` once. Its strict JSON object contains `image`,
+`policy_digest`, `bundle_digest` and `dataset_digest`. Only the Gate scanner
+package with an immutable SHA-256 digest is allowed; the Tracker policy remains
+fixed and bundle/dataset must match. Missing, malformed or extra fields stop
+before scanning. The validated snapshot is stored with the verified source
+identity and reused for pull, scan and evidence; later variable changes cannot
+alter that run. Gate continues to use its existing fixed profile.
+
+Repository Variables-write is trusted operator configuration authority. At rollout
+on 11 October 2026, Tracker had one human collaborator with administrator access.
+Do not expose this value as a PR-controlled input or grant configuration-write
+access to the scanner. It contains no credentials. The image receives no network,
+credentials, host socket or writable source mounts. The publisher still rejects
+any image/policy/bundle/dataset or exact workflow SHA outside its own enrollment.
+
+Commit the producer action, then pin it in the reusable workflow. Build and verify
+the scanner with that exact workflow reference before setting the variable and
+publisher registry to the resulting image tuple. Configuration skew fails closed;
+updating the variable alone cannot create a passing App check. Retain the prior
+operator tuple and publisher registration together for rollback.
 
 This short PR security producer runs on isolated hosted `ubuntu-24.04`. Gate's
 heavy application tests use Sanctuary separately. The current Sanctuary admission
