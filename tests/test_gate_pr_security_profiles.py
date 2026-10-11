@@ -87,12 +87,16 @@ class NativeProfileTests(unittest.TestCase):
         self.assertEqual(TRACKER_BINDING["image"], profile["image"])
         self.assertEqual(TRACKER_BINDING["bundle_digest"], profile["bundle_digest"])
 
-    def test_action_exposes_tracker_binding_only_to_trusted_prepare_step(self):
+    def test_trusted_workflow_supplies_tracker_binding_without_caller_input(self):
         action = (ACTION / "action.yml").read_text(encoding="utf-8")
-        self.assertEqual(1, action.count("GATE_TRACKER_SCANNER_BINDING:"))
+        workflow = (ROOT / ".github/workflows/reusable-gate-pr-security.yml").read_text(encoding="utf-8")
+        self.assertNotIn("${{ vars.", action)
+        self.assertNotIn("GATE_TRACKER_SCANNER_BINDING:", action)
         prepare = action.split("- name: Prepare exact PR sources", 1)[1].split("- name: Pull fixed scanner image", 1)[0]
-        self.assertIn("GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}", prepare)
-        self.assertNotIn("GATE_TRACKER_SCANNER_BINDING", action.split("- name: Pull fixed scanner image", 1)[1])
+        self.assertIn('source.py" prepare', prepare)
+        self.assertEqual(1, workflow.count("GATE_TRACKER_SCANNER_BINDING:"))
+        self.assertIn("GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}", workflow)
+        self.assertNotIn("inputs:", workflow)
 
     def test_evidence_requires_exact_tracker_binding_state(self):
         tracker = state("Tuinstra-DEV/tracker")
