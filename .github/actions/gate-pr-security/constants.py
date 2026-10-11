@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from types import MappingProxyType
 
 ENDPOINT = "https://gate.tuinstra.dev/integrations/github/pr-security/receipts"
@@ -72,6 +74,68 @@ def profile_for(repository: object):
         return PROFILES[repository]
     except KeyError:
         raise ValueError("unknown_repository") from None
+
+
+_TRACKER_BINDING_KEYS = {"image", "policy_digest", "bundle_digest", "dataset_digest"}
+_DIGEST_RE = re.compile(r"\Asha256:[a-f0-9]{64}\Z")
+_TRACKER_IMAGE_RE = re.compile(r"\Aghcr\.io/tuinstra-dev/gate/ci-scanner@sha256:[a-f0-9]{64}\Z")
+
+
+def validate_tracker_scanner_binding(value: object) -> dict[str, str]:
+    """Validate the trusted operator binding captured for the Tracker repo."""
+    if not isinstance(value, dict) or set(value) != _TRACKER_BINDING_KEYS:
+        raise ValueError("invalid_tracker_scanner_binding")
+    if any(not isinstance(value.get(key), str) for key in _TRACKER_BINDING_KEYS):
+        raise ValueError("invalid_tracker_scanner_binding")
+    if _TRACKER_IMAGE_RE.fullmatch(value["image"]) is None:
+        raise ValueError("invalid_tracker_scanner_binding")
+    tracker = PROFILES["Tuinstra-DEV/tracker"]
+    gate_image = PROFILES["Tuinstra-DEV/gate"]["image"]
+    if (value["image"] == gate_image
+            or value["policy_digest"] != tracker["policy_digest"]
+            or _DIGEST_RE.fullmatch(value["bundle_digest"]) is None
+            or value["bundle_digest"] != value["dataset_digest"]):
+        raise ValueError("invalid_tracker_scanner_binding")
+    return {key: value[key] for key in ("image", "policy_digest", "bundle_digest", "dataset_digest")}
+
+
+def parse_tracker_scanner_binding(raw: object) -> dict[str, str]:
+    """Decode a bounded repository variable, rejecting duplicate JSON keys."""
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("tracker_scanner_binding_required")
+    try:
+        if len(raw.encode("utf-8")) > 2048:
+            raise ValueError("invalid_tracker_scanner_binding")
+    except UnicodeEncodeError:
+        raise ValueError("invalid_tracker_scanner_binding") from None
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate_binding_key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid_binding_json")))
+    except (ValueError, UnicodeError):
+        raise ValueError("invalid_tracker_scanner_binding") from None
+    return validate_tracker_scanner_binding(value)
+
+
+def profile_for_binding(repository: object, binding: object = None):
+    """Select an immutable profile, requiring a validated Tracker binding."""
+    profile = profile_for(repository)
+    if repository == "Tuinstra-DEV/tracker":
+        if binding is None:
+            raise ValueError("tracker_binding_required")
+        validated = validate_tracker_scanner_binding(binding)
+        return MappingProxyType({**profile, **validated})
+    if binding is not None:
+        raise ValueError("binding_repository_mismatch")
+    return profile
 
 # Legacy Gate aliases retained for existing imports and focused tests.
 _GATE = PROFILES["Tuinstra-DEV/gate"]

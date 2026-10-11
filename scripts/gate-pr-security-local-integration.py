@@ -96,7 +96,7 @@ def fixture_tree(store, files):
 
 
 
-def fixture(work, head_files, base_files, repository):
+def fixture(work, head_files, base_files, repository, scanner_binding=None):
     work.mkdir(mode=0o700)
     marker = {"version": 1, "id": uuid.uuid4().hex, "path": str(work), "uid": os.getuid()}
     (work / ".gate-work.json").write_text(json.dumps(marker), encoding="utf-8")
@@ -112,6 +112,8 @@ def fixture(work, head_files, base_files, repository):
     source.require(repository in repository_ids, "unknown_repository")
     state = {"repository": repository, "repository_id": repository_ids[repository], "owner_id": "12", "pull_request": 7,
         "run_id": "900", "run_attempt": 2, "prepare_duration_ms": 0}
+    if scanner_binding is not None:
+        state["scanner_binding"] = scanner_binding
     for side, files in [("base", base_files), ("head", head_files)]:
         tree = fixture_tree(store, files)
         commit = source.git(store, ["commit-tree", tree], env=git_env, data=b"DEV-46 synthetic source\n").decode().strip()
@@ -351,9 +353,9 @@ def verify_oci_archive(archive_path, receipt_path, profile):
     return config_digest, manifest_digest
 
 
-def configure_docker(output, oci_archive=None, build_receipt=None, repository="Tuinstra-DEV/gate"):
+def configure_docker(output, oci_archive=None, build_receipt=None, repository="Tuinstra-DEV/gate", scanner_binding=None):
     try:
-        profile = constants.profile_for(repository)
+        profile = constants.profile_for_binding(repository, scanner_binding)
     except ValueError:
         raise LocalIntegrationError("unknown_repository") from None
     image_ref = profile["image"]
@@ -428,10 +430,10 @@ def configure_docker(output, oci_archive=None, build_receipt=None, repository="T
     source.run = local_run
 
 
-def run_case(name, expected, head_files, base_files, output, backend, php, repository):
+def run_case(name, expected, head_files, base_files, output, backend, php, repository, scanner_binding=None):
     work = output / name
     try:
-        fixture(work, head_files, base_files, repository)
+        fixture(work, head_files, base_files, repository, scanner_binding)
         source.scan(work)
         report = json.loads((work / "output/pair/result.json").read_text(encoding="utf-8"))
         staging = evidence.package(work, CONTEXT)
@@ -490,8 +492,14 @@ def main():
         source.require(not candidate.exists() and not candidate.is_symlink(), "output_directory_already_exists")
         candidate.mkdir(mode=0o700, parents=True)
         output = candidate.resolve()
-        profile = constants.profile_for(args.repository)
-        configure_docker(output, args.scanner_oci_archive, args.scanner_build_receipt, args.repository)
+        scanner_binding = None
+        if args.repository == "Tuinstra-DEV/tracker":
+            try:
+                scanner_binding = constants.parse_tracker_scanner_binding(os.environ.get("GATE_TRACKER_SCANNER_BINDING"))
+            except ValueError:
+                raise LocalIntegrationError("tracker_scanner_binding_required") from None
+        profile = constants.profile_for_binding(args.repository, scanner_binding)
+        configure_docker(output, args.scanner_oci_archive, args.scanner_build_receipt, args.repository, scanner_binding)
         debt = dict(BASE_FILES, **{"legacy.php": b'<?php eval($_GET["legacy"]);\n'})
         excluded = dict(BASE_FILES, **{
             "backend/src/Controller/.placeholder": b"",
@@ -518,7 +526,7 @@ def main():
             raise LocalIntegrationError("profile_exclusions_unsupported")
         selected = [case for case in cases if (not requested or case[0] in requested)
                     and (args.repository != "Tuinstra-DEV/tracker" or case[0] not in EXCLUSION_CASES)]
-        results = [run_case(name, expected, files, base, output, backend, php, args.repository) for name, expected, files, base in selected]
+        results = [run_case(name, expected, files, base, output, backend, php, args.repository, scanner_binding) for name, expected, files, base in selected]
         summary = {"synthetic": True, "proof_scope": "synthetic-common-source-scopes", "repository": args.repository, "scanner_image": profile["image"],
                    "policy_digest": profile["policy_digest"], "bundle_digest": profile["bundle_digest"],
                    "ok": all(result["ok"] for result in results), "results": results}

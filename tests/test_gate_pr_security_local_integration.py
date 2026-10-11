@@ -24,6 +24,14 @@ def digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+TRACKER_BINDING = {
+    "image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:" + "a" * 64,
+    "policy_digest": "sha256:70119e1c38a2598b4f2cfbcc69a3922819adff3c95ec492788a002e6087686e9",
+    "bundle_digest": "sha256:" + "b" * 64,
+    "dataset_digest": "sha256:" + "b" * 64,
+}
+
+
 class OciArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -114,7 +122,8 @@ class OciArchiveTests(unittest.TestCase):
             integration.verify_oci_archive(self.archive, self.receipt, wrong_profile)
 
     def test_accepts_repository_profile_mapping_and_keeps_pin_binding(self):
-        tracker_profile = integration.constants.profile_for("Tuinstra-DEV/tracker")
+        tracker_binding = TRACKER_BINDING.copy()
+        tracker_profile = integration.constants.profile_for_binding("Tuinstra-DEV/tracker", tracker_binding)
         with self.assertRaisesRegex(integration.LocalIntegrationError, "scanner_manifest_pin_mismatch"):
             integration.verify_oci_archive(self.archive, self.receipt, tracker_profile)
 
@@ -235,13 +244,14 @@ class OciArchiveTests(unittest.TestCase):
 
     def configure_with_mock_docker(self, reports, repository="Tuinstra-DEV/gate"):
         output, calls, invoke = self.docker_setup(reports)
-        profile = {**integration.constants.profile_for(repository), "image": self.image}
+        scanner_binding = TRACKER_BINDING | {"image": self.image} if repository == "Tuinstra-DEV/tracker" else None
+        profile = {**integration.constants.profile_for_binding(repository, scanner_binding), "image": self.image}
         with patch.object(integration.shutil, "which", return_value="/usr/bin/docker"), \
                 patch.object(Path, "is_socket", return_value=True), \
                 patch.dict(os.environ, {"DOCKER_HOST": "unix:///tmp/gate-test-docker.sock"}), \
-                patch.object(integration.constants, "profile_for", return_value=profile), \
+                patch.object(integration.constants, "profile_for_binding", return_value=profile), \
                 patch.object(integration.source, "run", side_effect=invoke) as mocked_run:
-            integration.configure_docker(output, self.archive, self.receipt, repository)
+            integration.configure_docker(output, self.archive, self.receipt, repository, scanner_binding)
             configured_run = integration.source.run
             configured_run(["/usr/bin/docker", "create", self.image, self.image + ".suffix"])
             return calls, mocked_run.call_args_list
