@@ -12,6 +12,17 @@ const sha = /^[a-f0-9]{40}$/
 const git = args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const json = path => JSON.parse(readFileSync(path, 'utf8'))
 
+export function validateTrackerRouting(readGateFile) {
+  const tracker = json(resolve(actionRoot, 'policies', 'tracker.json'))
+  const snapshot = json(resolve(actionRoot, 'policies', 'gate-routing-inputs.json'))
+  const readFile = () => { throw new Error('Unexpected external source read') }
+  // The routing helper takes one routing selector, not the complete release policy.
+  const policy = tracker.fingerprint['Tuinstra-DEV/tracker'].routing
+  const expected = computeRoutingFingerprint({repository: 'Tuinstra-DEV/tracker', readFile, readGateFile: p => snapshot.files[p], policy})
+  const actual = computeRoutingFingerprint({repository: 'Tuinstra-DEV/tracker', readFile, readGateFile, policy})
+  if (actual !== expected) throw new Error('Tracker intake changed: renew its Sentry/Heal chain evidence')
+}
+
 // The protected workflow provides candidate facts; GitHub independently binds
 // them to the actual build. No application code or candidate scripts run here.
 export function validateBuildRun(candidate, run, jobs = []) {
@@ -70,10 +81,7 @@ export async function main(env = process.env) {
   if (repository === 'Tuinstra-DEV/gate') {
     // Gate also owns Tracker's intake. A change there requires renewed Tracker
     // evidence, even when Gate's own route is unchanged.
-    const tracker = json(resolve(actionRoot, 'policies', 'tracker.json'))
-    const expected = computeRoutingFingerprint({repository: 'Tuinstra-DEV/tracker', readFile: () => { throw new Error('Unexpected external source read') }, readGateFile: p => snapshot.files[p], policy: tracker})
-    const actual = computeRoutingFingerprint({repository: 'Tuinstra-DEV/tracker', readFile: () => { throw new Error('Unexpected external source read') }, readGateFile, policy: tracker})
-    if (actual !== expected) throw new Error('Tracker intake changed: renew its Sentry/Heal chain evidence')
+    validateTrackerRouting(readGateFile)
   }
   const token = env.GITHUB_TOKEN || env.GH_TOKEN
   if (!token) throw new Error('A read-only Actions token is required for build provenance')
