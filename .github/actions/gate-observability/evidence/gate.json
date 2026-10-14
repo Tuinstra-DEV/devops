@@ -1,0 +1,181 @@
+{
+  "schema_version": "1.0",
+  "policy_id": "gate-observability-1",
+  "repository": "Tuinstra-DEV/gate",
+  "project_id": "4511659790630992",
+  "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
+  "fingerprints": {
+    "sdk_initialization": "sha256:bd70e83e4dd0bf69196386b0a64acab983e33ea804e902dc493cb4372b8a5f1d",
+    "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
+    "privacy_filters": "sha256:a0c63875a5808ce06b17689d208c52bc063e5d628118d056c066531957ac3853",
+    "deployment_symbols": "sha256:dcc421527d454197b285f61d43b74ec3933888d82bb6806579bdfeca13eeb58e"
+  },
+  "components": [
+    {
+      "id": "browser",
+      "verification_source": "57b129f787141dd0a476879fd347712aef36757b",
+      "artifact_digest": "sha256:913c2bcdfb2a259de12892d0880ded0894bf55cc33ec377d3132f0d3b03db1b5",
+      "run": {
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38475524705",
+        "attempt": 1,
+        "source_sha": "57b129f787141dd0a476879fd347712aef36757b"
+      },
+      "sentry": {
+        "issue_id": "153459774",
+        "event_ids": [
+          "6d492df9237b4aae9fd160635cbb668d"
+        ]
+      },
+      "heal_case_id": "703956074e8444c8a22c13fe48c40452",
+      "source_frame": {
+        "path": "frontend/app/utils/sentry-verification.ts",
+        "line": 3
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 2,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        }
+      }
+    },
+    {
+      "id": "nitro",
+      "verification_source": "57b129f787141dd0a476879fd347712aef36757b",
+      "artifact_digest": "sha256:913c2bcdfb2a259de12892d0880ded0894bf55cc33ec377d3132f0d3b03db1b5",
+      "run": {
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38475524705",
+        "attempt": 1,
+        "source_sha": "57b129f787141dd0a476879fd347712aef36757b"
+      },
+      "sentry": {
+        "issue_id": "153466262",
+        "event_ids": [
+          "61e333e2a7be4b5699095076ee1162d9"
+        ]
+      },
+      "heal_case_id": "d7cb3637622148b99a882261fedf6f4b",
+      "source_frame": {
+        "path": "frontend/server/utils/sentry-verification.ts",
+        "line": 3
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 2,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        }
+      }
+    },
+    {
+      "id": "backend",
+      "verification_source": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+      "artifact_digest": "sha256:3bae6e2f059e4b86322b8dfe7a1663faf4955482ecfcc1522b36877b8b2d0c64",
+      "run": {
+        "workflow": ".github/workflows/deploy-production.yml",
+        "id": "38487479438",
+        "attempt": 1,
+        "source_sha": "910c53cbe27637c8691bd7d6b437779fa0504ec1"
+      },
+      "sentry": {
+        "issue_id": "153477147",
+        "event_ids": [
+          "1f489e7b97854b688ee71bd71c3d4c52"
+        ]
+      },
+      "heal_case_id": "8dc9d7207d2745149d810e492ece5783",
+      "source_frame": {
+        "path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+        "line": 42
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 1,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "gate-local-verification.md",
+            "gate-live-cases.json",
+            "gate-production-runtime.json"
+          ]
+        }
+      }
+    }
+  ],
+  "provenance": {
+    "captured_at": "2026-10-14",
+    "source": "operator-verified-actual-sdk-and-signed-intake",
+    "verification_environment": "verification",
+    "production_event": false
+  },
+  "process_bindings": {
+    "php": "backend",
+    "messenger-worker": "backend",
+    "heal-supervisor": "backend",
+    "frontend-browser": "browser",
+    "frontend-server": "nitro"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "environment": "verification",
+  "cases": [
+    {
+      "heal_case_id": "4d687bfb3b6c46778cef06e1203bbfc9",
+      "external_issue_id": "153492670",
+      "last_event_id": "3d22ee91a23f4384a22b5ce384ac6df1",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
+      "artifact_digest": "sha256:0631deb67cb484db27cff241120498785fd6c1db79e7394d57ceccb1f405f7d0",
+      "source_path": "code/web/app/utils/sentry-verification.ts",
+      "source_line": "24"
+    },
+    {
+      "heal_case_id": "78bf9964e05c43019588912f21975329",
+      "external_issue_id": "153493761",
+      "last_event_id": "6fa54c19b0274448b96082e3d4585aec",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "api",
+      "environment": "verification",
+      "source_commit": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
+      "artifact_digest": "sha256:711082bf71a58e4a7dea484d7996d6b4c36cd651ae88c0ddd9241a2878d11919",
+      "source_path": "code/api/src/Application/FeedbackManagementStoryCursor.php",
+      "source_line": "19"
+    },
+    {
+      "heal_case_id": "2dc3adec3e98476eb7289987823b9bf1",
+      "external_issue_id": "153493768",
+      "last_event_id": "b8d3c7bfe1424e2999442e59e3091bc2",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "worker",
+      "environment": "verification",
+      "source_commit": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
+      "artifact_digest": "sha256:711082bf71a58e4a7dea484d7996d6b4c36cd651ae88c0ddd9241a2878d11919",
+      "source_path": "code/api/src/Integration/Sentry/SentryApiOrigin.php",
+      "source_line": "38"
+    }
+  ]
+}

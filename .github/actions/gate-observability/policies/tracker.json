@@ -1,0 +1,166 @@
+{
+  "policyId": "gate-observability-1",
+  "repository": "Tuinstra-DEV/tracker",
+  "projectId": "4511896763891792",
+  "installationUuid": "73812b1c-1666-407e-8234-d6ace9b95765",
+  "requiredComponents": {
+    "api": {
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source",
+      "source_roots": [
+        "code/api/src/"
+      ]
+    },
+    "worker": {
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source",
+      "source_roots": [
+        "code/api/src/"
+      ]
+    },
+    "browser": {
+      "runtime": "browser-js",
+      "release_unit": "nginx",
+      "symbols": "sourcemaps",
+      "source_roots": [
+        "code/web/app/"
+      ]
+    }
+  },
+  "requiredArtifacts": [
+    "php",
+    "nginx"
+  ],
+  "processBindings": {
+    "php": "api",
+    "php-mcp": "api",
+    "worker": "worker",
+    "catalog-worker": "worker",
+    "release-evidence-worker": "worker",
+    "sentry-worker": "worker",
+    "nginx-browser": "browser"
+  },
+  "fingerprint": {
+    "Tuinstra-DEV/tracker": {
+      "sdk_initialization": {
+        "files": [
+          "code/api/config/packages/sentry.yaml",
+          "code/web/sentry.client.config.ts",
+          "code/web/app/plugins/sentry-operator.client.ts"
+        ],
+        "dependencies": {
+          "composer": [
+            {
+              "manifest": "code/api/composer.json",
+              "lock": "code/api/composer.lock",
+              "roots": [
+                "sentry/sentry-symfony"
+              ]
+            }
+          ],
+          "pnpm": [
+            {
+              "manifest": "code/web/package.json",
+              "lock": "code/web/pnpm-lock.yaml",
+              "workspace": "code/web/pnpm-workspace.yaml",
+              "importer": ".",
+              "roots": [
+                "@sentry/nuxt"
+              ]
+            }
+          ]
+        }
+      },
+      "routing": {
+        "registry": {
+          "source": "gate",
+          "path": "backend/config/heal/sentry-routing.json",
+          "schema": "gate.sentry-routing.v1"
+        },
+        "gate_files": [
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryRoutingRegistry.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryFailureExtractor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryDeploymentEvidence.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryAlertIntake.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryWebhookVerifier.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEventClient.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEvidenceRedactor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/RoutedSentryEvidenceRedactor.php"
+          }
+        ]
+      },
+      "privacy_filters": {
+        "files": [
+          "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+          "code/web/app/utils/sentry-privacy.ts",
+          "code/web/app/utils/sentry-browser-evidence.ts"
+        ]
+      },
+      "deployment_symbols": {
+        "files": [
+          "code/Dockerfile",
+          "code/web/nuxt.config.ts",
+          "code/web/shared/sentry-sourcemap-sources.ts",
+          "code/scripts/finalize-sentry-artifact.mjs",
+          "code/deploy/docker-compose.production.yml"
+        ],
+        "workflows": [
+          {
+            "path": ".github/workflows/deploy-production.yml",
+            "workflow_fields": [
+              "env",
+              "defaults",
+              "on.workflow_call.inputs"
+            ],
+            "jobs": [
+              {
+                "id": "build",
+                "fields": [
+                  "strategy",
+                  "env",
+                  "defaults"
+                ]
+              }
+            ],
+            "steps": [
+              {
+                "name": "Build nginx image for security scan",
+                "job": "build"
+              },
+              {
+                "name": "Publish nginx image",
+                "job": "build"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "approvedProofSha256": "sha256:8a8dab2d694fd19e3bf6e94828057b8a488817d86c35282ec4fd7f1bccf3268a"
+}

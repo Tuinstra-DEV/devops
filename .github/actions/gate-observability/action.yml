@@ -1,0 +1,42 @@
+name: Gate Observability
+description: Verify applicable Sentry/Heal evidence before production promotion.
+inputs:
+  candidate:
+    description: Exact build and symbol receipt JSON from the protected release workflow.
+    required: false
+  manifest:
+    description: Repository component manifest.
+    default: .gate/observability.json
+  output:
+    description: Destination for the sanitized assurance receipt.
+    required: false
+  prepare-only:
+    description: Install trusted tools before the caller derives its candidate from exact image archives.
+    default: 'false'
+outputs:
+  run-script:
+    description: Trusted validator entry point, to invoke after candidate collection in the same job.
+    value: ${{ steps.paths.outputs.run_script }}
+  collector-script:
+    description: Trusted compiled-symbol collector.
+    value: ${{ steps.paths.outputs.collector_script }}
+runs:
+  using: composite
+  steps:
+    - name: Install pinned data parser
+      shell: bash
+      run: npm ci --ignore-scripts --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH"
+    - name: Export trusted tool paths
+      id: paths
+      shell: bash
+      run: |
+        echo "run_script=$GITHUB_ACTION_PATH/run.mjs" >> "$GITHUB_OUTPUT"
+        echo "collector_script=$GITHUB_ACTION_PATH/../../../scripts/collect-gate-symbols.mjs" >> "$GITHUB_OUTPUT"
+    - name: Gate Observability
+      if: inputs.prepare-only != 'true'
+      shell: bash
+      env:
+        GATE_OBSERVABILITY_CANDIDATE: ${{ inputs.candidate }}
+        GATE_OBSERVABILITY_MANIFEST: ${{ inputs.manifest }}
+        GATE_OBSERVABILITY_OUTPUT: ${{ inputs.output }}
+      run: node "$GITHUB_ACTION_PATH/run.mjs"

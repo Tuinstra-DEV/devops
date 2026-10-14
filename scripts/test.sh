@@ -76,3 +76,7 @@ ruby scripts/gate-pr-security-contract-test.rb
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
+
+# The assurance action parses data only; never execute dependency install hooks.
+npm ci --ignore-scripts --no-audit --no-fund --prefix .github/actions/gate-observability
+node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs
