@@ -1,5 +1,19 @@
 # DEV-53 delivery evidence
 
+## Gate promotion recovery
+
+Production run 38528473241 reached the shared validator and stopped before image
+promotion. The extra Tracker-intake check passed the whole release policy to a
+helper that expects only the routing selector. A regression using the shipped
+Tracker policy and retained source snapshot reproduced this failure.
+
+The caller now selects `fingerprint['Tuinstra-DEV/tracker'].routing`. The same
+test accepts the enrolled source and rejects changed or unreadable intake files.
+The complete action entrypoint was also run locally for Gate and Tracker using
+their real current source/manifests and synthetic GitHub/image fixtures: both
+passed without network or production changes. This is local integration evidence,
+not a production canary. `make lint` and `make test` pass (38 focused Node tests).
+
 Scope: shared release assurance for Gate and Tracker only. Existing checkouts, separate repository PRs within this Story. No product UI change; UI screenshots do not apply.
 
 ## Shared validator candidate

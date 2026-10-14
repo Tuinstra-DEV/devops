@@ -1,7 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBuildRun } from '../.github/actions/gate-observability/run.mjs'
+import { validateBuildRun, validateTrackerRouting } from '../.github/actions/gate-observability/run.mjs'
+import { readFileSync } from 'node:fs'
 const source = 'a'.repeat(40)
+
+test('Gate release validates Tracker routing using the enrolled selector and actual snapshot', () => {
+  // Arrange: use the shipped policy and retained source snapshot, not a reduced policy fixture.
+  const snapshot = JSON.parse(readFileSync(new URL('../.github/actions/gate-observability/policies/gate-routing-inputs.json', import.meta.url)))
+  // Act / Assert
+  assert.doesNotThrow(() => validateTrackerRouting(path => snapshot.files[path]))
+  assert.throws(() => validateTrackerRouting(path => path.endsWith('.php') ? snapshot.files[path] + '\n// changed intake\n' : snapshot.files[path]), /Tracker intake changed/)
+  assert.throws(() => validateTrackerRouting(() => undefined), /missing or not text/)
+})
 function fixture(repository = 'Tuinstra-DEV/gate') {
   const tracker = repository.endsWith('/tracker')
   const workflow = tracker ? '.github/workflows/deploy-production.yml' : '.github/workflows/release-gate.yml'
