@@ -1,0 +1,68 @@
+[
+  {
+    "service": "php",
+    "image": "ghcr.io/tuinstra-dev/gate/php@sha256:3bae6e2f059e4b86322b8dfe7a1663faf4955482ecfcc1522b36877b8b2d0c64",
+    "image_id": "sha256:b12e8081993450dfa1918a119ab657f1204cf80b5cbe13753ac4752ad560c536",
+    "revision": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+    "health": "healthy",
+    "network": "gate_default",
+    "exact_source": true,
+    "app_version_matches": true,
+    "gate_project_matches": true
+  },
+  {
+    "service": "messenger-worker",
+    "image": "ghcr.io/tuinstra-dev/gate/php@sha256:3bae6e2f059e4b86322b8dfe7a1663faf4955482ecfcc1522b36877b8b2d0c64",
+    "image_id": "sha256:b12e8081993450dfa1918a119ab657f1204cf80b5cbe13753ac4752ad560c536",
+    "revision": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+    "health": "healthy",
+    "network": "gate_default",
+    "exact_source": true,
+    "app_version_matches": true,
+    "gate_project_matches": true
+  },
+  {
+    "service": "frontend",
+    "image": "ghcr.io/tuinstra-dev/gate/frontend@sha256:fa34db9edef407ed06c21307c786371f93540c89cfdc8ca722d183dd3c76caad",
+    "image_id": "sha256:f58852fd007aedf07c41745da4bf8633772cf3364d1fdd56f1a7218d4225b96f",
+    "revision": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+    "health": "healthy",
+    "network": "gate_default",
+    "exact_source": true,
+    "gate_project_matches": true
+  },
+  {
+    "service": "web",
+    "image": "ghcr.io/tuinstra-dev/gate/web@sha256:34f3d73eb021a365098d558c79d03261d796996b8fc39aa0e00b061861612982",
+    "image_id": "sha256:60b06817e3745c3f30e56ee09529bd0e1b16ae9d4335313e655f353c12ec49bb",
+    "revision": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+    "health": "healthy",
+    "network": "gate_default",
+    "exact_source": true
+  },
+  {
+    "service": "database",
+    "image": "bitnami/mariadb@sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9",
+    "image_id": "sha256:012d711e0010fbb42846c842dac713e6ea25aaa5cbfdcd09a0553d38428be9c0",
+    "revision": null,
+    "health": "healthy",
+    "network": "gate_default"
+  },
+  {
+    "service": "heal-runner",
+    "image": "ghcr.io/tuinstra-dev/gate/heal-runner@sha256:8e6cda78662302442ca2d923cb9ea1a6fd32d823f2b70171af7b56e754b466a2",
+    "image_id": "sha256:1498ad02ee8b3d1cefcdbbb5c792071f20e96263c9af744e8510e3d8b38e1989",
+    "revision": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+    "health": "healthy",
+    "network": "none",
+    "exact_source": true
+  },
+  {
+    "service": "tracker-heal-runner",
+    "image": "sha256:dcc5bc32faa904d6fc4cd7cb1297768319006a5c8c80e0f9aed8c215113fb15c",
+    "image_id": "sha256:dcc5bc32faa904d6fc4cd7cb1297768319006a5c8c80e0f9aed8c215113fb15c",
+    "revision": "ca0dcc461ba11635da0c5c155c0213a51dbc10f9",
+    "health": "healthy",
+    "network": "none"
+  }
+]

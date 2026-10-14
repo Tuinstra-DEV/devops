@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "repository": "Tuinstra-DEV/tracker",
+  "components": [
+    {
+      "id": "api",
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source"
+    },
+    {
+      "id": "worker",
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source"
+    },
+    {
+      "id": "browser",
+      "runtime": "browser-js",
+      "release_unit": "nginx",
+      "symbols": "sourcemaps"
+    }
+  ],
+  "processes": {
+    "php": "api",
+    "php-mcp": "api",
+    "worker": "worker",
+    "catalog-worker": "worker",
+    "release-evidence-worker": "worker",
+    "sentry-worker": "worker",
+    "nginx-browser": "browser"
+  }
+}
