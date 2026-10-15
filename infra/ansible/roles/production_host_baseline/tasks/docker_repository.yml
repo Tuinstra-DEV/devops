@@ -7,9 +7,9 @@
     group: root
     mode: '0755'
 
-- name: Download the Docker repository signing key
-  ansible.builtin.get_url:
-    url: "{{ production_docker_apt_key_url }}"
+- name: Install the reviewed Docker repository signing key
+  ansible.builtin.copy:
+    src: docker.asc
     dest: /etc/apt/keyrings/docker.asc
     owner: root
     group: root

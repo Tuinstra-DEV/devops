@@ -98,4 +98,7 @@ ruby -c scripts/gate-pr-security-contract-test.rb
 
 python3 -c 'compile(open("scripts/gate-pr-security-local-integration.py", encoding="utf-8").read(), "scripts/gate-pr-security-local-integration.py", "exec")'
 
+
+python3 -c 'compile(open("scripts/test-signing-key-check.py", encoding="utf-8").read(), "scripts/test-signing-key-check.py", "exec")'
+
 echo "lint passed"

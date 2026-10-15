@@ -97,3 +97,30 @@ Console kan uitsluitend een terminale receipt van de oorspronkelijke scoped
 worker reconciliëren: geverifieerde apply met nul drift of falen in preflight
 vóór mutatie. Bewaar de oorspronkelijke attempt en audit. Een ontbrekende
 receipt, fout na configuratie of resterende drift mag niet worden vrijgegeven.
+
+## Repeatable Docker signing-key checks (DEV-36)
+
+The baseline installs the reviewed public Docker signing key from
+`production_host_baseline/files/docker.asc`, then retains the existing GPG
+fingerprint assertion and root ownership/mode checks. The bytes match the
+HTTPS-verified official Ubuntu key and the already fingerprint-validated key:
+SHA256 `1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570`;
+fingerprint `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`. This is a public key,
+not a private credential. A future key change requires a reviewed source change
+and a new immutable profile; do not fetch changing key content during a plan.
+
+The previous `get_url` task reported a change for an unchanged key in native
+check mode. The real worker rehearsal exposed that this would prevent the
+mandatory repeated zero-drift check after apply. Ansible documents the partial
+[check-mode behavior](https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/get_url_module.html).
+The replacement predicts actual byte/mode changes and preserves the same
+fingerprint validation; it does not suppress changed status or weaken the
+post-apply check.
+
+Run `python3 scripts/test-signing-key-check.py` in the existing Ansible/PyYAML
+runtime. It executes the actual role task against private temporary files:
+unchanged key → zero changes; corrupt fixture → one predicted change without
+mutation; real repair → expected bytes/mode; repeat → zero changes. Its legacy
+repro uses a loopback-only HTTP fixture, never a system keyring or public host.
+`make test` runs it when Ansible is available and explicitly reports a skip
+otherwise. The native full worker/profile rehearsal remains a separate gate.
