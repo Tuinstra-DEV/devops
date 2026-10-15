@@ -334,7 +334,7 @@ class OrgRoutingTests(unittest.TestCase):
                 manager.validate_org_config({**POLICY,
                                              "org_repository_ids": {excluded: 123}})
 
-    def test_workflow_transition_accepts_only_one_or_two_distinct_exact_refs(self):
+    def test_workflow_transition_accepts_only_one_to_three_distinct_exact_refs(self):
         dual = {key: value for key, value in POLICY.items()
                 if key != "org_workflow_ref"}
         dual["org_workflow_refs"] = [REF, NEW_REF]
@@ -343,7 +343,11 @@ class OrgRoutingTests(unittest.TestCase):
         manager.validate_org_config(dual)
         self.assertEqual(manager.configured_org_workflow_refs(POLICY), (REF,))
         self.assertEqual(manager.configured_org_workflow_refs(dual), (REF, NEW_REF))
-        for refs in ([], [REF, REF], [REF, NEW_REF, REF[:-40] + "c" * 40],
+        third = REF[:-40] + "c" * 40
+        triple = {**dual, "org_workflow_refs": [REF, NEW_REF, third]}
+        manager.validate_org_config(triple)
+        self.assertEqual(manager.configured_org_workflow_refs(triple), (REF, NEW_REF, third))
+        for refs in ([], [REF, REF], [REF, NEW_REF, REF[:-40] + "c" * 40, REF[:-40] + "d" * 40],
                      [REF, REF + "extra"], [REF, REF[:-40] + "refs/heads/main"],
                      [REF, "other/devops/.github/workflows/reusable-trusted-verification.yml@" + "c" * 40],
                      [REF, REF[:-40] + "C" * 40], REF, [REF, 7]):
@@ -351,6 +355,30 @@ class OrgRoutingTests(unittest.TestCase):
                 manager.validate_org_config({**dual, "org_workflow_refs": refs})
         with self.assertRaises(manager.RunnerError):
             manager.validate_org_config({**POLICY, "org_workflow_refs": [REF, NEW_REF]})
+
+    def test_three_pin_transition_still_requires_exact_group_and_single_run_pin(self):
+        refs = [REF, NEW_REF, REF[:-40] + "c" * 40]
+        policy = {key: value for key, value in POLICY.items() if key != "org_workflow_ref"}
+        policy["org_workflow_refs"] = refs
+        client = manager.GitHubClient("org-token", org_workflow_refs=tuple(refs))
+        run, _pr, _job = self.empty_association_evidence()
+        for ref in refs:
+            self.assertEqual(client._verified_workflow_ref({**run, "referenced_workflows": [
+                {"path": ref, "sha": ref[-40:]}]}), ref)
+        for entries in [[], [{"path": refs[2], "sha": NEW_REF[-40:]}],
+                        [{"path": ref, "sha": ref[-40:]} for ref in refs[:2]]]:
+            self.assertIsNone(client._verified_workflow_ref({**run, "referenced_workflows": entries}))
+        group = {"id": 42, "name": "sanctuary-trusted-verification",
+                 "visibility": "selected", "default": False, "inherited": False,
+                 "allows_public_repositories": False,
+                 "restricted_to_workflows": True, "selected_workflows": refs}
+        repos = {"total_count": 1, "repositories": [{"id": 123, "full_name": REPO, "private": True}]}
+        with mock.patch.object(client, "request", side_effect=[group, repos]):
+            client.verify_org_group(policy)
+        for actual in [refs[:2], refs + [REF[:-40] + "d" * 40], refs + [refs[0]]]:
+            with self.subTest(group=actual), mock.patch.object(client, "request", return_value={
+                    **group, "selected_workflows": actual}), self.assertRaises(manager.RunnerError):
+                client.verify_org_group(policy)
 
     def test_org_repositories_are_independent_of_legacy_heavy_allowlist(self):
         org_repo = "Tuinstra-DEV/status"

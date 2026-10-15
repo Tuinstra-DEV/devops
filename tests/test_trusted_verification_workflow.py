@@ -22,8 +22,26 @@ MERGE = "e" * 40
 REPO = "Tuinstra-DEV/wodiq-platform"
 
 
+def legacy_source():
+    return WORKFLOW.read_text().split("  gate-php-trusted:", 1)[0]
+
+
+def bundle_script():
+    match = re.search(r"^          python3 - <<'BUNDLE'\n(?P<script>.*?)^          BUNDLE$", WORKFLOW.read_text(), re.M | re.S)
+    if not match:
+        raise AssertionError("strict bundle contract missing")
+    return textwrap.dedent(match.group("script"))
+
+
+def identity_script():
+    match = re.search(r"^          python3 - <<'IDENTITY'\n(?P<script>.*?)^          IDENTITY$", WORKFLOW.read_text(), re.M | re.S)
+    if not match:
+        raise AssertionError("bundle identity contract missing")
+    return textwrap.dedent(match.group("script"))
+
+
 def preflight_script():
-    source = WORKFLOW.read_text()
+    source = legacy_source()
     match = re.search(r"^          python3 - <<'PY'\n(?P<script>.*?)^          PY$", source, re.M | re.S)
     if not match:
         raise AssertionError("hosted inline Python preflight missing")
@@ -31,7 +49,7 @@ def preflight_script():
 
 
 def contract_script():
-    source = WORKFLOW.read_text()
+    source = legacy_source()
     match = re.search(r"^          python3 - <<'CONTRACT'\n(?P<script>.*?)^          CONTRACT$", source, re.M | re.S)
     if not match:
         raise AssertionError("fixed consumer contract missing")
@@ -39,7 +57,7 @@ def contract_script():
 
 
 def trusted_php_script():
-    source = WORKFLOW.read_text()
+    source = legacy_source()
     trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
     step = trusted.split("      - name: Select verified baked PHP and Composer without privileges", 1)[1]
     return textwrap.dedent(step.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
@@ -79,6 +97,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             },
         }
         self.run = {
+            "run_attempt": 1,
             "id": 123, "event": "pull_request", "head_sha": SHA,
             "head_branch": "feat/DEV-50-job-routing",
             "actor": {"login": "marcel-tuinstra", "type": "User"},
@@ -102,7 +121,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.env = {
             "GITHUB_EVENT_PATH": str(self.event_path), "GITHUB_OUTPUT": str(self.output_path),
             "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": REPO,
-            "GITHUB_RUN_ID": "123", "GITHUB_ACTOR": "marcel-tuinstra",
+            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "marcel-tuinstra",
             "GITHUB_SHA": MERGE, "GITHUB_REF": "refs/pull/17/merge",
             "GITHUB_TRIGGERING_ACTOR": "marcel-tuinstra", "GITHUB_TOKEN": "fixture-only",
             "PROFILE": "medium", "JOB_KEY": "unit", "GITHUB_API_URL": "https://api.github.test",
@@ -149,6 +168,146 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             exec(compile(contract_script(), str(WORKFLOW), "exec"), {"__name__": "__main__"})
         return dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
+
+    def execute_bundle(self, bundle, selection, repo=None, **legacy):
+        self.output_path.write_text("")
+        env = {"GITHUB_REPOSITORY": repo or REPO, "GITHUB_OUTPUT": str(self.output_path),
+               "BUNDLE": bundle, "SELECTION_JSON": selection,
+               "PROFILE": legacy.get("profile", ""), "JOB_KEY": legacy.get("key", ""),
+               "PLAN_JSON": legacy.get("plan", "")}
+        with patch.dict(os.environ, env, clear=True):
+            exec(compile(bundle_script(), str(WORKFLOW), "exec"), {"__name__": "__main__"})
+        return dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
+
+    def execute_identity(self, *, api_error=False):
+        self.event_path.write_text(json.dumps(self.event))
+        self.output_path.write_text("")
+        def urlopen(request, timeout):
+            self.assertEqual(timeout, 10)
+            if api_error:
+                raise OSError("simulated GitHub API outage")
+            url = request.full_url
+            if "/actions/runs/123" in url:
+                value = self.run
+            elif "/pulls/17" in url:
+                value = self.pr
+            elif "/git/ref/heads/" in url:
+                value = self.ref
+            elif f"/git/commits/{MERGE}" in url:
+                value = self.merge
+            else:
+                self.fail(f"unexpected identity API path: {url}")
+            return FakeResponse(json.dumps(value).encode())
+        import urllib.request
+        with patch.dict(os.environ, self.env, clear=True), patch.object(urllib.request, "urlopen", side_effect=urlopen):
+            exec(compile(identity_script(), str(WORKFLOW), "exec"), {"__name__": "__main__"})
+        return dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
+
+    def test_bundle_contract_canonical_digest_and_exact_fixed_keys(self):
+        import hashlib
+        gate = {"schemaVersion": 1, "jobs": [
+            {"job-key": "gate-php", "plan": {"backendSuites": "Unit", "quality": False, "apiSchema": True}},
+            {"job-key": "gate-frontend-static", "plan": {"frontendTests": "unit", "frontendBuild": False,
+                                                          "quality": False, "apiTypes": True}},
+        ]}
+        raw = json.dumps(gate, indent=2)
+        result = self.execute_bundle("gate-quality", raw, "Tuinstra-DEV/gate")
+        canonical = json.dumps(gate, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.assertEqual(result["selection-sha256"], hashlib.sha256(canonical.encode()).hexdigest())
+        self.assertEqual(json.loads(result["selected-jobs"]), ["gate-php", "gate-frontend-static"])
+        plans = json.loads(result["bundle-plans"])
+        self.assertEqual(json.loads(plans["gate-php"]), gate["jobs"][0]["plan"])
+        self.assertEqual(json.loads(plans["gate-frontend-static"]), gate["jobs"][1]["plan"])
+        reordered = '{"jobs":[{"plan":{"quality":false,"apiSchema":true,"backendSuites":"Unit"},"job-key":"gate-php"},{"plan":{"apiTypes":true,"quality":false,"frontendBuild":false,"frontendTests":"unit"},"job-key":"gate-frontend-static"}],"schemaVersion":1}'
+        self.assertEqual(self.execute_bundle("gate-quality", reordered, "Tuinstra-DEV/gate")["selection-sha256"], result["selection-sha256"])
+        empty = self.execute_bundle("tracker-images", '{"schemaVersion":1,"jobs":[]}', "Tuinstra-DEV/tracker")
+        self.assertEqual(empty["selected-jobs"], "[]")
+
+    def test_bundle_contract_rejects_unsafe_or_partial_selections(self):
+        php = {"job-key": "gate-php", "plan": {"backendSuites": "Unit", "quality": True, "apiSchema": False}}
+        front = {"job-key": "gate-frontend-static", "plan": {"frontendTests": "unit", "frontendBuild": False,
+                                                        "quality": True, "apiTypes": False}}
+        selection = lambda jobs: json.dumps({"schemaVersion": 1, "jobs": jobs})
+        wodiq = {"version": 2, **{key: False for key in ("core", "migration", "api", "management", "worker", "client")},
+                 "builds": {key: False for key in ("api", "management", "worker")},
+                 "proofs": {key: False for key in ("all", "activity", "coach", "managementAuth", "garmin")}}
+        cases = [
+            ("gate-quality", "Tuinstra-DEV/gate", selection([php, php]), {}),
+            ("gate-quality", "Tuinstra-DEV/gate", selection([{**php, "command": "id"}]), {}),
+            ("gate-quality", "Tuinstra-DEV/gate", selection([{**php, "plan": {**php["plan"], "quality": "true"}}]), {}),
+            ("gate-quality", "Tuinstra-DEV/gate", selection([{**php, "plan": {**php["plan"], "quality": False}}]), {}),
+            ("gate-quality", "Tuinstra-DEV/gate", selection([php, {**front, "plan": {**front["plan"], "apiTypes": True}}]), {}),
+            ("gate-quality", "Tuinstra-DEV/gate", '{"schemaVersion":1,"jobs":[],"jobs":[]}', {}),
+            ("gate-quality", "Tuinstra-DEV/gate", selection([php]), {"profile": "medium"}),
+            ("tracker-images", "Tuinstra-DEV/gate", selection([]), {}),
+            ("wodiq-platform", REPO, selection([{"job-key": "wodiq-api", "plan": wodiq}]), {}),
+        ]
+        for bundle, repo, raw, legacy in cases:
+            with self.subTest(bundle=bundle, raw=raw), self.assertRaises(SystemExit):
+                self.execute_bundle(bundle, raw, repo, **legacy)
+        all_keys = ("wodiq-core", "wodiq-runtime-build", "wodiq-api", "wodiq-management", "wodiq-worker")
+        full = self.execute_bundle("wodiq-platform", selection([{"job-key": key, "plan": wodiq} for key in all_keys]))
+        self.assertEqual(json.loads(full["selected-jobs"]), list(all_keys))
+
+    def test_bundle_identity_binds_hosted_route_to_current_attempt_and_pin(self):
+        self.env.update(BUNDLE="wodiq-platform", PROFILE="", JOB_KEY="", GITHUB_ACTOR="untrusted-user")
+        trust, _ = self.execute()
+        self.assertEqual(trust["trusted"], "false")
+        identity = self.execute_identity()
+        self.assertEqual(identity, {"trusted": "false", "source-sha": MERGE, "head-sha": SHA, "base-sha": BASE,
+                                    "run-id": "123", "run-attempt": "1", "workflow-sha": WORKFLOW_SHA})
+        self.env["GITHUB_ACTOR"] = "marcel-tuinstra"
+        self.assertEqual(self.execute_identity()["trusted"], "true")
+        with self.assertRaises(OSError):
+            self.execute_identity(api_error=True)
+        cases = [
+            lambda: self.run.update(run_attempt=2),
+            lambda: self.run["referenced_workflows"][0].update(sha=SHA),
+            lambda: self.pr["head"].update(sha=BASE),
+            lambda: self.merge.update(parents=[{"sha": SHA}, {"sha": SHA}]),
+        ]
+        for mutation in cases:
+            with self.subTest(mutation=str(mutation)):
+                self.setUp()
+                mutation()
+                with self.assertRaises(SystemExit):
+                    self.execute_identity()
+
+    def test_bundle_static_jobs_proof_and_least_privilege(self):
+        import subprocess
+        workflow = WORKFLOW.read_text()
+        helper_sha = "7c284a1b4405d844e581ad369b754885ab2415cc"
+        bundles = {
+            "gate-quality": ("gate-php", "gate-frontend-static"),
+            "tracker-quality": ("tracker-backend-postgres", "tracker-frontend-static"),
+            "tracker-images": ("tracker-container-api", "tracker-container-web", "tracker-container-php-prod", "tracker-container-nginx-prod"),
+            "wodiq-platform": ("wodiq-core", "wodiq-runtime-build", "wodiq-api", "wodiq-management", "wodiq-worker"),
+        }
+        for keys in bundles.values():
+            for key in keys:
+                for route in ("trusted", "hosted"):
+                    block = re.split(r"(?m)^  [a-z][a-z0-9-]*:\n", workflow.split(f"  {key}-{route}:\n", 1)[1], maxsplit=1)[0]
+                    self.assertIn("permissions:\n      contents: read", block)
+                    self.assertNotIn("actions: read", block)
+                    self.assertNotIn("pull-requests: read", block)
+                    self.assertIn(f"trusted-bundle-{route}@{helper_sha}", block)
+                    if route == "trusted":
+                        profile = "medium" if key in ("gate-php", "tracker-frontend-static", "wodiq-core", "wodiq-runtime-build") else "heavy"
+                        self.assertIn(f"labels: [self-hosted, trusted-{profile}, sanctuary-", block)
+                    self.assertIn("verified: ${{ steps.execute.outputs.verified }}", block)
+        self.assertIn("value: ${{ toJSON(jobs) }}", workflow)
+        self.assertIn("runs-on: ubuntu-slim", workflow)
+        for route in ("trusted", "hosted"):
+            helper = WORKFLOW.parents[2] / f".github/actions/trusted-bundle-{route}/action.yml"
+            text = helper.read_text()
+            self.assertLess(text.index("bash .github/ci/sanctuary-ci --strict"),
+                            text.index("run: echo 'verified=true'"))
+            self.assertIn("ref: ${{ inputs.source-sha }}", text)
+            self.assertIn("ci-runtime-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", text)
+        ruby = subprocess.run(["ruby", "-e", "require 'yaml'; ARGV.each { |p| YAML.safe_load(File.read(p), aliases: true) }",
+                               str(WORKFLOW), *(str(WORKFLOW.parents[2] / f".github/actions/trusted-bundle-{route}/action.yml") for route in ("trusted", "hosted"))],
+                              capture_output=True, text=True)
+        self.assertEqual(ruby.returncode, 0, ruby.stderr)
 
     def test_fixed_consumer_contract_maps_exact_repository_key_and_toolchain(self):
         wodiq_plan = {"version": 2, **{key: False for key in ("core", "migration", "api", "management", "worker", "client")},
@@ -339,11 +498,11 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                 self.env[name] = old
 
     def test_workflow_has_literal_group_read_only_permissions_and_fixed_adapter(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         self.assertIn("group: sanctuary-trusted-verification", source)
         self.assertIn("labels: ${{ fromJSON(needs.preflight.outputs.runner-labels) }}", source)
         self.assertIn("runs-on: ubuntu-24.04", source)
-        self.assertIn("if: ${{ needs.preflight.outputs.trusted != 'true' }}", source)
+        self.assertIn("if: ${{ inputs.bundle == '' && needs.preflight.outputs.trusted != 'true' }}", source)
         self.assertIn("bash .github/ci/sanctuary-ci --strict \"$JOB_KEY\"", source)
         self.assertEqual(source.count("persist-credentials: false"), 2)
         self.assertNotIn("secrets: inherit", source)
@@ -392,7 +551,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                 self.assertEqual(consumer_verdict(result, route, trusted, hosted), expected)
 
     def test_direct_proof_contract_and_timeouts(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         self.assertIn("value: ${{ jobs.preflight.outputs.trusted }}", source)
         self.assertIn("value: ${{ jobs.trusted-verification.outputs.verified }}", source)
         self.assertIn("value: ${{ jobs.hosted-fallback.outputs.verified }}", source)
@@ -408,7 +567,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.assertEqual(source.count("timeout-minutes: 60"), 2)
 
     def test_artifact_handoff_is_same_run_and_precedes_proof_on_both_routes(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
         hosted = source.split("  hosted-fallback:", 1)[1]
         for route in (trusted, hosted):
@@ -424,7 +583,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             self.assertIn("include-hidden-files: true", route)
 
     def test_both_routes_checkout_merge_commit_with_parent_for_site_docs(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
         hosted = source.split("  hosted-fallback:", 1)[1]
         for route in (trusted, hosted):
@@ -434,7 +593,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
         self.assertIn("ref: ${{ needs.preflight.outputs.source-sha }}", trusted)
 
     def test_trusted_baked_php_selection_checks_version_extensions_and_composer(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
         hosted = source.split("  hosted-fallback:", 1)[1]
         self.assertNotIn("shivammathur/setup-php@", trusted)
@@ -501,7 +660,7 @@ else:
                                                     capture_output=True, text=True).returncode, 0)
 
     def test_download_caches_use_fixed_lockfile_identities_on_both_routes(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
         hosted = source.split("  hosted-fallback:", 1)[1]
         for route in (trusted, hosted):
@@ -521,7 +680,7 @@ else:
             self.assertNotIn("vendor/", route)
 
     def test_composer_cache_does_not_require_a_root_manifest(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         for route in (source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0],
                       source.split("  hosted-fallback:", 1)[1]):
             step = route.split("      - name: Resolve fixed Composer download cache", 1)[1]
@@ -544,7 +703,7 @@ else:
                         self.assertTrue((root / "composer-cache").is_dir())
 
     def test_fixed_docker_layer_cache_is_local_bounded_and_after_verification(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         self.assertNotIn("ghaction-github-runtime", source)
         self.assertNotIn("type=gha", source)
         self.assertNotIn("ACTIONS_RUNTIME_TOKEN", source)
@@ -568,7 +727,7 @@ else:
             self.assertLess(route.index("Save bounded local Docker layers after verification"), route.index("run: echo 'verified=true'"))
 
     def test_openairco_and_status_fixed_heavy_toolchains_on_both_routes(self):
-        source = WORKFLOW.read_text()
+        source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
         hosted = source.split("  hosted-fallback:", 1)[1]
         for route in (trusted, hosted):

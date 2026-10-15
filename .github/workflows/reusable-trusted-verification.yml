@@ -8,18 +8,33 @@ on:
     inputs:
       profile:
         description: Fixed Sanctuary capacity profile (medium or heavy)
-        required: true
+        required: false
+        default: ""
         type: string
       job-key:
         description: Slug selecting a fixed job inside the consumer adapter
-        required: true
+        required: false
+        default: ""
         type: string
       plan-json:
         description: Strict selection booleans or enums for fixed WODIQ, Gate and Tracker frontend adapters
         required: false
         default: ""
         type: string
+      bundle:
+        description: Fixed logical bundle (gate-quality, tracker-quality, tracker-images, wodiq-platform)
+        required: false
+        default: ""
+        type: string
+      selection-json:
+        description: Strict schemaVersion 1 ordered selection of fixed keys and plans
+        required: false
+        default: ""
+        type: string
     outputs:
+      bundle-results-json:
+        description: Full static per-key route results and outputs
+        value: ${{ toJSON(jobs) }}
       preflight-trusted:
         description: Server-side trust route decision
         value: ${{ jobs.preflight.outputs.trusted }}
@@ -40,12 +55,12 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     outputs:
-      trusted: ${{ steps.trust.outputs.trusted }}
-      source-sha: ${{ steps.trust.outputs.source-sha }}
-      head-sha: ${{ steps.trust.outputs.head-sha }}
+      trusted: ${{ steps.identity.outputs.trusted || steps.trust.outputs.trusted }}
+      source-sha: ${{ steps.identity.outputs.source-sha || steps.trust.outputs.source-sha }}
+      head-sha: ${{ steps.identity.outputs.head-sha || steps.trust.outputs.head-sha }}
       runner-labels: ${{ steps.trust.outputs.runner-labels }}
       reason: ${{ steps.trust.outputs.reason }}
       node-version: ${{ steps.contract.outputs.node-version }}
@@ -55,13 +70,22 @@ jobs:
       plan-json: ${{ steps.contract.outputs.plan-json }}
       runtime-download: ${{ steps.contract.outputs.runtime-download }}
       gate-frontend-output: ${{ steps.contract.outputs.gate-frontend-output }}
+      base-sha: ${{ steps.identity.outputs.base-sha }}
+      run-id: ${{ steps.identity.outputs.run-id }}
+      run-attempt: ${{ steps.identity.outputs.run-attempt }}
+      workflow-sha: ${{ steps.identity.outputs.workflow-sha }}
+      selection-sha256: ${{ steps.bundle-contract.outputs.selection-sha256 }}
+      selected-jobs: ${{ steps.bundle-contract.outputs.selected-jobs }}
+      bundle-plans: ${{ steps.bundle-contract.outputs.bundle-plans }}
     steps:
       - name: Validate inputs and server-side trust
+        if: ${{ inputs.bundle == '' }}
         id: trust
         shell: bash
         env:
           PROFILE: ${{ inputs.profile }}
           JOB_KEY: ${{ inputs.job-key }}
+          BUNDLE: ${{ inputs.bundle }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
@@ -124,7 +148,10 @@ jobs:
           def main():
               profile = os.environ["PROFILE"]
               key = os.environ["JOB_KEY"]
-              if profile not in ("medium", "heavy") or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", key) or len(key) > 48:
+              if os.environ.get("BUNDLE"):
+                  if profile or key:
+                      raise SystemExit("bundle and single-job inputs are mutually exclusive")
+              elif profile not in ("medium", "heavy") or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", key) or len(key) > 48:
                   raise SystemExit("invalid fixed profile or job-key contract")
               try:
                   repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -220,17 +247,21 @@ jobs:
           main()
           PY
       - name: Validate fixed consumer contract
+        if: ${{ inputs.bundle == '' }}
         id: contract
         shell: bash
         env:
           PROFILE: ${{ inputs.profile }}
           JOB_KEY: ${{ inputs.job-key }}
           PLAN_JSON: ${{ inputs.plan-json }}
+          SELECTION_JSON: ${{ inputs.selection-json }}
         run: |
           python3 - <<'CONTRACT'
           import json
           import os
 
+          if os.environ.get("SELECTION_JSON"):
+              raise SystemExit("selection-json is only valid in bundle mode")
           # The tuple is (capacity profile, Node, pnpm, PHP, PHP extensions).
           # No caller-controlled command, path, toolchain, or service is accepted.
           jobs = {
@@ -364,12 +395,238 @@ jobs:
               out.write("gate-frontend-output=" + str(gate_frontend_output).lower() + "\n")
           CONTRACT
 
+      - name: Validate exact logical bundle selection
+        if: ${{ inputs.bundle != '' }}
+        id: bundle-contract
+        shell: bash
+        env:
+          BUNDLE: ${{ inputs.bundle }}
+          SELECTION_JSON: ${{ inputs.selection-json }}
+          PROFILE: ${{ inputs.profile }}
+          JOB_KEY: ${{ inputs.job-key }}
+          PLAN_JSON: ${{ inputs.plan-json }}
+        run: |
+          python3 - <<'BUNDLE'
+          import hashlib
+          import json
+          import os
+
+          bundles = {
+              "gate-quality": ("Tuinstra-DEV/gate", ("gate-php", "gate-frontend-static")),
+              "tracker-quality": ("Tuinstra-DEV/tracker", ("tracker-backend-postgres", "tracker-frontend-static")),
+              "tracker-images": ("Tuinstra-DEV/tracker", ("tracker-container-api", "tracker-container-web", "tracker-container-php-prod", "tracker-container-nginx-prod")),
+              "wodiq-platform": ("Tuinstra-DEV/wodiq-platform", ("wodiq-core", "wodiq-runtime-build", "wodiq-api", "wodiq-management", "wodiq-worker")),
+          }
+          bundle = os.environ["BUNDLE"]
+          if bundle not in bundles or bundles[bundle][0] != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("unsupported logical bundle or repository")
+          if any(os.environ[name] for name in ("PROFILE", "JOB_KEY", "PLAN_JSON")):
+              raise SystemExit("bundle and single-job inputs are mutually exclusive")
+          raw = os.environ["SELECTION_JSON"]
+          if not raw or len(raw.encode("utf-8")) > 16384:
+              raise SystemExit("missing or oversized bundle selection")
+
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate JSON field")
+                  result[key] = value
+              return result
+
+          try:
+              selected = json.loads(raw, object_pairs_hook=unique)
+          except (ValueError, TypeError):
+              raise SystemExit("bundle selection must be unique-field JSON") from None
+          if (type(selected) is not dict or set(selected) != {"schemaVersion", "jobs"}
+                  or type(selected["schemaVersion"]) is not int or selected["schemaVersion"] != 1
+                  or type(selected["jobs"]) is not list):
+              raise SystemExit("unsupported bundle selection schema")
+          allowed = set(bundles[bundle][1])
+          keys, plans = [], {}
+          suites = {"Unit", "Integration", "Functional", "Unit,Integration", "Unit,Functional",
+                    "Integration,Functional", "Unit,Integration,Functional"}
+          checks = {"core", "migration", "api", "management", "worker", "client"}
+          builds = {"api", "management", "worker"}
+          proofs = {"all", "activity", "coach", "managementAuth", "garmin"}
+          for item in selected["jobs"]:
+              if type(item) is not dict or set(item) != {"job-key", "plan"}:
+                  raise SystemExit("bundle job requires exact job-key and plan")
+              key, plan = item["job-key"], item["plan"]
+              if type(key) is not str or key not in allowed or key in plans or type(plan) is not dict:
+                  raise SystemExit("unknown or duplicate fixed bundle key")
+              if key == "gate-php":
+                  if (set(plan) != {"backendSuites", "quality", "apiSchema"}
+                          or type(plan["backendSuites"]) is not str or plan["backendSuites"] not in suites
+                          or type(plan["quality"]) is not bool or type(plan["apiSchema"]) is not bool
+                          or not (plan["quality"] or plan["apiSchema"])):
+                      raise SystemExit("invalid Gate PHP bundle plan")
+              elif key == "gate-frontend-static":
+                  if (set(plan) != {"frontendTests", "frontendBuild", "quality", "apiTypes"}
+                          or type(plan["frontendTests"]) is not str
+                          or plan["frontendTests"] not in {"all", "unit", "functional"}
+                          or any(type(plan[name]) is not bool for name in ("frontendBuild", "quality", "apiTypes"))
+                          or not (plan["quality"] or plan["apiTypes"])):
+                      raise SystemExit("invalid Gate frontend bundle plan")
+              elif key == "tracker-frontend-static":
+                  front = ("frontend-web", "frontend-unit", "frontend-component", "frontend-site")
+                  if (set(plan) != set(front) or any(type(plan[name]) is not bool for name in front)
+                          or not (plan["frontend-web"] or plan["frontend-site"])
+                          or (plan["frontend-unit"] and not plan["frontend-web"])
+                          or (plan["frontend-component"] and not plan["frontend-web"])):
+                      raise SystemExit("invalid Tracker frontend bundle plan")
+              elif key.startswith("wodiq-"):
+                  if (set(plan) != checks | {"version", "builds", "proofs"}
+                          or type(plan["version"]) is not int or plan["version"] != 2
+                          or type(plan["builds"]) is not dict or set(plan["builds"]) != builds
+                          or type(plan["proofs"]) is not dict or set(plan["proofs"]) != proofs
+                          or any(type(plan[name]) is not bool for name in checks)
+                          or any(type(plan["builds"][name]) is not bool for name in builds)
+                          or any(type(plan["proofs"][name]) is not bool for name in proofs)):
+                      raise SystemExit("invalid WODIQ bundle plan")
+              elif plan:
+                  raise SystemExit("this fixed bundle job does not accept a plan")
+              keys.append(key)
+              plans[key] = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+          if bundle == "gate-quality":
+              php = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-php"), None)
+              frontend = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-frontend-static"), None)
+              if ((php is not None and php["apiSchema"]) !=
+                      (frontend is not None and frontend["apiTypes"])):
+                  raise SystemExit("Gate API contract requires both fixed groups")
+          if bundle == "wodiq-platform" and keys:
+              if set(keys) != allowed or len(set(plans.values())) != 1:
+                  raise SystemExit("WODIQ source/runtime proof closure requires all five keys and one plan")
+          canonical = json.dumps(selected, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+          digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write("selection-sha256=" + digest + "\n")
+              out.write("selected-jobs=" + json.dumps(keys, separators=(",", ":")) + "\n")
+              out.write("bundle-plans=" + json.dumps(plans, sort_keys=True, separators=(",", ":")) + "\n")
+          BUNDLE
+
+      - name: Bind bundle source and workflow identity from GitHub
+        if: ${{ inputs.bundle != '' }}
+        id: identity
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'IDENTITY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          def require(ok, reason):
+              if not ok:
+                  raise SystemExit("bundle identity invalid: " + reason)
+
+          def api(path):
+              req = urllib.request.Request(
+                  os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/") + path,
+                  headers={"Accept": "application/vnd.github+json",
+                           "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                           "X-GitHub-Api-Version": "2022-11-28"})
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  return json.load(response)
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          require(os.environ.get("GITHUB_EVENT_NAME") == "pull_request", "event")
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as file:
+              event = json.load(file)
+          pr_event = event.get("pull_request") or {}
+          number = pr_event.get("number")
+          head, base = pr_event.get("head") or {}, pr_event.get("base") or {}
+          head_sha, base_sha, source_sha = head.get("sha"), base.get("sha"), os.environ.get("GITHUB_SHA")
+          sha = lambda value: isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+          require(type(number) is int and number > 0 and all(map(sha, (head_sha, base_sha, source_sha))), "shas")
+          require((event.get("repository") or {}).get("full_name") == repo and
+                  (event.get("repository") or {}).get("private") is True, "repository")
+          require(os.environ.get("GITHUB_REF") == f"refs/pull/{number}/merge", "ref")
+          run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+          require(re.fullmatch(r"[1-9][0-9]*", run_id) and re.fullmatch(r"[1-9][0-9]*", attempt), "run")
+          run = api(f"/repos/{repo}/actions/runs/{run_id}")
+          require(run.get("id") == int(run_id) and run.get("run_attempt") == int(attempt) and
+                  run.get("event") == "pull_request" and run.get("head_sha") == head_sha and
+                  run.get("head_branch") == head.get("ref") and
+                  (run.get("repository") or {}).get("full_name") == repo, "run record")
+          prefix = "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@"
+          refs = [v for v in run.get("referenced_workflows", []) if isinstance(v, dict) and
+                  isinstance(v.get("path"), str) and v["path"].startswith(prefix)]
+          require(len(refs) == 1, "workflow reference count")
+          workflow_sha = refs[0]["path"][len(prefix):]
+          require(sha(workflow_sha) and refs[0].get("sha") == workflow_sha, "workflow pin")
+          pr = api(f"/repos/{repo}/pulls/{number}")
+          current_head, current_base = pr.get("head") or {}, pr.get("base") or {}
+          require(pr.get("number") == number and pr.get("state") == "open" and
+                  current_head.get("sha") == head_sha and current_base.get("sha") == base_sha and
+                  (current_head.get("repo") or {}).get("full_name") ==
+                  (head.get("repo") or {}).get("full_name") and
+                  (current_base.get("repo") or {}).get("full_name") == repo, "current PR")
+          merge = api(f"/repos/{repo}/git/commits/{source_sha}")
+          parents = merge.get("parents") or []
+          require(merge.get("sha") == source_sha and len(parents) == 2 and
+                  {p.get("sha") for p in parents} == {head_sha, base_sha}, "merge parents")
+
+          def trusted_user(value):
+              return isinstance(value, dict) and value.get("login") == "marcel-tuinstra" and value.get("type") == "User"
+
+          def same_private_repo(value):
+              return isinstance(value, dict) and value.get("full_name") == repo and value.get("private") is True
+
+          head_ref = head.get("ref")
+          trusted = (
+              repo in {"Tuinstra-DEV/gate", "Tuinstra-DEV/tracker", "Tuinstra-DEV/wodiq-platform"}
+              and os.environ.get("GITHUB_ACTOR") == "marcel-tuinstra"
+              and os.environ.get("GITHUB_TRIGGERING_ACTOR") == "marcel-tuinstra"
+              and trusted_user(event.get("sender")) and trusted_user(pr_event.get("user"))
+              and trusted_user(run.get("actor")) and trusted_user(run.get("triggering_actor"))
+              and trusted_user(pr.get("user"))
+              and same_private_repo(run.get("head_repository"))
+              and same_private_repo(head.get("repo")) and head["repo"].get("fork") is False
+              and same_private_repo(base.get("repo"))
+              and same_private_repo(current_head.get("repo")) and current_head["repo"].get("fork") is False
+              and same_private_repo(current_base.get("repo"))
+              and pr.get("merged") is False
+              and isinstance(head_ref, str)
+              and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", head_ref) is not None
+              and ".." not in head_ref and "//" not in head_ref and not head_ref.endswith("/")
+              and current_head.get("ref") == head_ref
+          )
+          if trusted:
+              import urllib.parse
+              associated = run.get("pull_requests")
+              require(isinstance(associated, list) and len(associated) <= 1, "run PR association")
+              if associated:
+                  item = associated[0]
+                  trusted = (isinstance(item, dict) and item.get("number") == number and
+                             (item.get("head") or {}).get("sha") == head_sha and
+                             (item.get("base") or {}).get("sha") == base_sha)
+              else:
+                  branch = urllib.parse.quote(f"{repo.split('/', 1)[0]}:{head_ref}", safe="")
+                  candidates = api(f"/repos/{repo}/pulls?state=open&head={branch}&per_page=100")
+                  trusted = (isinstance(candidates, list) and len(candidates) == 1 and
+                             candidates[0].get("number") == number)
+              if trusted:
+                  encoded = urllib.parse.quote(head_ref, safe="/")
+                  ref = api(f"/repos/{repo}/git/ref/heads/{encoded}")
+                  trusted = (ref.get("ref") == "refs/heads/" + head_ref and
+                             (ref.get("object") or {}).get("type") == "commit" and
+                             (ref.get("object") or {}).get("sha") == head_sha)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write("trusted=" + str(bool(trusted)).lower() + "\n")
+              for name, value in (("source-sha", source_sha), ("head-sha", head_sha),
+                                  ("base-sha", base_sha), ("run-id", run_id),
+                                  ("run-attempt", attempt), ("workflow-sha", workflow_sha)):
+                  out.write(f"{name}={value}\n")
+          IDENTITY
   trusted-verification:
     name: Trusted verification
     permissions:
       contents: read
     needs: preflight
-    if: ${{ needs.preflight.outputs.trusted == 'true' && github.event_name == 'pull_request' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.repository.private == true && github.event.sender.login == 'marcel-tuinstra' && github.event.sender.type == 'User' && github.event.pull_request.user.login == 'marcel-tuinstra' && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.base.repo.private == true && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.sha == needs.preflight.outputs.head-sha && github.sha == needs.preflight.outputs.source-sha }}
+    if: ${{ inputs.bundle == '' && needs.preflight.outputs.trusted == 'true' && github.event_name == 'pull_request' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.repository.private == true && github.event.sender.login == 'marcel-tuinstra' && github.event.sender.type == 'User' && github.event.pull_request.user.login == 'marcel-tuinstra' && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.base.repo.private == true && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.sha == needs.preflight.outputs.head-sha && github.sha == needs.preflight.outputs.source-sha }}
     outputs:
       verified: ${{ steps.proof.outputs.verified }}
     runs-on:
@@ -654,7 +911,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ inputs.bundle == '' && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -888,3 +1145,783 @@ jobs:
         id: proof
         shell: bash
         run: echo 'verified=true' >> "$GITHUB_OUTPUT"
+
+  gate-php-trusted:
+    name: gate-php trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-php') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-medium, sanctuary-gate]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['gate-php'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed gate-php trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: gate-php
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: ''
+          pnpm-version: ''
+          php-version: '8.3'
+          php-extensions: 'ctype, iconv, pdo_sqlite, sqlite3'
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  gate-php-hosted:
+    name: gate-php hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-php') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['gate-php'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed gate-php hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: gate-php
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: ''
+          pnpm-version: ''
+          php-version: '8.3'
+          php-extensions: 'ctype, iconv, pdo_sqlite, sqlite3'
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  gate-frontend-static-trusted:
+    name: gate-frontend-static trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-gate]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['gate-frontend-static'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed gate-frontend-static trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: gate-frontend-static
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: '10.28.2'
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['gate-frontend-static']).frontendBuild }}
+
+  gate-frontend-static-hosted:
+    name: gate-frontend-static hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['gate-frontend-static'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed gate-frontend-static hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: gate-frontend-static
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: '10.28.2'
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['gate-frontend-static']).frontendBuild }}
+
+  tracker-backend-postgres-trusted:
+    name: tracker-backend-postgres trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-backend-postgres') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-backend-postgres'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-backend-postgres trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-backend-postgres
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: ''
+          pnpm-version: ''
+          php-version: '8.4'
+          php-extensions: 'ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip'
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-backend-postgres-hosted:
+    name: tracker-backend-postgres hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-backend-postgres') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-backend-postgres'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-backend-postgres hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-backend-postgres
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: ''
+          pnpm-version: ''
+          php-version: '8.4'
+          php-extensions: 'ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip'
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-frontend-static-trusted:
+    name: tracker-frontend-static trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-medium, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-frontend-static'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-frontend-static trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-frontend-static
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: '11.1.1'
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-frontend-static-hosted:
+    name: tracker-frontend-static hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-frontend-static'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-frontend-static hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-frontend-static
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: '11.1.1'
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-api-trusted:
+    name: tracker-container-api trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-api') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-api'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-api trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-api
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-api-hosted:
+    name: tracker-container-api hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-api') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-api'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-api hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-api
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-web-trusted:
+    name: tracker-container-web trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-web') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-web'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-web trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-web
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-web-hosted:
+    name: tracker-container-web hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-web') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-web'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-web hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-web
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-php-prod-trusted:
+    name: tracker-container-php-prod trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-php-prod') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-php-prod'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-php-prod trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-php-prod
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-php-prod-hosted:
+    name: tracker-container-php-prod hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-php-prod') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-php-prod'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-php-prod hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-php-prod
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-nginx-prod-trusted:
+    name: tracker-container-nginx-prod trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-tracker]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-nginx-prod'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-nginx-prod trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-nginx-prod
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  tracker-container-nginx-prod-hosted:
+    name: tracker-container-nginx-prod hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['tracker-container-nginx-prod'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed tracker-container-nginx-prod hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: tracker-container-nginx-prod
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24.18.0'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-core-trusted:
+    name: wodiq-core trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-core') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-medium, sanctuary-wodiq-platform]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-core'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-core trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-core
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-core-hosted:
+    name: wodiq-core hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-core') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-core'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-core hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-core
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-runtime-build-trusted:
+    name: wodiq-runtime-build trusted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-runtime-build') && needs.preflight.outputs.trusted == 'true' }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-medium, sanctuary-wodiq-platform]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-runtime-build'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-runtime-build trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-runtime-build
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-runtime-build-hosted:
+    name: wodiq-runtime-build hosted verification
+    permissions:
+      contents: read
+    needs: preflight
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-runtime-build') && needs.preflight.outputs.trusted != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-runtime-build'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-runtime-build hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-runtime-build
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-trusted:
+    name: wodiq-api trusted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-api'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-api trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-api']).builds.api }}
+          gate-frontend-output: 'false'
+
+  wodiq-api-hosted:
+    name: wodiq-api hosted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-api'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-api hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-api']).builds.api }}
+          gate-frontend-output: 'false'
+
+  wodiq-management-trusted:
+    name: wodiq-management trusted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-management') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-management'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-management trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-management
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-management']).builds.management }}
+          gate-frontend-output: 'false'
+
+  wodiq-management-hosted:
+    name: wodiq-management hosted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-management') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-management'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-management hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-management
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-management']).builds.management }}
+          gate-frontend-output: 'false'
+
+  wodiq-worker-trusted:
+    name: wodiq-worker trusted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-worker') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-worker'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-worker trusted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-worker
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-worker']).builds.worker }}
+          gate-frontend-output: 'false'
+
+  wodiq-worker-hosted:
+    name: wodiq-worker hosted verification
+    permissions:
+      contents: read
+    needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-worker') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      verified: ${{ steps.execute.outputs.verified }}
+    env:
+      CI_PLAN: ${{ fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-worker'] }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run immutable fixed wodiq-worker hosted adapter
+        id: execute
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-worker
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(fromJSON(needs.preflight.outputs.bundle-plans)['wodiq-worker']).builds.worker }}
+          gate-frontend-output: 'false'

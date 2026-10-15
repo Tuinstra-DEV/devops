@@ -201,7 +201,7 @@ def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     if single == multiple:
         raise RunnerError("organization workflow requires exactly one reference policy")
     refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
-    if not isinstance(refs, list) or not 1 <= len(refs) <= 2 or \
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 3 or \
             any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
                 re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
                 for ref in refs) or len(set(refs)) != len(refs):
