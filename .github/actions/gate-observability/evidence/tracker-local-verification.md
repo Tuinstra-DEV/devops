@@ -23,3 +23,32 @@ The original privacy callback intentionally strips scope fingerprints. The first
 The browser proof above is reused attribution from14October. Browser SDK/plugin/privacy/build integration files are byte-identical between its52f16source and the23d6candidate. No fresh browser event is claimed. The shared privacy fingerprint now also covers FeedbackSearchPrivacy.php because request classification depends on it.
 
 Local TDD: eight expected-denial scenarios failed before the fix;48focused tests/400assertions passed after, including actual SDK with mocked transport. Full local PHP2077tests/39368assertions, PHPStan/style/APIcontract passed (2notices,67environment-skips). Web audit/lint/typecheck,1721unit/component tests, build and71real-API browser scenarios passed (1screenshot-onlyskip). Mock browser168/169 passed initially; the Notion navigation timeout passed both desktop and phone focused retries. Site security/check/test/browser/build passed. No UI changed; no screenshots apply. Required CI38701392637 passed before protected PR366 merge. Production promotion follows this refreshed protected proof; the historical production snapshot below remains explicitly historical, not a claim that the new filter was already live.
+
+## TRAC-204 patched PHP dependency renewal — 15 October 2026
+
+Tracker PR #371 patched only ExpressionLanguage 7.4.21 and HttpFoundation 7.4.19 and added the missing locked Composer audit as the first local check. The exact audit failed before and passed after, without ignores. Local checks passed: 2,079 backend tests / 39,373 assertions (two existing PHPUnit notices, 67 environment skips), PHPStan, style, API contract, three real API/PostgreSQL browser scenarios and 11 preserved site analytics/contract tests. The production PHP image also built locally; real API/worker SDK boot checks with network disabled passed with zero events. Required CI 38720134448 and security 38720134694 passed before PR #371 was merged.
+
+### Verified artifact
+
+Protected PHP build [38722396534/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/38722396534) used source `b78b53b39dbf55e26b17c1c447c5adf36966788d`.
+
+- Artifact: `11967118376`.
+- Outer archive SHA256: `6d92534033390f4d85598f3fde4531c415ad01f0d92f6c4f87b873a5d3b96bad`.
+- Runtime gzip SHA256: `7ee5ee3c0737425c52b68a0d7f9f89bd3248ed7f918c88dcd29286070d1178b5`.
+- Original image config: `sha256:16904a39a02f962775a5d382bf24c7d69908d1feeb229fa6750c231a14f67632`.
+- Loaded host image: `sha256:27114b97abe5ce09e4e9a6af564a054902120d38026fe569af29765395071e6b`.
+
+Saving that immutable loaded image reproduced the original config checksum and identical configuration, history and rootfs. Manifest and archive checksums were checked locally and remotely before use. This is an operator-loaded CI verification image; production has not yet received this source.
+
+### Actual SDK → Sentry → Heal
+
+The existing isolated fixture asserts both patched package versions before SDK boot. The actual configured API callback discarded the expected access denial before transport. One first-party TypeError per API/worker reached Sentry with the correct source, component and frame. User/private test fields were removed; Sentry reported no processing errors. Synthetic grouping is added only after the unchanged privacy callback, as documented above.
+
+Both cases arrived through automatic Sentry delivery before the operator repeated the signed intake twice per event. Repeats retained the same case, one occurrence/triage and zero fixes:
+
+- API: `ab447df90729490481a96eb20aba13a2`.
+- Worker: `2fae04c942b4477ab38d2650c0a51da9`.
+
+All 32 existing runtime ledger rows were preserved. Two verification rows were appended with a backup; the gracefully restarted worker read the identical 34-row ledger. Sentry test groups TRACKER-W/X are resolved. Automatic test items TRAC-211/212 were labeled and reversibly withdrawn. Original production issues and historical case bindings were unchanged.
+
+Only the Composer SDK closure fingerprint changed. Browser integration files and its own dependency closure remain unchanged from the attributable `52f16` proof above. That browser proof is reused; no fresh browser event is claimed. The earlier `23d6` PHP proof and production snapshot remain historical. Production promotion still must publish its own source/image receipt through the updated immutable guard.
