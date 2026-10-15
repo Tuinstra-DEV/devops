@@ -24,7 +24,7 @@ The browser proof above is reused attribution from14October. Browser SDK/plugin/
 
 Local TDD: eight expected-denial scenarios failed before the fix;48focused tests/400assertions passed after, including actual SDK with mocked transport. Full local PHP2077tests/39368assertions, PHPStan/style/APIcontract passed (2notices,67environment-skips). Web audit/lint/typecheck,1721unit/component tests, build and71real-API browser scenarios passed (1screenshot-onlyskip). Mock browser168/169 passed initially; the Notion navigation timeout passed both desktop and phone focused retries. Site security/check/test/browser/build passed. No UI changed; no screenshots apply. Required CI38701392637 passed before protected PR366 merge. Production promotion follows this refreshed protected proof; the historical production snapshot below remains explicitly historical, not a claim that the new filter was already live.
 
-## TRAC-204 patched PHP dependency renewal — 15 October 2026
+## Earlier TRAC-204 PHP renewal (HttpFoundation 7.4.19) — 15 October 2026
 
 Tracker PR #371 patched only ExpressionLanguage 7.4.21 and HttpFoundation 7.4.19 and added the missing locked Composer audit as the first local check. The exact audit failed before and passed after, without ignores. Local checks passed: 2,079 backend tests / 39,373 assertions (two existing PHPUnit notices, 67 environment skips), PHPStan, style, API contract, three real API/PostgreSQL browser scenarios and 11 preserved site analytics/contract tests. The production PHP image also built locally; real API/worker SDK boot checks with network disabled passed with zero events. Required CI 38720134448 and security 38720134694 passed before PR #371 was merged.
 
@@ -52,3 +52,34 @@ Both cases arrived through automatic Sentry delivery before the operator repeate
 All 32 existing runtime ledger rows were preserved. Two verification rows were appended with a backup; the gracefully restarted worker read the identical 34-row ledger. Sentry test groups TRACKER-W/X are resolved. Automatic test items TRAC-211/212 were labeled and reversibly withdrawn. Original production issues and historical case bindings were unchanged.
 
 Only the Composer SDK closure fingerprint changed. Browser integration files and its own dependency closure remain unchanged from the attributable `52f16` proof above. That browser proof is reused; no fresh browser event is claimed. The earlier `23d6` PHP proof and production snapshot remain historical. Production promotion still must publish its own source/image receipt through the updated immutable guard.
+
+## Final TRAC-204 PHP renewal (both Symfony packages 7.4.21) — 15 October 2026
+
+Parallel Tracker PR #370 advanced HttpFoundation from 7.4.19 to 7.4.21 after the preceding proof. That upstream release changes runtime request/header/session code, so the earlier proof was retained as historical and the final runtime was verified again. Its CI bundling and package update were preserved through a normal merge. Two stale caller runs were explicitly cancelled; no failed test was relabeled as a pass.
+
+### Local verification before the final caller update
+
+The final 7.4.21 dependency set passed 2,079 local backend tests / 39,373 assertions, with two existing PHPUnit notices and 67 environment skips. The initial broad filtered command omitted the documented memory setting and stopped at the default 128 MB; the complete successful run used the existing 512 MB test setting. This changes no application memory policy. The locked Composer audit, full PHPStan/style/API-contract checks, three real API/PostgreSQL browser scenarios, 50 CI-bundle/routing/preflight tests and the release/recovery contracts passed. The production PHP image built locally; API and worker booted their real SDK with network disabled and zero events. Local source `a8da7d9b22e90f4283ab69d2e76ba8d64b114b32` has identical `code/` files to protected source `eee960198fcaad56994f7ba7cfc368a34918d03b`; its differences are the caller pins and verification document outside that build context.
+
+### Verified final artifact
+
+[Protected PHP build 38728083705/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/38728083705) used source `eee960198fcaad56994f7ba7cfc368a34918d03b`.
+
+- Artifact: `11970040872`.
+- Outer archive SHA256: `5eb47757695ab9e7fc712e1c2ab0033b55efdd4b3674245441666f0a03fb944a`.
+- Runtime gzip SHA256: `3e71d65c02fc758cbcaceac0df4bc2297c0529f4a19b5c17aab4d7df0a14c03c`.
+- Original image config: `sha256:3648479b6e8102799206b5e77b8022d09da336d65c00647d58ff97b2c4947ca2`.
+- Loaded host image: `sha256:55cdd164f2e925733a83cfd557508f7fdf581595907bbfbbba835f46d66900e9`.
+
+Local and remote manifest/archive checksums passed. Saving the loaded immutable image reproduced the original config checksum and identical configuration/history/rootfs. The isolated fixture asserted both actual package versions before SDK boot. Production services and the database were unchanged during this verification.
+
+### Final SDK → Sentry → Heal outcome
+
+The actual API callback discarded the expected access denial before transport. One first-party TypeError per API/worker arrived through automatic Sentry delivery, with the correct release, component and source frame, no populated user/private test fields and no Sentry processing errors. As above, the fixture adds only fixed synthetic grouping after the unchanged privacy callback.
+
+- API case: `65f91477b22e4e198837be2ef52453ef`.
+- Worker case: `4a925a9b0c0546df82d59fe7478152f5`.
+
+Both cases existed before two operator-signed repeats per event. Repetition retained those exact cases, one occurrence and triage, with zero fixes. The ledger preserved all 34 preceding rows and appended two verified rows; the gracefully restarted worker read the identical 36-row file. Sentry groups TRACKER-Y/Z are resolved. Automatic test items TRAC-213/214 were labeled and reversibly withdrawn; original issues and historical case bindings were preserved.
+
+Only the Composer SDK dependency fingerprint changed to `sha256:02609898363fa607368b77895b74b319157f945d9ca60b76c53a34205cf9abd6`. The unchanged browser integration and dependency closure retain their original attributable proof. The earlier PHP proofs and production snapshot remain historical. Normal production promotion must still verify and publish its own source/image receipt using this final bundle.
