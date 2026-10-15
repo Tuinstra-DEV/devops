@@ -1,39 +1,37 @@
-# DEV-50 logical bundle admission transition
+# DEV-50 manager assignment recovery
 
-The shared reusable workflow remains at `.github/workflows/reusable-trusted-verification.yml`. Before any consumer uses its new immutable commit SHA, the Sanctuary organization runner group and manager configuration must admit that exact ref. `scripts/transition-org-runner-workflows.py` performs this narrow version transition; it does not provision a runner group, token, image, label, repository, or service.
+The shared reusable workflow is already admitted at three immutable refs under `.github/workflows/reusable-trusted-verification.yml`. GitHub may assign an organization runner prepared for one admitted ref to a job from another admitted ref. The installed manager rejects that assignment because it expects the trigger and actual refs to match. This recovery updates only the manager: it verifies both refs independently against the same exact three-ref allowlist and records the actual assignment ref with the lease. The runner-group selection, repository IDs, manager config, credentials, labels, capacity, and consumer pins remain unchanged.
 
-## Prepared inputs
+## Reviewed inputs
 
-- Use the existing host and named operator login: `mtuinstra@sanctuary.tuinstra.dev`. Keep host-key verification enabled.
-- Stage **these three files** in one root-owned, non-group-writable directory: `transition-org-runner-workflows.py`, `activate-org-runner-routing.py`, and `ci_runner_manager.py`. The second file supplies pinned, reviewed file/lock/backup primitives; the transition helper checks its SHA-256 before executing any of its bytes. Do not replace these with symlinks.
-- The reviewed installed manager SHA-256 is `1d141705f975efafcdc85c8941f3879c395b4988bc1373dd4750b995935968e7`; the reviewed candidate is `2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4`. The pinned activation module is `37cc8c9df5badbbb19da22a70c7c46b799131987e81fa228369e5ce1be94ff6a`. Re-review and update the helper/tests if the final candidate bytes change.
-- Take the new 40-character lowercase commit SHA from the reviewed shared workflow commit. Check the existing `org_runner_group_id` in `/etc/ci-runner/manager.toml`; pass that exact ID. The helper accepts only the two reviewed old workflow SHA values, preserves their order, and adds the new ref at the unchanged workflow path. It refuses a duplicate, unknown, branch/tag, changed repository ID, changed runner-group setting, or a widened admission policy.
+- Connect as `mtuinstra@sanctuary.tuinstra.dev` with normal SSH host-key verification. Use the named account's sudo only for the prepared helper.
+- Stage `transition-org-runner-workflows.py`, `activate-org-runner-routing.py`, and `ci_runner_manager.py` together in `/root/ci-runner-org-routing-stage`. The directory and files must be root-owned, regular files with safe modes and matching reviewed hashes; the helper validates the activation module before executing its bytes.
+- The expected installed manager SHA-256 is `2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4`. The candidate manager is `79ed7031ff97b3ae371bb87d0c30eba62b32eebf8c06224fea68fde857e2d32c`. The staged activation module is `2c0cd1da090ab70c5a1a41a18e303a0c4fd30153a93f35a9d4342824faa8be74`.
+- The existing runner group is ID `4`, named `sanctuary-trusted-verification`. The three admitted commit SHAs are `36f32aebe315274df8825674b7bd0ced637ab056`, `e1a9f09504b903120e9b5297eff64f58a891c907`, and `23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e`. Their workflow path, exact membership, private repository selection, and group policy must match the installed config and GitHub API. List order in the API does not affect admission.
 
-## Read-only preflight and apply
+## Preflight and apply
 
-Run the staged helper as root through the named operator account. With neither action flag, it performs the default read-only preflight. Replace the angle-bracket values with the reviewed SHA and existing group ID:
+Run the staged helper without an action flag first. This is read-only and returns a small JSON status; it never prints credentials or raw API responses.
 
 ```sh
 sudo python3 /root/ci-runner-org-routing-stage/transition-org-runner-workflows.py \
   --stage /root/ci-runner-org-routing-stage \
-  --workflow-sha <reviewed-40-character-sha> --group-id <existing-group-id>
+  --workflow-sha 23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e --group-id 4
 ```
 
-The result is a small JSON status such as `preflight_passed` or `already_applied`; it does not print credentials or raw API responses. Preflight checks the root-owned staged and installed files, hashes, metadata, effective systemd unit and both existing credential bindings, exact selected private repositories, and the organization's complete runner-group policy. Fix any mismatch before applying. A failed preflight leaves admission unchanged.
+Preflight requires the exact installed manager version, three admitted refs, bounded manager policy, root-owned source and config metadata, effective systemd unit with both existing credentials, selected private repository IDs, and full runner-group policy. A mismatch changes nothing. After preflight passes, repeat the same command with `--apply`.
 
-Only after the final shared workflow SHA and staged bytes are reviewed, run the same command with `--apply`. The helper takes an exclusive transition lock, switches the manager temporarily to reconcile-only mode using its own runtime systemd drop-in, and lets current guests finish. It never cancels a guest. Before each reconcile pass it refuses unreadable or malformed lease state and a lease within 240 seconds of the existing 7200-second expiry, avoiding a transition-driven TTL cleanup of a live guest. It waits at most `--max-drain-seconds` (default 3600; accepted range 60–7200). It requires zero runner VMs, leases, overlay files, cleanup obligations, and active host helpers, then rechecks while holding the host-helper lock. A timeout or near-expiry refusal removes its drop-in and restores the original daemon admission.
+Apply takes the exclusive transition lock and temporarily runs the manager in reconcile-only mode through its own runtime systemd drop-in. A nonzero reconcile exit while a guest is active does not force guest termination: the helper waits for natural completion, still checks the lease before every pass against the existing 7200-second TTL, and requires no VMs, leases, overlay files, cleanup obligations, or active host helpers before proceeding. It rechecks idle state under the host-helper lock. The drain window defaults to 3600 seconds and is bounded to 60–7200 with `--max-drain-seconds`. Timeout or a near-expiry, malformed, or unreadable lease removes the drop-in and restores the original admission.
 
-At the idle boundary the helper stores a protected backup and manifest under `/var/backups/ci-runner-workflow-transition`, checks the runner group again, PATCHes **only** `selected_workflows`, atomically replaces the manager/config, verifies readback and policy, removes its drain drop-in, and restarts the manager and host-helper socket. It reports `applied` with a backup ID. Repeating the same apply request reports `already_applied` without another drain or write. If the PATCH, file write, validation, or restart fails, it attempts to restore the original group and files before reopening admission. If restoration cannot be verified, it reports a failure with admission stopped for operator investigation; do not claim the rollout succeeded.
+At the idle boundary, the helper saves a protected backup and manifest under `/var/backups/ci-runner-workflow-transition`, verifies the runner group again, atomically replaces and reads back **only** the manager binary, removes its drain drop-in, and restarts the manager and host-helper socket. It does not PATCH GitHub or rewrite the config. Success returns `applied` and a backup ID; a repeat returns `already_applied` without draining. A failed write, validation, or restart attempts to restore the original manager. If recovery cannot be verified, the helper reports failure with admission stopped rather than claiming success.
 
 ## Explicit rollback
 
-After jobs admitted by the new version finish, use the exact backup ID returned by apply:
+After active jobs finish, use the exact backup ID returned by apply:
 
 ```sh
 sudo python3 /root/ci-runner-org-routing-stage/transition-org-runner-workflows.py \
   --rollback <backup-id> --max-drain-seconds 3600
 ```
 
-Rollback verifies the backup, installed candidate hashes and metadata, current exact refs, effective unit, and GitHub runner group before draining. It refuses an unexpected installation or group change. Drain timeout restores the currently installed admission. A partial rollback failure leaves admission stopped and reports `rollback incomplete`; investigate both the protected manifest and the group state before any manual recovery. Never edit the token into a command or log.
-
-Keep consumer workflow pins on the old immutable commit until the shared workflow is merged and this admission transition is verified. Then update each consumer to the reviewed new commit SHA and run its relevant local checks before pushing. This transition alone does not deploy a consumer or change branch protections.
+Rollback verifies the protected backup, installed candidate hash and metadata, exact unchanged config and group refs, and effective service before the same natural drain. It refuses a changed installation. A drain timeout restores current admission; an incomplete rollback leaves admission stopped for operator investigation. A successful rollback restores manager `2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4`, including its known cross-pin assignment limitation, while leaving the three-ref policy intact.

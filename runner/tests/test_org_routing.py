@@ -80,7 +80,7 @@ class OrgRoutingTests(unittest.TestCase):
                     "runner_group_name": "sanctuary-trusted-verification"}
         state = {"repo": REPO, "scope": "organization", "org": ORG,
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
-                 "runner_name": "sanctuary-22"}
+                 "runner_name": "sanctuary-22", "workflow_ref": REF}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
         client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         with mock.patch.object(client, "request", side_effect=[assigned, run,
@@ -174,7 +174,7 @@ class OrgRoutingTests(unittest.TestCase):
                     "runner_group_name": "sanctuary-trusted-verification"}
         state = {"repo": REPO, "scope": "organization", "org": ORG,
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
-                 "runner_name": "sanctuary-22"}
+                 "runner_name": "sanctuary-22", "workflow_ref": REF}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
         detail_reads = 0
 
@@ -265,7 +265,7 @@ class OrgRoutingTests(unittest.TestCase):
                     "runner_group_name": "sanctuary-trusted-verification"}
         state = {"repo": REPO, "scope": "organization", "org": ORG,
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
-                 "runner_name": "sanctuary-22"}
+                 "runner_name": "sanctuary-22", "workflow_ref": REF}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
         client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         for returned in ([], [pr, {**pr, "number": 8}],
@@ -504,10 +504,56 @@ class OrgRoutingTests(unittest.TestCase):
         client = manager.GitHubClient("org-token", org_workflow_refs=(REF, NEW_REF))
         with mock.patch.object(client, "request", side_effect=[assigned, run,
                                [{"number": 7}], pr]):
-            client.verify_org_assignment(state, assignment)
+            self.assertEqual(client.verify_org_assignment(state, assignment), NEW_REF)
         with mock.patch.object(client, "request", side_effect=[assigned, run]), \
                 self.assertRaisesRegex(manager.RunnerError, "workflow changed"):
-            client.verify_org_assignment({**state, "workflow_ref": REF}, assignment)
+            client.verify_org_assignment({**state, "actual_workflow_ref": REF}, assignment)
+
+        # An org JIT runner can take another trusted job from the same selected
+        # repository. Each pin must be admitted independently, even when they differ.
+        old_run = {**run, "referenced_workflows": [{"path": REF, "sha": REF[-40:]}]}
+        with mock.patch.object(client, "request", side_effect=[assigned, old_run,
+                               [{"number": 7}], pr]):
+            self.assertEqual(client.verify_org_assignment(state, assignment), REF)
+        with mock.patch.object(client, "request", side_effect=[assigned, old_run]), \
+                self.assertRaisesRegex(manager.RunnerError, "trigger workflow"):
+            client.verify_org_assignment({**state, "workflow_ref": REF[:-40] + "c" * 40},
+                                         assignment)
+        for actual_refs in (
+                [{"path": REF[:-40] + "c" * 40, "sha": "c" * 40}],
+                [{"path": REF, "sha": NEW_REF[-40:]}],
+                [{"path": REF, "sha": REF[-40:]},
+                 {"path": NEW_REF, "sha": NEW_REF[-40:]}]):
+            with self.subTest(actual_refs=actual_refs), \
+                    mock.patch.object(client, "request", side_effect=[assigned,
+                        {**run, "referenced_workflows": actual_refs}]), \
+                    self.assertRaisesRegex(manager.RunnerError, "not a trusted PR run"):
+                client.verify_org_assignment(state, assignment)
+
+    def test_cross_pin_assignment_persists_actual_workflow_reference(self):
+        run, pr, job = self.empty_association_evidence()
+        run["pull_requests"] = [{"number": 7}]
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42,
+                    "runner_group_name": "sanctuary-trusted-verification"}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        state = {"lease": "gh-22", "repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22", "trigger_job_id": 23,
+                 "trigger_run_id": 12, "workflow_ref": NEW_REF}
+        client = manager.GitHubClient("org-token", org_workflow_refs=(REF, NEW_REF))
+        with tempfile.TemporaryDirectory() as temporary:
+            store = manager.StateStore(Path(temporary))
+            store.write("gh-22", state)
+            with mock.patch.object(client, "find_assigned_job", return_value=assignment), \
+                 mock.patch.object(client, "request", side_effect=[assigned, run, pr]):
+                updated = manager.record_verified_assignment(
+                    store, None, state, include_completed=True, org_client=client)
+            self.assertEqual(updated["actual_job_id"], 22)
+            self.assertEqual(updated["actual_run_id"], 11)
+            self.assertEqual(updated["workflow_ref"], NEW_REF)
+            self.assertEqual(updated["actual_workflow_ref"], REF)
+            self.assertEqual(store.leases()[0], updated)
 
     def test_new_org_lease_binds_ref_and_rejects_missing_candidate_ref_before_jit(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -622,7 +668,7 @@ class OrgRoutingTests(unittest.TestCase):
         client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
         state = {"repo": REPO, "scope": "organization", "org": ORG,
                  "profile": "medium", "runner_group_id": 42, "runner_id": 30,
-                 "runner_name": "sanctuary-22"}
+                 "runner_name": "sanctuary-22", "workflow_ref": REF}
         assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
         job = {"id": 22, "run_id": 11, "runner_id": 30,
                "runner_name": "sanctuary-22", "runner_group_id": 42,
