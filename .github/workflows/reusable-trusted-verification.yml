@@ -395,6 +395,116 @@ jobs:
               out.write("gate-frontend-output=" + str(gate_frontend_output).lower() + "\n")
           CONTRACT
 
+      - name: Validate exact logical bundle selection
+        if: ${{ inputs.bundle != '' }}
+        id: bundle-contract
+        shell: bash
+        env:
+          BUNDLE: ${{ inputs.bundle }}
+          SELECTION_JSON: ${{ inputs.selection-json }}
+          PROFILE: ${{ inputs.profile }}
+          JOB_KEY: ${{ inputs.job-key }}
+          PLAN_JSON: ${{ inputs.plan-json }}
+        run: |
+          python3 - <<'BUNDLE'
+          import hashlib
+          import json
+          import os
+
+          bundles = {
+              "gate-quality": ("Tuinstra-DEV/gate", ("gate-php", "gate-frontend-static")),
+              "tracker-quality": ("Tuinstra-DEV/tracker", ("tracker-backend-postgres", "tracker-frontend-static")),
+              "tracker-images": ("Tuinstra-DEV/tracker", ("tracker-container-api", "tracker-container-web", "tracker-container-php-prod", "tracker-container-nginx-prod")),
+              "wodiq-platform": ("Tuinstra-DEV/wodiq-platform", ("wodiq-core", "wodiq-runtime-build", "wodiq-api", "wodiq-management", "wodiq-worker")),
+          }
+          bundle = os.environ["BUNDLE"]
+          if bundle not in bundles or bundles[bundle][0] != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("unsupported logical bundle or repository")
+          if any(os.environ[name] for name in ("PROFILE", "JOB_KEY", "PLAN_JSON")):
+              raise SystemExit("bundle and single-job inputs are mutually exclusive")
+          raw = os.environ["SELECTION_JSON"]
+          if not raw or len(raw.encode("utf-8")) > 16384:
+              raise SystemExit("missing or oversized bundle selection")
+
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate JSON field")
+                  result[key] = value
+              return result
+
+          try:
+              selected = json.loads(raw, object_pairs_hook=unique)
+          except (ValueError, TypeError):
+              raise SystemExit("bundle selection must be unique-field JSON") from None
+          if (type(selected) is not dict or set(selected) != {"schemaVersion", "jobs"}
+                  or type(selected["schemaVersion"]) is not int or selected["schemaVersion"] != 1
+                  or type(selected["jobs"]) is not list):
+              raise SystemExit("unsupported bundle selection schema")
+          allowed = set(bundles[bundle][1])
+          keys, plans = [], {}
+          suites = {"Unit", "Integration", "Functional", "Unit,Integration", "Unit,Functional",
+                    "Integration,Functional", "Unit,Integration,Functional"}
+          checks = {"core", "migration", "api", "management", "worker", "client"}
+          builds = {"api", "management", "worker"}
+          proofs = {"all", "activity", "coach", "managementAuth", "garmin"}
+          for item in selected["jobs"]:
+              if type(item) is not dict or set(item) != {"job-key", "plan"}:
+                  raise SystemExit("bundle job requires exact job-key and plan")
+              key, plan = item["job-key"], item["plan"]
+              if type(key) is not str or key not in allowed or key in plans or type(plan) is not dict:
+                  raise SystemExit("unknown or duplicate fixed bundle key")
+              if key == "gate-php":
+                  if (set(plan) != {"backendSuites", "quality", "apiSchema"}
+                          or type(plan["backendSuites"]) is not str or plan["backendSuites"] not in suites
+                          or type(plan["quality"]) is not bool or type(plan["apiSchema"]) is not bool
+                          or not (plan["quality"] or plan["apiSchema"])):
+                      raise SystemExit("invalid Gate PHP bundle plan")
+              elif key == "gate-frontend-static":
+                  if (set(plan) != {"frontendTests", "frontendBuild", "quality", "apiTypes"}
+                          or type(plan["frontendTests"]) is not str
+                          or plan["frontendTests"] not in {"all", "unit", "functional"}
+                          or any(type(plan[name]) is not bool for name in ("frontendBuild", "quality", "apiTypes"))
+                          or not (plan["quality"] or plan["apiTypes"])):
+                      raise SystemExit("invalid Gate frontend bundle plan")
+              elif key == "tracker-frontend-static":
+                  front = ("frontend-web", "frontend-unit", "frontend-component", "frontend-site")
+                  if (set(plan) != set(front) or any(type(plan[name]) is not bool for name in front)
+                          or not (plan["frontend-web"] or plan["frontend-site"])
+                          or (plan["frontend-unit"] and not plan["frontend-web"])
+                          or (plan["frontend-component"] and not plan["frontend-web"])):
+                      raise SystemExit("invalid Tracker frontend bundle plan")
+              elif key.startswith("wodiq-"):
+                  if (set(plan) != checks | {"version", "builds", "proofs"}
+                          or type(plan["version"]) is not int or plan["version"] != 2
+                          or type(plan["builds"]) is not dict or set(plan["builds"]) != builds
+                          or type(plan["proofs"]) is not dict or set(plan["proofs"]) != proofs
+                          or any(type(plan[name]) is not bool for name in checks)
+                          or any(type(plan["builds"][name]) is not bool for name in builds)
+                          or any(type(plan["proofs"][name]) is not bool for name in proofs)):
+                      raise SystemExit("invalid WODIQ bundle plan")
+              elif plan:
+                  raise SystemExit("this fixed bundle job does not accept a plan")
+              keys.append(key)
+              plans[key] = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+          if bundle == "gate-quality":
+              php = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-php"), None)
+              frontend = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-frontend-static"), None)
+              if ((php is not None and php["apiSchema"]) !=
+                      (frontend is not None and frontend["apiTypes"])):
+                  raise SystemExit("Gate API contract requires both fixed groups")
+          if bundle == "wodiq-platform" and keys:
+              if set(keys) != allowed or len(set(plans.values())) != 1:
+                  raise SystemExit("WODIQ source/runtime proof closure requires all five keys and one plan")
+          canonical = json.dumps(selected, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+          digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write("selection-sha256=" + digest + "\n")
+              out.write("selected-jobs=" + json.dumps(keys, separators=(",", ":")) + "\n")
+              out.write("bundle-plans=" + json.dumps(plans, sort_keys=True, separators=(",", ":")) + "\n")
+          BUNDLE
+
       - name: Bind bundle source and workflow identity from GitHub
         if: ${{ inputs.bundle != '' }}
         id: identity
@@ -511,116 +621,6 @@ jobs:
                                   ("run-attempt", attempt), ("workflow-sha", workflow_sha)):
                   out.write(f"{name}={value}\n")
           IDENTITY
-      - name: Validate exact logical bundle selection
-        if: ${{ inputs.bundle != '' }}
-        id: bundle-contract
-        shell: bash
-        env:
-          BUNDLE: ${{ inputs.bundle }}
-          SELECTION_JSON: ${{ inputs.selection-json }}
-          PROFILE: ${{ inputs.profile }}
-          JOB_KEY: ${{ inputs.job-key }}
-          PLAN_JSON: ${{ inputs.plan-json }}
-        run: |
-          python3 - <<'BUNDLE'
-          import hashlib
-          import json
-          import os
-
-          bundles = {
-              "gate-quality": ("Tuinstra-DEV/gate", ("gate-php", "gate-frontend-static")),
-              "tracker-quality": ("Tuinstra-DEV/tracker", ("tracker-backend-postgres", "tracker-frontend-static")),
-              "tracker-images": ("Tuinstra-DEV/tracker", ("tracker-container-api", "tracker-container-web", "tracker-container-php-prod", "tracker-container-nginx-prod")),
-              "wodiq-platform": ("Tuinstra-DEV/wodiq-platform", ("wodiq-core", "wodiq-runtime-build", "wodiq-api", "wodiq-management", "wodiq-worker")),
-          }
-          bundle = os.environ["BUNDLE"]
-          if bundle not in bundles or bundles[bundle][0] != os.environ["GITHUB_REPOSITORY"]:
-              raise SystemExit("unsupported logical bundle or repository")
-          if any(os.environ[name] for name in ("PROFILE", "JOB_KEY", "PLAN_JSON")):
-              raise SystemExit("bundle and single-job inputs are mutually exclusive")
-          raw = os.environ["SELECTION_JSON"]
-          if not raw or len(raw.encode("utf-8")) > 16384:
-              raise SystemExit("missing or oversized bundle selection")
-
-          def unique(pairs):
-              result = {}
-              for key, value in pairs:
-                  if key in result:
-                      raise ValueError("duplicate JSON field")
-                  result[key] = value
-              return result
-
-          try:
-              selected = json.loads(raw, object_pairs_hook=unique)
-          except (ValueError, TypeError):
-              raise SystemExit("bundle selection must be unique-field JSON") from None
-          if (type(selected) is not dict or set(selected) != {"schemaVersion", "jobs"}
-                  or type(selected["schemaVersion"]) is not int or selected["schemaVersion"] != 1
-                  or type(selected["jobs"]) is not list):
-              raise SystemExit("unsupported bundle selection schema")
-          allowed = set(bundles[bundle][1])
-          keys, plans = [], {}
-          suites = {"Unit", "Integration", "Functional", "Unit,Integration", "Unit,Functional",
-                    "Integration,Functional", "Unit,Integration,Functional"}
-          checks = {"core", "migration", "api", "management", "worker", "client"}
-          builds = {"api", "management", "worker"}
-          proofs = {"all", "activity", "coach", "managementAuth", "garmin"}
-          for item in selected["jobs"]:
-              if type(item) is not dict or set(item) != {"job-key", "plan"}:
-                  raise SystemExit("bundle job requires exact job-key and plan")
-              key, plan = item["job-key"], item["plan"]
-              if type(key) is not str or key not in allowed or key in plans or type(plan) is not dict:
-                  raise SystemExit("unknown or duplicate fixed bundle key")
-              if key == "gate-php":
-                  if (set(plan) != {"backendSuites", "quality", "apiSchema"}
-                          or type(plan["backendSuites"]) is not str or plan["backendSuites"] not in suites
-                          or type(plan["quality"]) is not bool or type(plan["apiSchema"]) is not bool
-                          or not (plan["quality"] or plan["apiSchema"])):
-                      raise SystemExit("invalid Gate PHP bundle plan")
-              elif key == "gate-frontend-static":
-                  if (set(plan) != {"frontendTests", "frontendBuild", "quality", "apiTypes"}
-                          or type(plan["frontendTests"]) is not str
-                          or plan["frontendTests"] not in {"all", "unit", "functional"}
-                          or any(type(plan[name]) is not bool for name in ("frontendBuild", "quality", "apiTypes"))
-                          or not (plan["quality"] or plan["apiTypes"])):
-                      raise SystemExit("invalid Gate frontend bundle plan")
-              elif key == "tracker-frontend-static":
-                  front = ("frontend-web", "frontend-unit", "frontend-component", "frontend-site")
-                  if (set(plan) != set(front) or any(type(plan[name]) is not bool for name in front)
-                          or not (plan["frontend-web"] or plan["frontend-site"])
-                          or (plan["frontend-unit"] and not plan["frontend-web"])
-                          or (plan["frontend-component"] and not plan["frontend-web"])):
-                      raise SystemExit("invalid Tracker frontend bundle plan")
-              elif key.startswith("wodiq-"):
-                  if (set(plan) != checks | {"version", "builds", "proofs"}
-                          or type(plan["version"]) is not int or plan["version"] != 2
-                          or type(plan["builds"]) is not dict or set(plan["builds"]) != builds
-                          or type(plan["proofs"]) is not dict or set(plan["proofs"]) != proofs
-                          or any(type(plan[name]) is not bool for name in checks)
-                          or any(type(plan["builds"][name]) is not bool for name in builds)
-                          or any(type(plan["proofs"][name]) is not bool for name in proofs)):
-                      raise SystemExit("invalid WODIQ bundle plan")
-              elif plan:
-                  raise SystemExit("this fixed bundle job does not accept a plan")
-              keys.append(key)
-              plans[key] = json.dumps(plan, sort_keys=True, separators=(",", ":"))
-          if bundle == "gate-quality":
-              php = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-php"), None)
-              frontend = next((job["plan"] for job in selected["jobs"] if job["job-key"] == "gate-frontend-static"), None)
-              if ((php is not None and php["apiSchema"]) !=
-                      (frontend is not None and frontend["apiTypes"])):
-                  raise SystemExit("Gate API contract requires both fixed groups")
-          if bundle == "wodiq-platform" and keys:
-              if set(keys) != allowed or len(set(plans.values())) != 1:
-                  raise SystemExit("WODIQ source/runtime proof closure requires all five keys and one plan")
-          canonical = json.dumps(selected, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-          digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write("selection-sha256=" + digest + "\n")
-              out.write("selected-jobs=" + json.dumps(keys, separators=(",", ":")) + "\n")
-              out.write("bundle-plans=" + json.dumps(plans, sort_keys=True, separators=(",", ":")) + "\n")
-          BUNDLE
-
   trusted-verification:
     name: Trusted verification
     permissions:
