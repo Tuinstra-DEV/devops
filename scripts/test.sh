@@ -57,6 +57,7 @@ fi
 echo "test passed"
 
 ./scripts/production-host-baseline-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py

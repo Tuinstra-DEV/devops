@@ -28,7 +28,23 @@
         {"name": "database-password", "path": "/etc/tuinstra/umami/database-password"},
         {"name": "app-secret", "path": "/etc/tuinstra/umami/app-secret"},
         {"name": "two-factor-encryption-key", "path": "/etc/tuinstra/umami/two-factor-encryption-key"},
-        {"name": "admin-password", "path": "/etc/tuinstra/umami/admin-password"}
+        {"name": "admin-password", "path": "/etc/tuinstra/umami/admin-password"},
+        {"name": "host-caddyfile", "path": "/var/www/_platform/caddy/Caddyfile"},
+        {"name": "host-caddy-compose", "path": "/var/www/_platform/caddy/compose.yml"},
+        {"name": "host-deploy-helper", "path": "/usr/local/sbin/tuinstra-compose-deploy"},
+        {"name": "host-deploy-shell", "path": "/usr/local/sbin/tuinstra-deploy-shell"},
+        {"name": "wodiq-site-ingress", "path": "/var/www/_platform/caddy/sites/wodiq-site.caddy"},
+        {"name": "wodiq-site-compose", "path": "/var/www/wodiq-site/compose.yml"},
+        {"name": "wodiq-site-registry", "path": "/etc/tuinstra/wodiq-site/docker-config/config.json"},
+        {"name": "site-openairco-ingress", "path": "/var/www/_platform/caddy/sites/site-openairco.caddy"},
+        {"name": "site-openairco-compose", "path": "/var/www/site-openairco/compose.yml"},
+        {"name": "site-openairco-registry", "path": "/etc/tuinstra/site-openairco/docker-config/config.json"},
+        {"name": "site-marcel-ingress", "path": "/var/www/_platform/caddy/sites/site-marcel.caddy"},
+        {"name": "site-marcel-compose", "path": "/var/www/site-marcel/compose.yml"},
+        {"name": "site-marcel-registry", "path": "/etc/tuinstra/site-marcel/docker-config/config.json"},
+        {"name": "site-tuinstra-ingress", "path": "/var/www/_platform/caddy/sites/site-tuinstra.caddy"},
+        {"name": "site-tuinstra-compose", "path": "/var/www/site-tuinstra/compose.yml"},
+        {"name": "site-tuinstra-registry", "path": "/etc/tuinstra/site-tuinstra/docker-config/config.json"}
       ]
     },
     {
