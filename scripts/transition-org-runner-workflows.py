@@ -285,6 +285,33 @@ def assert_idle(layout: Layout, command: Command) -> None:
     base.no_helpers(command)
 
 
+def assert_reconcile_safe(layout: Layout, now: int) -> None:
+    """Avoid invoking reconcile when a live lease may cross its fixed TTL."""
+    if not stat.S_ISDIR(layout.state.lstat().st_mode):
+        raise Error("runner state directory is unsafe")
+    for path in layout.state.glob("lease-*.json"):
+        try:
+            info = path.lstat()
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022 or \
+                        (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) != \
+                        (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_gid,
+                         opened.st_mode):
+                    raise ValueError
+                with os.fdopen(fd, "rb", closefd=False) as stream:
+                    document = json.loads(stream.read(1024 * 1024 + 1))
+            finally:
+                os.close(fd)
+            if not isinstance(document, dict) or document.get("lease") != path.name[6:-5] or \
+                    type(document.get("launched_at")) is not int or document["launched_at"] <= 0 or \
+                    document["launched_at"] + 7200 <= now + 240:
+                raise ValueError
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise Error("runner lease is unreadable, malformed, or near expiry") from None
+
+
 def drain(layout: Layout, seconds: int, command: Command, pause=time.sleep) -> tuple[int, int]:
     if not 60 <= seconds <= 7200 or not base.active(SERVICE, command):
         raise Error("drain window or manager state is invalid")
@@ -304,6 +331,7 @@ def drain(layout: Layout, seconds: int, command: Command, pause=time.sleep) -> t
             raise Error("runtime reconcile-only manager or credentials are not verified")
         deadline = time.monotonic() + seconds
         while True:
+            assert_reconcile_safe(layout, int(time.time()))
             command(["systemctl", "start", SERVICE], timeout=180)
             try:
                 assert_idle(layout, command)

@@ -303,6 +303,20 @@ class TransitionTests(unittest.TestCase):
                 if point != "restart":
                     self.assertIn(upgrade.SERVICE, running)
 
+    def test_failed_drain_reopens_original_admission(self):
+        stack, command, group, calls, original, _, running = self._simulation()
+        def timeout(*_):
+            command(["systemctl", "stop", upgrade.SERVICE])
+            raise upgrade.Error("runner drain timed out")
+        with stack, mock.patch.object(upgrade, "drain", side_effect=timeout):
+            with self.assertRaisesRegex(upgrade.Error, "original admission restored"):
+                upgrade.transition(self.stage, NEW, 42, 60, self.layout, command)
+        self.assertIn(upgrade.SERVICE, running)
+        self.assertIn(upgrade.SOCKET, running)
+        self.assertEqual(self.manager.read_bytes(), original["manager"])
+        self.assertEqual(self.config.read_bytes(), original["config"])
+        self.assertEqual(group.current, upgrade.refs(tomllib.loads(original["config"].decode())))
+
     def test_preflight_refusal_does_not_mutate_services(self):
         calls = []
         with mock.patch.object(base, "lock", side_effect=lambda path:
@@ -336,6 +350,34 @@ class TransitionTests(unittest.TestCase):
             remove.assert_called_once()
         self.assertIn(["systemctl", "stop", upgrade.SERVICE], calls)
         self.assertFalse(any("destroy" in " ".join(call) for call in calls))
+
+    def test_near_expiry_lease_aborts_before_reconcile_start(self):
+        lease = self.state / "lease-live.json"
+        lease.write_text(json.dumps({"lease": "live", "launched_at": 1000}))
+        calls = []
+        def command(args, **_):
+            calls.append(tuple(args))
+            if args[:2] == ["systemctl", "show"]:
+                key = args[-2].split("=", 1)[1]
+                values = {"Type": "oneshot", "Restart": "no",
+                          "ExecStart": "argv[]=/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml reconcile",
+                          "DropInPaths": f"{self.dropin} {self.layout.drain}"}
+                return result(args, values[key])
+            return result(args)
+        with mock.patch.object(base, "active", return_value=True), \
+             mock.patch.object(base, "checked_dir"), \
+             mock.patch.object(base, "create_file", return_value=(1, 2)), \
+             mock.patch.object(base, "remove_own_file") as remove, \
+             mock.patch.object(base, "credential_pairs", return_value=base.ORG_CREDENTIALS), \
+             mock.patch.object(upgrade.time, "time", return_value=8000):
+            with self.assertRaisesRegex(upgrade.Error, "near expiry"):
+                upgrade.drain(self.layout, 60, command, pause=lambda _: None)
+        remove.assert_called_once()
+        self.assertNotIn(("systemctl", "start", upgrade.SERVICE), calls)
+        lease.unlink()
+        lease.symlink_to(self.config)
+        with self.assertRaisesRegex(upgrade.Error, "unreadable"):
+            upgrade.assert_reconcile_safe(self.layout, 1000)
 
     def test_idle_check_refuses_live_lease_and_active_helper(self):
         (self.state / "lease-live.json").write_text("{}")
