@@ -7,7 +7,7 @@
   "fingerprints": {
     "sdk_initialization": "sha256:47bc0c86a2baa539bc20c1a68429ddb295113460839b51bfd9670a6f70381511",
     "routing": "sha256:d103976532b3f73113fdb217bdae113b656a92f8c6873e083587abc2e9a8924d",
-    "privacy_filters": "sha256:b2a9763a392ac3a385b6af7ae7f32e4b54d0d6001a04389df5410224e31abe82",
+    "privacy_filters": "sha256:4f2d6deea88c41362a941fbfb954aadbc5f3cef99bb22b47d873862a834d6463",
     "deployment_symbols": "sha256:00bf15138d0dc9838fe92dfe503a35b3df335ce67d0d122de7139d2e19410f18"
   },
   "components": [
@@ -64,24 +64,24 @@
     },
     {
       "id": "api",
-      "verification_source": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
-      "artifact_digest": "sha256:711082bf71a58e4a7dea484d7996d6b4c36cd651ae88c0ddd9241a2878d11919",
+      "verification_source": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
       "run": {
-        "workflow": ".github/workflows/deploy-production.yml",
-        "id": "38505012394",
-        "attempt": 2,
-        "source_sha": "52f16c01726e7b40980dceac00e06e037d5fd8d2"
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38703197385",
+        "attempt": 1,
+        "source_sha": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6"
       },
       "sentry": {
-        "issue_id": "153493761",
+        "issue_id": "153795126",
         "event_ids": [
-          "6fa54c19b0274448b96082e3d4585aec"
+          "6c1f9ec5dbe34f5db40c16296972a470"
         ]
       },
-      "heal_case_id": "78bf9964e05c43019588912f21975329",
+      "heal_case_id": "9192771e7782460bb14f4b2a1e3f2d23",
       "source_frame": {
-        "path": "code/api/src/Application/FeedbackManagementStoryCursor.php",
-        "line": 19
+        "path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
+        "line": 49
       },
       "checks": {
         "privacy": {
@@ -94,7 +94,7 @@
           ]
         },
         "deduplication": {
-          "occurrences": 2,
+          "occurrences": 1,
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
@@ -115,24 +115,24 @@
     },
     {
       "id": "worker",
-      "verification_source": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
-      "artifact_digest": "sha256:711082bf71a58e4a7dea484d7996d6b4c36cd651ae88c0ddd9241a2878d11919",
+      "verification_source": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
       "run": {
-        "workflow": ".github/workflows/deploy-production.yml",
-        "id": "38505012394",
-        "attempt": 2,
-        "source_sha": "52f16c01726e7b40980dceac00e06e037d5fd8d2"
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38703197385",
+        "attempt": 1,
+        "source_sha": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6"
       },
       "sentry": {
-        "issue_id": "153493768",
+        "issue_id": "153795169",
         "event_ids": [
-          "b8d3c7bfe1424e2999442e59e3091bc2"
+          "f0635ab6a0b14612b1bf8e4201393a53"
         ]
       },
-      "heal_case_id": "2dc3adec3e98476eb7289987823b9bf1",
+      "heal_case_id": "c8405acb559f47d68879f31b4eb71041",
       "source_frame": {
-        "path": "code/api/src/Integration/Sentry/SentryApiOrigin.php",
-        "line": 38
+        "path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+        "line": 29
       },
       "checks": {
         "privacy": {
@@ -145,7 +145,7 @@
           ]
         },
         "deduplication": {
-          "occurrences": 2,
+          "occurrences": 1,
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
@@ -166,7 +166,7 @@
     }
   ],
   "provenance": {
-    "captured_at": "2026-10-14",
+    "captured_at": "2026-10-15",
     "source": "operator-verified-actual-sdk-and-signed-intake",
     "verification_environment": "verification",
     "production_event": false
