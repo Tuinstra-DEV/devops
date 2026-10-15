@@ -117,6 +117,7 @@
       "privacy_filters": {
         "files": [
           "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+          "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
           "code/web/app/utils/sentry-privacy.ts",
           "code/web/app/utils/sentry-browser-evidence.ts"
         ]
@@ -162,5 +163,5 @@
       }
     }
   },
-  "approvedProofSha256": "sha256:8a8dab2d694fd19e3bf6e94828057b8a488817d86c35282ec4fd7f1bccf3268a"
+  "approvedProofSha256": "sha256:b9abbe5e616991b9d8dc6761783d6d1012698cc3c79dc8cefa43ad20394fcc49"
 }
