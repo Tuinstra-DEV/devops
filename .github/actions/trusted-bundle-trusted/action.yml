@@ -1,0 +1,300 @@
+name: Fixed bundle verification on the selected route
+description: Execute a fixed checked-out consumer adapter with pinned tooling
+inputs:
+  job-key:
+    required: true
+    description: Fixed key validated by the reusable preflight
+  source-sha:
+    required: true
+    description: Exact PR execution commit
+  node-version:
+    required: false
+    description: Fixed Node version
+  pnpm-version:
+    required: false
+    description: Fixed pnpm version
+  php-version:
+    required: false
+    description: Fixed PHP version
+  php-extensions:
+    required: false
+    description: Fixed PHP extensions
+  runtime-download:
+    required: false
+    description: Download exact current-attempt runtime artifact
+  gate-frontend-output:
+    required: false
+    description: Upload selected Gate build output
+outputs:
+  verified:
+    description: Literal true only after fixed adapter, artifacts, and cache steps succeed
+    value: ${{ steps.proof.outputs.verified }}
+runs:
+  using: composite
+  steps:
+    - name: Checkout exact verified PR merge commit
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      with:
+        ref: ${{ inputs.source-sha }}
+        fetch-depth: 2
+        persist-credentials: false
+    - name: Set up pinned pnpm
+      if: ${{ inputs.pnpm-version != '' }}
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+      with:
+        version: ${{ inputs.pnpm-version }}
+    - name: Set up Node.js for fixed npm consumers
+      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' }}
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: package-lock.json
+    - name: Set up Gate Node.js with pinned pnpm download cache
+      if: ${{ github.repository == 'Tuinstra-DEV/gate' && inputs.job-key == 'gate-frontend-static' }}
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: frontend/pnpm-lock.yaml
+    - name: Set up Tracker Node.js with pinned pnpm download cache
+      if: ${{ github.repository == 'Tuinstra-DEV/tracker' && inputs.job-key == 'tracker-frontend-static' }}
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: |
+          code/web/pnpm-lock.yaml
+          code/site/pnpm-lock.yaml
+    - name: Set up Node.js for fixed Tracker image contracts
+      if: ${{ github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-') }}
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+      with:
+        node-version: ${{ inputs.node-version }}
+    - name: Select verified baked PHP and Composer without privileges
+      if: ${{ inputs.php-version != '' }}
+      shell: bash
+      env:
+        PHP_VERSION: ${{ inputs.php-version }}
+        PHP_EXTENSIONS: ${{ inputs.php-extensions }}
+        JOB_KEY: ${{ inputs.job-key }}
+      run: |
+        set -euo pipefail
+        case "$GITHUB_REPOSITORY:$JOB_KEY" in
+          Tuinstra-DEV/gate:gate-php)
+            [[ "$PHP_VERSION" == 8.3 && "$PHP_EXTENSIONS" == 'ctype, iconv, pdo_sqlite, sqlite3' ]]
+            required='ctype,iconv,openssl,pdo,pdo_sqlite,sqlite3,Zend OPcache,zip' ;;
+          Tuinstra-DEV/tracker:tracker-backend-postgres)
+            [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip' ]]
+            required='ctype,fileinfo,iconv,intl,mbstring,openssl,pdo,pdo_pgsql,zip' ;;
+          Tuinstra-DEV/console:console-php-lint|Tuinstra-DEV/console:console-php-postgres)
+            [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'intl, pdo_pgsql' ]]
+            required='ctype,iconv,intl,pdo_pgsql' ;;
+          *) echo 'Unsupported baked PHP contract' >&2; exit 1 ;;
+        esac
+        php_bin="/usr/bin/php${PHP_VERSION}"
+        composer_bin=/usr/local/bin/composer
+        [[ -x "$php_bin" && -r "$composer_bin" ]]
+        [[ "$("$php_bin" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')" == "$PHP_VERSION" ]]
+        "$php_bin" -r '
+          foreach (explode(",", $argv[1]) as $extension) {
+            if (!extension_loaded($extension)) {
+              fwrite(STDERR, "Missing baked PHP extension: $extension\n");
+              exit(1);
+            }
+          }
+        ' "$required"
+        if [[ "$GITHUB_REPOSITORY:$JOB_KEY" == Tuinstra-DEV/gate:gate-php ]]; then
+          "$php_bin" -r '
+            $pdo = new PDO("sqlite::memory:");
+            $pdo->exec("CREATE TABLE ci_probe (value INTEGER NOT NULL)");
+            $pdo->exec("INSERT INTO ci_probe (value) VALUES (1)");
+            if ((int) $pdo->query("SELECT value FROM ci_probe")->fetchColumn() !== 1) {
+              fwrite(STDERR, "Gate SQLite PDO query mismatch\n");
+              exit(1);
+            }
+          '
+        fi
+        shim_dir="$(mktemp -d "$RUNNER_TEMP/ci-php-bin.XXXXXX")"
+        printf '#!/bin/sh\nexec /usr/bin/php%s "$@"\n' "$PHP_VERSION" > "$shim_dir/php"
+        printf '#!/bin/sh\nexec /usr/bin/php%s /usr/local/bin/composer "$@"\n' "$PHP_VERSION" > "$shim_dir/composer"
+        chmod 0700 "$shim_dir/php" "$shim_dir/composer"
+        composer_version="$("$shim_dir/composer" --version --no-ansi)"
+        [[ "$composer_version" =~ ^Composer[[:space:]]version[[:space:]]2[.] ]]
+        echo "$shim_dir" >> "$GITHUB_PATH"
+    - name: Resolve fixed Composer download cache
+      if: ${{ inputs.php-version != '' }}
+      id: composer-cache
+      shell: bash
+      env:
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: |
+        set -euo pipefail
+        cache_path="$RUNNER_TEMP/composer-cache"
+        mkdir -p "$cache_path"
+        echo "path=$cache_path" >> "$GITHUB_OUTPUT"
+        echo "COMPOSER_CACHE_DIR=$cache_path" >> "$GITHUB_ENV"
+    - name: Restore Gate Composer downloads
+      if: ${{ github.repository == 'Tuinstra-DEV/gate' && inputs.job-key == 'gate-php' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.path }}
+        key: gate-${{ runner.os }}-${{ runner.arch }}-php83-composer-${{ hashFiles('backend/composer.lock') }}
+    - name: Restore Tracker Composer downloads
+      if: ${{ github.repository == 'Tuinstra-DEV/tracker' && inputs.job-key == 'tracker-backend-postgres' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.path }}
+        key: tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}
+    - name: Restore Console Composer downloads
+      if: ${{ github.repository == 'Tuinstra-DEV/console' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.path }}
+        key: console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}
+    - name: Set up Docker Buildx for fixed image checks
+      if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0
+    - name: Bind fixed PR Docker layer cache to source and engine
+      if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
+      id: docker-cache-key
+      shell: bash
+      env:
+        JOB_KEY: ${{ inputs.job-key }}
+        SOURCE_DIGEST: ${{ hashFiles('**/composer.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/Dockerfile', '**/Dockerfile.*') }}
+      run: |
+        set -euo pipefail
+        case "$GITHUB_REPOSITORY:$JOB_KEY" in
+          Tuinstra-DEV/tracker:tracker-container-api|Tuinstra-DEV/tracker:tracker-container-web|Tuinstra-DEV/tracker:tracker-container-php-prod|Tuinstra-DEV/tracker:tracker-container-nginx-prod|Tuinstra-DEV/notify:notify-quality|Tuinstra-DEV/notify:notify-production-images|Tuinstra-DEV/status:status-quality) ;;
+          *) echo 'Unsupported Docker cache contract' >&2; exit 1 ;;
+        esac
+        [[ "$SOURCE_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+        [[ "$RUNNER_OS" =~ ^[A-Za-z0-9_-]+$ && "$RUNNER_ARCH" =~ ^[A-Za-z0-9_-]+$ ]]
+        buildx_version="$(docker buildx version)"
+        server_version="$(docker version --format '{{.Server.Version}}')"
+        [[ -n "$buildx_version" && -n "$server_version" ]]
+        engine_digest="$(printf '%s\n%s\n' "$buildx_version" "$server_version" | sha256sum | cut -d ' ' -f1)"
+        repo_slug="${GITHUB_REPOSITORY#Tuinstra-DEV/}"
+        echo "key=pr-ci-v1-${repo_slug}-${JOB_KEY}-${RUNNER_OS}-${RUNNER_ARCH}-${SOURCE_DIGEST}-${engine_digest}" >> "$GITHUB_OUTPUT"
+        echo "CI_BUILDKIT_CACHE_ROOT=$RUNNER_TEMP/ci-buildkit-cache" >> "$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/ci-buildkit-cache"
+    - name: Restore exact local Docker layer cache
+      if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
+      id: docker-cache-restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/ci-buildkit-cache
+        key: ${{ steps.docker-cache-key.outputs.key }}
+    - name: Reject unsafe or oversized restored Docker cache
+      if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
+      shell: bash
+      env:
+        RESTORE_OUTCOME: ${{ steps.docker-cache-restore.outcome }}
+      run: |
+        set -euo pipefail
+        cache_root="$RUNNER_TEMP/ci-buildkit-cache"
+        [[ "$CI_BUILDKIT_CACHE_ROOT" == "$cache_root" ]]
+        quarantine="$RUNNER_TEMP/ci-buildkit-cache-discarded-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        quarantined=false
+        if [[ -L "$cache_root" || ! -d "$cache_root" ]]; then
+          [[ ! -e "$quarantine" && ! -L "$quarantine" ]]
+          if [[ -e "$cache_root" || -L "$cache_root" ]]; then mv -- "$cache_root" "$quarantine"; fi
+          mkdir -- "$cache_root"
+          quarantined=true
+        fi
+        size_kib="$(du -sk "$cache_root" | awk '{print $1}')"
+        [[ "$size_kib" =~ ^[0-9]+$ ]]
+        if [[ "$quarantined" == false ]] && { [[ "$RESTORE_OUTCOME" == failure ]] || (( size_kib > 2097152 )) || [[ -n "$(find "$cache_root" -type l -print -quit)" ]]; }; then
+          [[ ! -e "$quarantine" && ! -L "$quarantine" ]]
+          mv -- "$cache_root" "$quarantine"
+          mkdir -- "$cache_root"
+        fi
+    - name: Set up OpenAirco Java 17
+      if: ${{ github.repository == 'Tuinstra-DEV/openairco' && inputs.job-key == 'openairco-flutter' }}
+      uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Set up OpenAirco Android SDK
+      if: ${{ github.repository == 'Tuinstra-DEV/openairco' && inputs.job-key == 'openairco-flutter' }}
+      uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      with:
+        packages: 'platform-tools'
+    - name: Install pinned OpenAirco Android platform
+      if: ${{ github.repository == 'Tuinstra-DEV/openairco' && inputs.job-key == 'openairco-flutter' }}
+      shell: bash
+      run: sdkmanager 'platforms;android-37.0'
+    - name: Set up pinned OpenAirco Flutter and pub download cache
+      if: ${{ github.repository == 'Tuinstra-DEV/openairco' && inputs.job-key == 'openairco-flutter' }}
+      uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+      with:
+        flutter-version: 3.47.1
+        channel: stable
+        cache: true
+        cache-key: openairco-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable
+        pub-cache-key: openairco-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable-pub
+    - name: Restore fixed OpenAirco Gradle dependency downloads
+      if: ${{ github.repository == 'Tuinstra-DEV/openairco' && inputs.job-key == 'openairco-flutter' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+          ~/.gradle/wrapper/dists
+        key: openairco-${{ runner.os }}-${{ runner.arch }}-java17-android37-flutter3471-gradle-${{ hashFiles('flutter/pubspec.lock', 'flutter/android/gradle.properties', 'flutter/android/gradle/wrapper/gradle-wrapper.properties', 'flutter/android/settings.gradle.kts', 'flutter/android/build.gradle.kts', 'flutter/android/app/build.gradle.kts') }}
+    - name: Download exact current-run WODIQ runtime artifact
+      if: ${{ inputs.runtime-download == 'true' }}
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: ci-runtime-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/ci-runtime-artifact
+    - name: Run fixed consumer adapter
+      shell: bash
+      env:
+        JOB_KEY: ${{ inputs.job-key }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        CI_ARTIFACT_DIR: ${{ runner.temp }}/ci-runtime-artifact
+      run: bash .github/ci/sanctuary-ci --strict "$JOB_KEY"
+    - name: Upload exact current-run WODIQ runtime artifact
+      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' && inputs.job-key == 'wodiq-runtime-build' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ci-runtime-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/ci-runtime-artifact/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 1
+    - name: Upload exact current-run Gate frontend output
+      if: ${{ inputs.gate-frontend-output == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: gate-frontend-output-${{ github.run_id }}-${{ github.run_attempt }}
+        path: frontend/.output
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 1
+    - name: Bound local Docker cache export
+      if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
+      id: docker-cache-export
+      shell: bash
+      continue-on-error: true
+      run: |
+        set -euo pipefail
+        cache_root="$RUNNER_TEMP/ci-buildkit-cache"
+        [[ "$CI_BUILDKIT_CACHE_ROOT" == "$cache_root" && -d "$cache_root" && ! -L "$cache_root" ]]
+        size_kib="$(du -sk "$cache_root" | awk '{print $1}')"
+        [[ "$size_kib" =~ ^[0-9]+$ ]]
+        if (( size_kib > 0 && size_kib <= 2097152 )) && [[ -z "$(find "$cache_root" -type l -print -quit)" ]]; then
+          echo 'save=true' >> "$GITHUB_OUTPUT"
+        fi
+    - name: Save bounded local Docker layers after verification
+      if: ${{ steps.docker-cache-export.outputs.save == 'true' && steps.docker-cache-restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/ci-buildkit-cache
+        key: ${{ steps.docker-cache-key.outputs.key }}
+    - name: Mark completed trusted verification
+      id: proof
+      shell: bash
+      run: echo 'verified=true' >> "$GITHUB_OUTPUT"
