@@ -179,6 +179,18 @@ class TransitionTests(unittest.TestCase):
                 selection["repositories"][0].update(private=True,
                     id=base.REPOSITORIES[selection["repositories"][0]["full_name"]])
 
+    def test_group_workflow_order_is_not_an_admission_policy_change(self):
+        current = (upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + SECOND)
+        group = {"id": 42, "name": upgrade.GROUP_NAME, "visibility": "selected",
+                 "default": False, "inherited": False, "allows_public_repositories": False,
+                 "restricted_to_workflows": True, "selected_workflows": list(reversed(current))}
+        selected = {"total_count": len(base.REPOSITORIES), "repositories": [
+            {"id": value, "full_name": name, "private": True}
+            for name, value in base.REPOSITORIES.items()]}
+        client = upgrade.GitHubGroup(42, b"synthetic-token")
+        with mock.patch.object(client, "request", side_effect=[group, selected]):
+            client.verify(current)
+
     def test_group_patch_sends_only_selected_workflows(self):
         before = (upgrade.REF_PREFIX + OLD,)
         after = (*before, upgrade.REF_PREFIX + NEW)

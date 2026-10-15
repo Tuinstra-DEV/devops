@@ -207,13 +207,19 @@ class GitHubGroup:
 
     def verify(self, expected: tuple[str, ...]) -> None:
         group = self.request(self.url, "GET")
-        if group.get("id") != self.group_id or group.get("name") != GROUP_NAME or \
-                group.get("visibility") != "selected" or group.get("default") is not False or \
-                group.get("inherited") is not False or \
-                group.get("allows_public_repositories") is not False or \
-                group.get("restricted_to_workflows") is not True or \
-                group.get("selected_workflows") != list(expected):
-            raise Error("organization runner group policy differs from reviewed settings")
+        policy = {"id": self.group_id, "name": GROUP_NAME, "visibility": "selected",
+                  "default": False, "inherited": False,
+                  "allows_public_repositories": False, "restricted_to_workflows": True}
+        mismatches = [key for key, value in policy.items()
+                      if type(group.get(key)) is not type(value) or group.get(key) != value]
+        selected_refs = group.get("selected_workflows")
+        if not isinstance(selected_refs, list) or \
+                not all(isinstance(ref, str) for ref in selected_refs) or \
+                len(selected_refs) != len(expected) or set(selected_refs) != set(expected):
+            mismatches.append("selected_workflows")
+        if mismatches:
+            raise Error("organization runner group policy differs from reviewed settings; fields=" +
+                        ",".join(mismatches))
         selection = self.request(self.url + "/repositories?per_page=100&page=1", "GET")
         items = selection.get("repositories")
         if selection.get("total_count") != len(base.REPOSITORIES) or \
