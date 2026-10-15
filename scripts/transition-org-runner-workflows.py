@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Bounded DEV-50 transition from one/two reviewed org workflow refs to three.
+"""Bounded DEV-50 manager upgrade under the reviewed three-ref org policy.
 
 Stage this file, activate-org-runner-routing.py, and ci_runner_manager.py in one
-root-owned directory. This tool changes only the installed manager/config and
-the selected_workflows field of the existing GitHub runner group.
+root-owned directory. This revision changes only the installed manager binary;
+the config and GitHub runner-group selection are checked but unchanged.
 """
 
 from __future__ import annotations
@@ -25,11 +25,12 @@ import urllib.error
 import urllib.request
 
 
-OLD_MANAGER_SHA = "1d141705f975efafcdc85c8941f3879c395b4988bc1373dd4750b995935968e7"
-NEW_MANAGER_SHA = "2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4"
-ACTIVATION_SHA = "37cc8c9df5badbbb19da22a70c7c46b799131987e81fa228369e5ce1be94ff6a"
+OLD_MANAGER_SHA = "2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4"
+NEW_MANAGER_SHA = "79ed7031ff97b3ae371bb87d0c30eba62b32eebf8c06224fea68fde857e2d32c"
+ACTIVATION_SHA = "2c0cd1da090ab70c5a1a41a18e303a0c4fd30153a93f35a9d4342824faa8be74"
 KNOWN_OLD_SHAS = frozenset({"36f32aebe315274df8825674b7bd0ced637ab056",
                             "e1a9f09504b903120e9b5297eff64f58a891c907"})
+ADMITTED_WORKFLOW_SHA = "23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e"
 SERVICE = "ci-runner-manager.service"
 SOCKET = "ci-runner-host-helper.socket"
 ORG = "Tuinstra-DEV"
@@ -113,8 +114,7 @@ def parse_config(data: bytes) -> dict:
 
 
 def candidate_config(data: bytes, new_sha: str, group_id: int) -> tuple[bytes, tuple[str, ...], tuple[str, ...], bool]:
-    if not isinstance(new_sha, str) or re.fullmatch(r"[a-f0-9]{40}", new_sha) is None or \
-            new_sha in KNOWN_OLD_SHAS or type(group_id) is not int or group_id <= 1:
+    if new_sha != ADMITTED_WORKFLOW_SHA or type(group_id) is not int or group_id <= 1:
         raise Error("reviewed workflow SHA or group ID is invalid")
     old = parse_config(data)
     exact = {"org_routing_enabled": True, "org_github_token_file": base.ORG_CREDENTIAL,
@@ -274,13 +274,18 @@ def verify_sources(stage: Path, layout: Layout) -> tuple[dict, dict, dict]:
 def preflight(stage: Path, new_sha: str, group_id: int, layout: Layout = HOST,
               command: Command = base.run, group_factory=GitHubGroup):
     original, replacement, infos = verify_sources(stage, layout)
-    candidate, before, after, applied = candidate_config(original["config"], new_sha, group_id)
+    candidate, before, after, refs_applied = candidate_config(original["config"], new_sha, group_id)
+    if not refs_applied or before != after or len(after) != 3 or \
+            set(after) != {REF_PREFIX + sha for sha in (*KNOWN_OLD_SHAS, ADMITTED_WORKFLOW_SHA)}:
+        raise Error("installed three-reference policy is not the reviewed manager-only transition")
     replacement["config"] = candidate
-    if (base.sha(original["manager"]) == NEW_MANAGER_SHA) != applied:
-        raise Error("manager and reference policy versions disagree")
+    installed_sha = base.sha(original["manager"])
+    if installed_sha not in {OLD_MANAGER_SHA, NEW_MANAGER_SHA}:
+        raise Error("installed manager version differs from reviewed transition")
+    applied = installed_sha == NEW_MANAGER_SHA
     base.verify_unit(layout, command, org=True)
     group = group_factory(group_id, infos["token"])
-    group.verify(after if applied else before)
+    group.verify(before)
     return original, replacement, infos, group, before, after, applied
 
 
@@ -338,7 +343,10 @@ def drain(layout: Layout, seconds: int, command: Command, pause=time.sleep) -> t
         deadline = time.monotonic() + seconds
         while True:
             assert_reconcile_safe(layout, int(time.time()))
-            command(["systemctl", "start", SERVICE], timeout=180)
+            # The installed manager can fail to verify an already-assigned
+            # cross-pin job. Keep admission closed and wait for guest cleanup;
+            # only the independent idle checks may authorize the swap.
+            command(["systemctl", "start", SERVICE], timeout=180, check=False)
             try:
                 assert_idle(layout, command)
                 return identity
@@ -375,10 +383,9 @@ def read_backup(layout: Layout, backup_id: str):
             not isinstance(group.get("after"), list):
         raise Error("backup group manifest is invalid")
     before, after = tuple(group["before"]), tuple(group["after"])
-    if not 1 <= len(before) <= 2 or len(after) != len(before) + 1 or \
-            not set(before).issubset({REF_PREFIX + s for s in KNOWN_OLD_SHAS}) or \
-            after[:-1] != before or refs({"org_workflow_refs": list(after)}) != after or \
-            after[-1][len(REF_PREFIX):] in KNOWN_OLD_SHAS:
+    if len(before) != 3 or before != after or \
+            set(before) != {REF_PREFIX + sha for sha in (*KNOWN_OLD_SHAS, ADMITTED_WORKFLOW_SHA)} or \
+            refs({"org_workflow_refs": list(before)}) != before:
         raise Error("backup workflow transition is invalid")
     # Inspect both originals and installed files before any mutation.
     for key, path in (("manager", layout.manager), ("config", layout.config)):
@@ -392,11 +399,18 @@ def read_backup(layout: Layout, backup_id: str):
             raise Error("backup or installed files changed")
     if manifest["manager"]["old"] != OLD_MANAGER_SHA or \
             manifest["manager"]["new"] != NEW_MANAGER_SHA or \
+            manifest["config"]["old"] != manifest["config"]["new"] or \
             refs(parse_config(base.read_file(folder / "config", mode=0o600)[0])) != before or \
             refs(parse_config(base.read_file(layout.config)[0])) != after or \
             parse_config(base.read_file(folder / "config", mode=0o600)[0]).get("org_runner_group_id") != group["id"] or \
             parse_config(base.read_file(layout.config)[0]).get("org_runner_group_id") != group["id"]:
         raise Error("backup source or installed reference policy changed")
+    saved_config = base.read_file(folder / "config", mode=0o600)[0]
+    candidate, checked_before, checked_after, refs_applied = candidate_config(
+        saved_config, ADMITTED_WORKFLOW_SHA, group["id"])
+    if candidate != saved_config or not refs_applied or \
+            checked_before != before or checked_after != after:
+        raise Error("backup admission policy differs from reviewed bounds")
     return folder, group, manifest
 
 
@@ -429,11 +443,9 @@ def transition(stage: Path, new_sha: str, group_id: int, seconds: int,
                 raise Error("installed runner changed during drain")
             group.verify(before)
             folder = save_backup(layout, original, replacement, infos, group_id, before, after)
-            group.patch(before, after)
-            for key, path in (("manager", layout.manager), ("config", layout.config)):
-                base.atomic_write(path, replacement[key], infos[key])
-                if base.sha(base.read_file(path)[0]) != base.sha(replacement[key]):
-                    raise Error("installed file readback failed")
+            base.atomic_write(layout.manager, replacement["manager"], infos["manager"])
+            if base.sha(base.read_file(layout.manager)[0]) != base.sha(replacement["manager"]):
+                raise Error("installed file readback failed")
         finally:
             os.close(helper_lock)
         base.remove_own_file(layout.drain, drain_identity, base.DRAIN_BYTES)
@@ -459,12 +471,7 @@ def transition(stage: Path, new_sha: str, group_id: int, seconds: int,
                 helper_lock = base.lock(layout.helper_lock)
                 try:
                     assert_idle(layout, command)
-                    # A failed PATCH may have reached GitHub. Only accept either known state.
-                    try:
-                        group.verify(after)
-                        group.patch(after, before)
-                    except Error:
-                        group.verify(before)
+                    group.verify(before)
                     base.restore(layout, folder, partial=True)
                 finally:
                     os.close(helper_lock)
@@ -540,7 +547,7 @@ def rollback(backup_id: str, seconds: int, layout: Layout = HOST,
         try:
             assert_idle(layout, command)
             read_backup(layout, backup_id)
-            group.patch(after, before)
+            group.verify(before)
             base.restore(layout, folder, partial=False)
         finally:
             os.close(helper_lock)

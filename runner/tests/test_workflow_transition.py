@@ -24,7 +24,7 @@ loader.exec_module(upgrade)
 base = upgrade.base
 OLD = "36f32aebe315274df8825674b7bd0ced637ab056"
 SECOND = "e1a9f09504b903120e9b5297eff64f58a891c907"
-NEW = "a" * 40
+NEW = "23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e"
 
 
 def result(args, output="", code=0):
@@ -46,6 +46,10 @@ def two_ref_config():
         ("org_workflow_ref = " + json.dumps(upgrade.REF_PREFIX + OLD)).encode(),
         ("org_workflow_refs = " + json.dumps([
             upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + SECOND])).encode())
+
+
+def three_ref_config():
+    return upgrade.candidate_config(two_ref_config(), NEW, 42)[0]
 
 
 class FakeGroup:
@@ -110,6 +114,32 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(base.sha((ROOT / "scripts/activate-org-runner-routing.py").read_bytes()),
                          upgrade.ACTIVATION_SHA)
 
+    def test_preflight_requires_exact_installed_three_ref_manager_only_version(self):
+        original = {"manager": b"old manager", "config": three_ref_config()}
+        replacement = {"manager": b"new manager"}
+        group = FakeGroup(upgrade.refs(tomllib.loads(original["config"].decode())))
+        with mock.patch.object(upgrade, "verify_sources", return_value=(original,
+                replacement, {"token": b"synthetic-token"})), \
+             mock.patch.object(base, "verify_unit"), \
+             mock.patch.object(upgrade, "OLD_MANAGER_SHA", base.sha(b"old manager")), \
+             mock.patch.object(upgrade, "NEW_MANAGER_SHA", base.sha(b"new manager")):
+            result = upgrade.preflight(self.stage, NEW, 42, self.layout,
+                group_factory=lambda *_: group)
+            self.assertEqual(result[1]["config"], original["config"])
+            self.assertEqual(result[4:7], (group.current, group.current, False))
+            for invalid in (config(), two_ref_config(),
+                            three_ref_config().replace(NEW.encode(), ("b" * 40).encode())):
+                with self.subTest(invalid=invalid[-60:]):
+                    original["config"] = invalid
+                    with self.assertRaises(upgrade.Error):
+                        upgrade.preflight(self.stage, NEW, 42, self.layout,
+                            group_factory=lambda *_: group)
+            original["config"] = three_ref_config()
+            original["manager"] = b"foreign manager"
+            with self.assertRaises(upgrade.Error):
+                upgrade.preflight(self.stage, NEW, 42, self.layout,
+                    group_factory=lambda *_: group)
+
     def test_candidate_preserves_policy_and_adds_exact_third_ref(self):
         middle = two_ref_config()
         self.config.write_bytes(middle)
@@ -146,7 +176,7 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(upgrade.refs(tomllib.loads(multiline.decode())), (upgrade.REF_PREFIX + OLD,))
         with self.assertRaisesRegex(upgrade.Error, "single root TOML line"):
             upgrade.candidate_config(multiline, NEW, 42)
-        for sha in ("A" * 40, "a" * 39, OLD):
+        for sha in ("A" * 40, "a" * 39, "b" * 40, OLD):
             with self.assertRaises(upgrade.Error):
                 upgrade.candidate_config(original, sha, 42)
 
@@ -236,6 +266,7 @@ class TransitionTests(unittest.TestCase):
                     upgrade.verify_sources(self.stage, self.layout)
 
     def _simulation(self, *, applied=False, fail=None):
+        self.config.write_bytes(three_ref_config())
         original = {"manager": self.manager.read_bytes(), "config": self.config.read_bytes()}
         final, before, after, _ = upgrade.candidate_config(original["config"], NEW, 42)
         replacement = {"manager": b"new manager", "config": final}
@@ -258,15 +289,13 @@ class TransitionTests(unittest.TestCase):
         def active(name, _command):
             return name in running
         def write(path, data, _info):
-            if fail == "config" and path == self.config and data == final:
-                raise OSError("config write failed")
+            if fail == "manager" and path == self.manager and data == replacement["manager"]:
+                raise OSError("manager write failed")
             path.write_bytes(data)
         def restore(_layout, _folder, *, partial):
             self.manager.write_bytes(original["manager"])
             self.config.write_bytes(original["config"])
         folder = self.layout.backup_root / "dev50-20261015T120000Z-1234abcd"
-        if fail == "group":
-            group.fail_patch = True
         import contextlib
         stack = contextlib.ExitStack()
         stack.enter_context(mock.patch.object(upgrade, "preflight", return_value=(
@@ -295,23 +324,26 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(self.manager.read_bytes(), replacement["manager"])
         self.assertEqual(self.config.read_bytes(), replacement["config"])
         self.assertEqual(group.current, upgrade.refs(tomllib.loads(replacement["config"].decode())))
+        self.assertFalse(any(call[0] == "patch" for call in group.calls))
+        self.assertEqual(self.config.read_bytes(), three_ref_config())
         stack, command, group, calls, _, _, _ = self._simulation(applied=True)
         with stack:
             self.assertEqual(upgrade.transition(self.stage, NEW, 42, 60,
                                                 self.layout, command), ("already_applied", None))
         self.assertEqual(calls, [])
 
-    def test_group_config_and_restart_failures_restore_original(self):
-        for point in ("group", "config", "restart"):
+    def test_manager_write_and_restart_failures_restore_original(self):
+        for point in ("manager", "restart"):
             with self.subTest(point=point):
                 self.manager.write_bytes(b"old manager")
-                self.config.write_bytes(config())
+                self.config.write_bytes(three_ref_config())
                 stack, command, group, calls, original, _, running = self._simulation(fail=point)
                 with stack, self.assertRaises(upgrade.Error):
                     upgrade.transition(self.stage, NEW, 42, 60, self.layout, command)
                 self.assertEqual(self.manager.read_bytes(), original["manager"])
                 self.assertEqual(self.config.read_bytes(), original["config"])
                 self.assertEqual(group.current, upgrade.refs(tomllib.loads(original["config"].decode())))
+                self.assertFalse(any(call[0] == "patch" for call in group.calls))
                 if point != "restart":
                     self.assertIn(upgrade.SERVICE, running)
 
@@ -340,6 +372,8 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_drain_timeout_recovers_without_destroying_guest(self):
+        (self.state / "lease-live.json").write_text(json.dumps({
+            "lease": "live", "launched_at": int(upgrade.time.time())}))
         calls = []
         def command(args, **_):
             calls.append(args)
@@ -349,18 +383,53 @@ class TransitionTests(unittest.TestCase):
                           "ExecStart": "argv[]=/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml reconcile",
                           "DropInPaths": f"{self.dropin} {self.layout.drain}"}
                 return result(args, values[key])
+            if args == ["systemctl", "start", upgrade.SERVICE]:
+                return result(args, code=1)
             return result(args)
         with mock.patch.object(base, "active", return_value=True), \
              mock.patch.object(base, "checked_dir"), \
              mock.patch.object(base, "create_file", return_value=(1, 2)), \
              mock.patch.object(base, "remove_own_file") as remove, \
              mock.patch.object(base, "credential_pairs", return_value=base.ORG_CREDENTIALS), \
-             mock.patch.object(upgrade, "assert_idle", side_effect=upgrade.Error("runner VM remains")), \
              mock.patch.object(upgrade.time, "monotonic", side_effect=[0, 61]):
             with self.assertRaisesRegex(upgrade.Error, "timed out"):
                 upgrade.drain(self.layout, 60, command, pause=lambda _: None)
             remove.assert_called_once()
         self.assertIn(["systemctl", "stop", upgrade.SERVICE], calls)
+        self.assertFalse(any("destroy" in " ".join(call) for call in calls))
+
+    def test_failed_reconcile_waits_for_live_guest_without_admitting_work(self):
+        lease = self.state / "lease-live.json"
+        lease.write_text(json.dumps({"lease": "live", "launched_at": 1000}))
+        starts = []
+        calls = []
+        def command(args, **options):
+            calls.append(tuple(args))
+            if args[:2] == ["systemctl", "show"]:
+                key = args[-2].split("=", 1)[1]
+                values = {"Type": "oneshot", "Restart": "no",
+                          "ExecStart": "argv[]=/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml reconcile",
+                          "DropInPaths": f"{self.dropin} {self.layout.drain}"}
+                return result(args, values[key])
+            if args == ["systemctl", "start", upgrade.SERVICE]:
+                starts.append(options)
+                if len(starts) == 1:
+                    if options.get("check", True):
+                        raise upgrade.Error("reconcile failed")
+                    return result(args, code=1)
+            return result(args)
+        def finish_guest(_):
+            lease.unlink()
+        with mock.patch.object(base, "active", return_value=True), \
+             mock.patch.object(base, "checked_dir"), \
+             mock.patch.object(base, "create_file", return_value=(1, 2)), \
+             mock.patch.object(base, "remove_own_file"), \
+             mock.patch.object(base, "credential_pairs", return_value=base.ORG_CREDENTIALS), \
+             mock.patch.object(upgrade.time, "time", return_value=1000), \
+             mock.patch.object(upgrade.time, "monotonic", side_effect=[0, 1, 2]):
+            self.assertEqual(upgrade.drain(self.layout, 60, command, pause=finish_guest), (1, 2))
+        self.assertEqual(len(starts), 2)
+        self.assertTrue(all(options.get("check") is False for options in starts))
         self.assertFalse(any("destroy" in " ".join(call) for call in calls))
 
     def test_near_expiry_lease_aborts_before_reconcile_start(self):
@@ -408,10 +477,10 @@ class TransitionTests(unittest.TestCase):
             upgrade.assert_idle(self.layout, lambda args, **_: result(args))
 
     def test_rollback_drain_timeout_restores_installed_admission(self):
-        final = upgrade.candidate_config(self.config.read_bytes(), NEW, 42)[0]
+        final = three_ref_config()
         self.config.write_bytes(final)
         self.manager.write_bytes(b"new manager")
-        group = FakeGroup((upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + NEW))
+        group = FakeGroup(upgrade.refs(tomllib.loads(final.decode())))
         running = {upgrade.SOCKET}
         calls = []
         def command(args, **_):
@@ -423,8 +492,8 @@ class TransitionTests(unittest.TestCase):
                                os.open(path, os.O_RDWR | os.O_CREAT, 0o600)), \
              mock.patch.object(upgrade, "read_backup", return_value=(
                  self.layout.backup_root / "dev50-20261015T120000Z-1234abcd",
-                 {"id": 42, "before": [upgrade.REF_PREFIX + OLD],
-                  "after": [upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + NEW]}, {})), \
+                 {"id": 42, "before": list(group.current),
+                  "after": list(group.current)}, {})), \
              mock.patch.object(base, "read_file", side_effect=lambda path, **_:
                                (path.read_bytes(), SimpleNamespace(st_gid=0,
                                 st_mode=path.stat().st_mode))), \
@@ -436,11 +505,11 @@ class TransitionTests(unittest.TestCase):
                 upgrade.rollback("dev50-20261015T120000Z-1234abcd", 60,
                                  self.layout, command, lambda *_: group)
         self.assertIn(upgrade.SERVICE, running)
-        self.assertEqual(group.current, (upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + NEW))
+        self.assertEqual(group.current, upgrade.refs(tomllib.loads(final.decode())))
         self.assertEqual(self.config.read_bytes(), final)
 
     def test_strict_rollback_rejects_changed_installation(self):
-        original = {"manager": b"old manager", "config": self.config.read_bytes()}
+        original = {"manager": b"old manager", "config": three_ref_config()}
         final = upgrade.candidate_config(original["config"], NEW, 42)[0]
         replacement = {"manager": b"new manager", "config": final}
         self.manager.write_bytes(replacement["manager"])
@@ -451,12 +520,56 @@ class TransitionTests(unittest.TestCase):
                                (path.read_bytes(), path.stat())), \
              mock.patch.object(base, "atomic_write", side_effect=lambda path, data, _:
                                path.write_bytes(data)):
+            current = upgrade.refs(tomllib.loads(final.decode()))
             folder = upgrade.save_backup(self.layout, original, replacement, infos, 42,
-                (upgrade.REF_PREFIX + OLD,), (upgrade.REF_PREFIX + OLD, upgrade.REF_PREFIX + NEW))
+                current, current)
             self.manager.write_bytes(b"foreign manager")
             with self.assertRaisesRegex(upgrade.Error, "changed"):
                 upgrade.read_backup(self.layout, folder.name)
             self.assertEqual(self.manager.read_bytes(), b"foreign manager")
+
+    def test_manager_only_backup_and_rollback_preserve_group_and_config(self):
+        original = {"manager": b"old manager", "config": three_ref_config()}
+        replacement = {"manager": b"new manager", "config": original["config"]}
+        self.manager.write_bytes(replacement["manager"])
+        self.config.write_bytes(replacement["config"])
+        current = upgrade.refs(tomllib.loads(original["config"].decode()))
+        group = FakeGroup(current)
+        def read_file(path, **_):
+            info = path.stat()
+            return path.read_bytes(), SimpleNamespace(st_uid=0, st_gid=0,
+                st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino)
+        infos = {key: read_file(path)[1] for key, path in
+                 (("manager", self.manager), ("config", self.config))}
+        running = {upgrade.SOCKET, upgrade.SERVICE}
+        def command(args, **_):
+            if args[:2] == ["systemctl", "stop"]:
+                running.discard(args[2])
+            if args[:2] == ["systemctl", "start"]:
+                running.add(args[2])
+            return result(args)
+        with mock.patch.object(base, "checked_dir"), \
+             mock.patch.object(base, "read_file", side_effect=read_file), \
+             mock.patch.object(base, "atomic_write", side_effect=lambda path, data, _:
+                               path.write_bytes(data)), \
+             mock.patch.object(base, "lock", side_effect=lambda path:
+                               os.open(path, os.O_RDWR | os.O_CREAT, 0o600)), \
+             mock.patch.object(base, "active", side_effect=lambda name, _cmd: name in running), \
+             mock.patch.object(base, "verify_unit"), \
+             mock.patch.object(base, "remove_own_file"), \
+             mock.patch.object(upgrade, "drain", return_value=(1, 2)), \
+             mock.patch.object(upgrade, "assert_idle"), \
+             mock.patch.object(upgrade, "OLD_MANAGER_SHA", base.sha(original["manager"])), \
+             mock.patch.object(upgrade, "NEW_MANAGER_SHA", base.sha(replacement["manager"])):
+            folder = upgrade.save_backup(self.layout, original, replacement, infos,
+                                         42, current, current)
+            self.assertEqual(upgrade.read_backup(self.layout, folder.name)[1],
+                             {"id": 42, "before": list(current), "after": list(current)})
+            upgrade.rollback(folder.name, 60, self.layout, command, lambda *_: group)
+        self.assertEqual(self.manager.read_bytes(), original["manager"])
+        self.assertEqual(self.config.read_bytes(), original["config"])
+        self.assertFalse(any(call[0] == "patch" for call in group.calls))
+        self.assertEqual(running, {upgrade.SOCKET, upgrade.SERVICE})
 
 
 if __name__ == "__main__":

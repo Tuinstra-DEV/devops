@@ -1149,7 +1149,7 @@ class GitHubClient:
         return job
 
     def verify_org_assignment(self, state: dict[str, Any],
-                              assignment: dict[str, Any]) -> None:
+                              assignment: dict[str, Any]) -> str:
         repo = state["repo"]
         job = self.get_job(repo, assignment["job_id"])
         profile = state.get("profile")
@@ -1160,14 +1160,22 @@ class GitHubClient:
                 job.get("runner_group_name") != ORG_GROUP_NAME or \
                 not organization_labels_match(job.get("labels"), repo, profile):
             raise RunnerError("organization runner assignment policy mismatch")
+        # The JIT request was tied to a selected trigger job. The scheduler may
+        # give this ephemeral runner another trusted job, but neither workflow
+        # reference may escape the exact organization allowlist.
+        if state.get("workflow_ref") not in self._org_workflow_refs:
+            raise RunnerError("organization runner trigger workflow is not admitted")
         run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
         if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
             raise RunnerError("organization runner assignment is not a trusted PR run")
-        if "workflow_ref" in state and \
-                state["workflow_ref"] != self._verified_workflow_ref(run):
+        actual_ref = self._verified_workflow_ref(run)
+        if actual_ref is None:
+            raise RunnerError("organization runner assignment workflow is not admitted")
+        if "actual_workflow_ref" in state and state["actual_workflow_ref"] != actual_ref:
             raise RunnerError("organization runner assignment workflow changed")
         if self._resolve_trusted_pull_request(run, repo) is None:
             raise RunnerError("organization runner assignment is not a trusted PR")
+        return actual_ref
 
 
 def validate_repositories(cfg: dict[str, Any]) -> list[str]:
@@ -1453,10 +1461,16 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
     actual_run_id = assignment.get("run_id")
     if not isinstance(actual_job_id, int) or not isinstance(actual_run_id, int):
         return state
-    if runner_scope(state) == "organization":
-        selected_client.verify_org_assignment(state, assignment)
+    scope = runner_scope(state)
+    actual_workflow_ref = None
+    if scope == "organization":
+        actual_workflow_ref = selected_client.verify_org_assignment(state, assignment)
+        if not isinstance(actual_workflow_ref, str):
+            raise RunnerError("organization assignment workflow was not verified")
     updated = dict(state)
     updated.update({"actual_job_id": actual_job_id, "actual_run_id": actual_run_id})
+    if scope == "organization":
+        updated["actual_workflow_ref"] = actual_workflow_ref
     store.write(lease, updated)
     LOG.info(
         "runner assignment verified lease=%s repo=%s runner_id=%s runner_name=%s "
