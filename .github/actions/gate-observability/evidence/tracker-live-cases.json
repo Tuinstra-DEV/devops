@@ -19,9 +19,9 @@
       "source_line": "24"
     },
     {
-      "heal_case_id": "ab447df90729490481a96eb20aba13a2",
-      "external_issue_id": "153834150",
-      "last_event_id": "db224be3b9444c77afde38f3ab673108",
+      "heal_case_id": "65f91477b22e4e198837be2ef52453ef",
+      "external_issue_id": "153844874",
+      "last_event_id": "a827f7f62f5c4731bb9d302ced8b1392",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -30,15 +30,15 @@
       "fix_attempts": 0,
       "component": "api",
       "environment": "verification",
-      "source_commit": "b78b53b39dbf55e26b17c1c447c5adf36966788d",
-      "artifact_digest": "sha256:16904a39a02f962775a5d382bf24c7d69908d1feeb229fa6750c231a14f67632",
+      "source_commit": "eee960198fcaad56994f7ba7cfc368a34918d03b",
+      "artifact_digest": "sha256:3648479b6e8102799206b5e77b8022d09da336d65c00647d58ff97b2c4947ca2",
       "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
       "source_line": "49"
     },
     {
-      "heal_case_id": "2fae04c942b4477ab38d2650c0a51da9",
-      "external_issue_id": "153834174",
-      "last_event_id": "7430909cfa63470a86f918b80c6c3e5b",
+      "heal_case_id": "4a925a9b0c0546df82d59fe7478152f5",
+      "external_issue_id": "153844908",
+      "last_event_id": "1a40eeb16aa846829c3dead1297caa2a",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -47,8 +47,8 @@
       "fix_attempts": 0,
       "component": "worker",
       "environment": "verification",
-      "source_commit": "b78b53b39dbf55e26b17c1c447c5adf36966788d",
-      "artifact_digest": "sha256:16904a39a02f962775a5d382bf24c7d69908d1feeb229fa6750c231a14f67632",
+      "source_commit": "eee960198fcaad56994f7ba7cfc368a34918d03b",
+      "artifact_digest": "sha256:3648479b6e8102799206b5e77b8022d09da336d65c00647d58ff97b2c4947ca2",
       "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
       "source_line": "29"
     }
