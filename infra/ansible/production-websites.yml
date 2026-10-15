@@ -1,0 +1,65 @@
+---
+- name: Validate or activate the existing prod01 public website ingress
+  hosts: prod01
+  gather_facts: false
+  become: true
+  vars:
+    production_websites_apply: false
+    production_website_names: [wodiq-site, site-openairco, site-marcel, site-tuinstra]
+  tasks:
+    - name: Require the named existing administrative connection
+      ansible.builtin.assert:
+        that:
+          - ansible_host == 'vps01.tuinstra.dev'
+          - ansible_user == 'mtuinstra'
+        fail_msg: Use the existing named administrator on vps01.tuinstra.dev.
+
+    - name: Install the bounded root-only operator helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/production-websites.py"
+        dest: /usr/local/sbin/tuinstra-production-websites
+        owner: root
+        group: root
+        mode: '0700'
+        backup: true
+
+    - name: Create a protected candidate directory outside the imported routes
+      ansible.builtin.file:
+        path: /var/www/_platform/caddy/DEV-26-candidate
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage only the four reviewed public routes
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../caddy/public-websites/{{ item }}.caddy"
+        dest: "/var/www/_platform/caddy/DEV-26-candidate/{{ item }}.caddy"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ production_website_names }}"
+
+    - name: Validate the complete candidate with the active immutable Caddy image
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/tuinstra-production-websites, check]
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Activate only when explicitly requested
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/tuinstra-production-websites, apply]
+      register: production_websites_result
+      changed_when: (production_websites_result.stdout | from_json).applied
+      when:
+        - not ansible_check_mode
+        - production_websites_apply | bool
+
+    - name: Extend the installed encrypted backup profile without replacing host policy
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/tuinstra-production-websites, backup-profile]
+      register: production_websites_backup_result
+      changed_when: (production_websites_backup_result.stdout | from_json).extended > 0
+      when:
+        - not ansible_check_mode
+        - production_websites_apply | bool
