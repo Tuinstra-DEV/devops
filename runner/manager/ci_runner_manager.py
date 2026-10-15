@@ -29,6 +29,7 @@ LOG = logging.getLogger("ci-runner-manager")
 REGISTRATION_GRACE_SECONDS = 300
 HANDOFF_GRACE_SECONDS = 30
 HANDOFF_RETRY_MAX_SECONDS = 600
+VERIFIED_HANDOFF_RETRY_SECONDS = 30
 DISPATCH_RETRY_BASE_SECONDS = 60
 DISPATCH_RETRY_MAX_SECONDS = 3600
 DISPATCH_HISTORY_SECONDS = 86400
@@ -43,6 +44,11 @@ HELPER_MUTATION_TIMEOUT_SECONDS = 330
 MAX_CONCURRENCY = 1
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
+FOUR_POOL_CONCURRENCY = 4
+POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
+POOL_LIMITS = {"heavy": 2, "medium": 2}
+POOL_DISK_GIB = {"heavy": 24, "medium": 4}
+DISK_MARGIN_GIB = 2
 RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
 REPOSITORY_JIT_ENDPOINT_RE = re.compile(
@@ -56,10 +62,20 @@ CANONICAL_REPOSITORY_ENDPOINT_RE = re.compile(
     r"^/repositories/([1-9][0-9]{0,18})(/.*)?$"
 )
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+ORG_NAME = "Tuinstra-DEV"
+ORG_ACTOR = "marcel-tuinstra"
+ORG_GROUP_NAME = "sanctuary-trusted-verification"
+ORG_CREDENTIAL_PATH = "/run/credentials/ci-runner-manager.service/org_github_token"
+ORG_WORKFLOW_PREFIX = (f"{ORG_NAME}/devops/.github/workflows/"
+                       "reusable-trusted-verification.yml@")
 
 
 class RunnerError(RuntimeError):
     pass
+
+
+class OrgPreflightRejected(RunnerError):
+    """The organization guard failed before a JIT POST was attempted."""
 
 
 class CapacityUnavailable(RunnerError):
@@ -123,11 +139,32 @@ def load_config(path: Path) -> dict[str, Any]:
     missing = required.difference(cfg)
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
+    mode = cfg.get("pool_mode", "legacy")
+    if mode not in {"legacy", "four"}:
+        raise RunnerError("pool_mode must be legacy or four")
     exact_resources = {
-        "max_concurrency": MAX_CONCURRENCY,
+        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else FOUR_POOL_CONCURRENCY,
         "runner_vcpus": RUNNER_VCPUS,
         "runner_memory_mib": RUNNER_MEMORY_MIB,
     }
+    if mode == "four":
+        exact_resources.update({
+            "medium_runner_vcpus": 2,
+            "medium_runner_memory_mib": 3072,
+            "max_heavy": 2,
+            "max_medium": 2,
+            "heavy_disk_reservation_gib": 24,
+            "medium_disk_reservation_gib": 4,
+        })
+        if cfg.get("medium_runner_label") != "trusted-medium" or \
+                cfg.get("runner_label") != "trusted-heavy" or \
+                cfg.get("storage_mode") != "bounded-loop":
+            raise RunnerError("four-pool labels and bounded storage mode must match policy")
+    elif any(key in cfg for key in (
+            "medium_runner_vcpus", "medium_runner_memory_mib", "max_heavy",
+            "max_medium", "heavy_disk_reservation_gib",
+            "medium_disk_reservation_gib", "medium_runner_label", "storage_mode")):
+        raise RunnerError("four-pool policy keys require pool_mode=four")
     for key, expected in exact_resources.items():
         value = cfg[key]
         if not isinstance(value, int) or isinstance(value, bool) or value != expected:
@@ -143,7 +180,80 @@ def load_config(path: Path) -> dict[str, Any]:
         raise RunnerError("host_memory_reserve_mib must be between 1024 and 65536")
     if "runner_cpu_sets" in cfg:
         raise RunnerError("runner_cpu_sets is unsupported by the single-runner policy")
+    validate_org_config(cfg)
     return cfg
+
+
+def four_pool(cfg: dict[str, Any]) -> bool:
+    return cfg.get("pool_mode", "legacy") == "four"
+
+
+def org_routing_enabled(cfg: dict[str, Any]) -> bool:
+    value = cfg.get("org_routing_enabled", False)
+    if not isinstance(value, bool):
+        raise RunnerError("org_routing_enabled must be a boolean")
+    return value
+
+
+def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
+    single = "org_workflow_ref" in cfg
+    multiple = "org_workflow_refs" in cfg
+    if single == multiple:
+        raise RunnerError("organization workflow requires exactly one reference policy")
+    refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 3 or \
+            any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
+                re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
+                for ref in refs) or len(set(refs)) != len(refs):
+        raise RunnerError("organization workflows must be distinct exact commit references")
+    return tuple(refs)
+
+
+def validate_org_config(cfg: dict[str, Any]) -> None:
+    if not org_routing_enabled(cfg):
+        return
+    if not four_pool(cfg):
+        raise RunnerError("organization routing requires four-pool mode")
+    if cfg.get("org_github_token_file") != ORG_CREDENTIAL_PATH or \
+            cfg.get("github_token_file") == ORG_CREDENTIAL_PATH:
+        raise RunnerError("organization routing requires a separate systemd credential")
+    group_id = cfg.get("org_runner_group_id")
+    if not isinstance(group_id, int) or isinstance(group_id, bool) or group_id < 1:
+        raise RunnerError("organization runner group ID is invalid")
+    configured_org_workflow_refs(cfg)
+    repo_ids = cfg.get("org_repository_ids")
+    if not isinstance(repo_ids, dict) or not repo_ids or \
+            any(not isinstance(repo, str) or not re.fullmatch(
+                    rf"{re.escape(ORG_NAME)}/[A-Za-z0-9_.-]+", repo) or
+                repo.split("/", 1)[1].casefold() in {"devops", "agent-lab"} or
+                not isinstance(identifier, int) or
+                isinstance(identifier, bool) or identifier < 1
+                for repo, identifier in repo_ids.items()) or \
+            len(set(repo_ids.values())) != len(repo_ids):
+        raise RunnerError("organization selected repository IDs are invalid")
+
+
+def organization_repository_label(repo: str) -> str:
+    if not re.fullmatch(rf"{re.escape(ORG_NAME)}/[A-Za-z0-9_.-]+", repo):
+        raise RunnerError("organization repository is invalid")
+    return "sanctuary-" + repo.split("/", 1)[1].lower()
+
+
+def organization_labels_match(labels: Any, repo: str, profile: str) -> bool:
+    if profile not in POOL_LIMITS or not isinstance(labels, list) or \
+            not all(isinstance(label, str) for label in labels):
+        return False
+    repo_label = organization_repository_label(repo)
+    return {"self-hosted", f"trusted-{profile}", repo_label}.issubset(labels) and \
+        {label for label in labels if label in {"trusted-heavy", "trusted-medium"}} == \
+        {f"trusted-{profile}"} and \
+        {label for label in labels if label.startswith("sanctuary-")} == {repo_label}
+
+
+def pool_resources(profile: str) -> tuple[int, int]:
+    if profile not in POOL_RESOURCES:
+        raise RunnerError("invalid runner profile")
+    return POOL_RESOURCES[profile]
 
 
 def validate_lease_id(value: str) -> str:
@@ -192,8 +302,51 @@ def configured_resource(cfg: dict[str, Any], key: str, expected: int) -> int:
     return value
 
 
-def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1) -> list[str]:
+def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
+                    profile: str = "heavy", active: list[dict[str, Any]] | None = None,
+                    available_override_mib: int | None = None) -> list[str]:
     errors: list[str] = []
+    if four_pool(cfg):
+        requested_vcpus, requested_memory = pool_resources(profile)
+        if active is None:
+            return ["active runner resources are not verified"]
+        counts = {"heavy": 0, "medium": 0}
+        active_vcpus = 0
+        active_memory = 0
+        unresident_mib = 0
+        for item in active:
+            if not isinstance(item, dict) or item.get("profile") not in counts:
+                return ["active runner resources are not verified"]
+            kind = item["profile"]
+            cpu, memory = POOL_RESOURCES[kind]
+            if item.get("vcpus") != cpu or item.get("memory_mib") != memory:
+                return ["active runner resources are not verified"]
+            rss = item.get("rss_mib")
+            if not isinstance(rss, int) or isinstance(rss, bool) or rss < 0:
+                return ["active runner memory is not verified"]
+            counts[kind] += 1
+            active_vcpus += cpu
+            active_memory += memory
+            unresident_mib += max(0, memory - rss)
+        if any(counts[kind] > POOL_LIMITS[kind] for kind in POOL_LIMITS) or \
+                len(active) > FOUR_POOL_CONCURRENCY or active_vcpus > 12:
+            return ["active runner resources exceed pool policy"]
+        if len(active) >= FOUR_POOL_CONCURRENCY or counts[profile] >= POOL_LIMITS[profile]:
+            errors.append(f"{profile} runner slots are occupied")
+        if active_vcpus + requested_vcpus > 12 or (os.cpu_count() or 0) < 12:
+            errors.append("host cannot fit 12 configured runner vCPUs")
+        reserve_mib = int(cfg["host_memory_reserve_mib"])
+        if memory_total_mib() < active_memory + requested_memory + reserve_mib:
+            errors.append("host memory cannot fit projected runners and reserve")
+        available_mib = memory_available_mib() if available_override_mib is None \
+            else available_override_mib
+        if available_mib - requested_memory - unresident_mib < reserve_mib:
+            errors.append("host projected free memory is below the configured reserve")
+        disk = shutil.disk_usage(str(cfg["overlay_root"]))
+        if disk.free - POOL_DISK_GIB[profile] * 1024**3 < \
+                (int(cfg["min_free_disk_gib"]) + DISK_MARGIN_GIB) * 1024**3:
+            errors.append("bounded overlay reservation would breach NVMe floor")
+        return errors
     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
     vcpus = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
     memory_mib = configured_resource(cfg, "runner_memory_mib", RUNNER_MEMORY_MIB)
@@ -275,7 +428,9 @@ class StateStore:
         runner_id = state.get("runner_id")
         if not isinstance(repo, str) or not isinstance(runner_id, int):
             raise RunnerError("cleanup obligation requires a GitHub runner identity")
-        return hashlib.sha256(f"{repo}:{runner_id}".encode("utf-8")).hexdigest()
+        scope = runner_scope(state)
+        prefix = "" if scope == "repository" else f"organization:{ORG_NAME}:"
+        return hashlib.sha256(f"{prefix}{repo}:{runner_id}".encode("utf-8")).hexdigest()
 
     def cleanup_path(self, state: dict[str, Any]) -> Path:
         return self.directory / f"cleanup-{self.cleanup_key(state)}.json"
@@ -434,9 +589,21 @@ class DispatchHistory:
         self.write(values)
         return delay
 
+    def retry_after_verified_handoff(self, key: str, now: int,
+                                     attempts_hint: int = 1) -> int:
+        values = self.load()
+        entry = values.get(key)
+        if entry is None:
+            entry = {"blocked_until": now, "attempts": max(1, attempts_hint)}
+            values[key] = entry
+        entry["blocked_until"] = now + VERIFIED_HANDOFF_RETRY_SECONDS
+        self.write(values)
+        return VERIFIED_HANDOFF_RETRY_SECONDS
+
 
 class GitHubClient:
-    def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
+    def __init__(self, token: str, api_url: str = "https://api.github.com", *,
+                 org_workflow_refs: tuple[str, ...] = ()) -> None:
         if not token or "\n" in token:
             raise RunnerError("invalid GitHub credential")
         parsed_api_url = urllib.parse.urlsplit(api_url.rstrip("/"))
@@ -456,6 +623,7 @@ class GitHubClient:
             raise RunnerError("invalid GitHub API URL")
         self._token = token
         self._api_url = api_url.rstrip("/")
+        self._org_workflow_refs = org_workflow_refs
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -695,15 +863,218 @@ class GitHubClient:
                 jobs = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{int(run['id'])}/jobs?filter=latest&per_page=100")
                 for job in jobs.get("jobs", []):
                     labels = job.get("labels", [])
-                    if job.get("status") == "queued" and required_label in labels:
+                    if job.get("status") == "queued" and required_label in labels and \
+                            not any(isinstance(value, str) and value.startswith("sanctuary-")
+                                    for value in labels):
                         candidates.append({"repo": repo, "run_id": int(run["id"]), "job_id": int(job["id"])})
         return candidates
+
+    def candidate_trusted_jobs(self, repo: str, profile: str, *,
+                               snapshot: WorkflowListSnapshot | None = None) -> list[dict[str, Any]]:
+        if profile not in POOL_LIMITS:
+            raise RunnerError("invalid organization runner profile")
+        listings = snapshot if snapshot is not None else WorkflowListSnapshot()
+        candidates: list[dict[str, Any]] = []
+        for status in ("queued", "in_progress"):
+            for run in listings.workflow_runs(self, repo, status):
+                if not self._trusted_run(run, repo, require_workflow=False):
+                    continue
+                run_id = run["id"]
+                matching = [job for job in listings.workflow_jobs(self, repo, run_id)
+                            if isinstance(job, dict)
+                            and job.get("status") == "queued"
+                            and job.get("run_id") == run_id
+                            and isinstance(job.get("id"), int)
+                            and organization_labels_match(job.get("labels"), repo, profile)]
+                if not matching:
+                    continue
+                detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run_id}")
+                if not self._trusted_run(detail, repo) or \
+                        detail["id"] != run_id or \
+                        detail["head_sha"] != run["head_sha"] or \
+                        detail["head_branch"] != run["head_branch"] or \
+                        self._resolve_trusted_pull_request(detail, repo) is None:
+                    continue
+                workflow_ref = self._verified_workflow_ref(detail)
+                candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"],
+                                   "workflow_ref": workflow_ref}
+                                  for job in matching)
+        return candidates
+
+    @staticmethod
+    def _trusted_user(value: Any) -> bool:
+        return isinstance(value, dict) and value.get("type") == "User" and \
+            value.get("login") == ORG_ACTOR
+
+    def _trusted_run(self, run: Any, repo: str, *,
+                     require_workflow: bool = True) -> bool:
+        if not isinstance(run, dict):
+            return False
+        branch = run.get("head_branch")
+        associations = run.get("pull_requests")
+        if not isinstance(branch, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
+                ".." in branch or "//" in branch or branch.endswith("/") or \
+                not isinstance(associations, list) or len(associations) > 1:
+            return False
+        if associations and (not isinstance(associations[0], dict) or
+                             not isinstance(associations[0].get("number"), int) or
+                             isinstance(associations[0]["number"], bool) or
+                             associations[0]["number"] < 1):
+            return False
+        if require_workflow and not self._trusted_workflow_references(run):
+            return False
+        return isinstance(run.get("id"), int) and \
+            not isinstance(run["id"], bool) and run.get("event") == "pull_request" and \
+            bool(re.fullmatch(r"[a-f0-9]{40}", str(run.get("head_sha", "")))) and \
+            self._trusted_user(run.get("actor")) and \
+            self._trusted_user(run.get("triggering_actor")) and \
+            isinstance(run.get("repository"), dict) and \
+            run["repository"].get("full_name") == repo and \
+            run["repository"].get("private") is True and \
+            isinstance(run.get("head_repository"), dict) and \
+            run["head_repository"].get("full_name") == repo and \
+            run["head_repository"].get("private") is True and \
+            run["head_repository"].get("fork") is False
+
+    def _trusted_workflow_references(self, run: dict[str, Any]) -> bool:
+        return self._verified_workflow_ref(run) is not None
+
+    def _verified_workflow_ref(self, run: dict[str, Any]) -> str | None:
+        refs = run.get("referenced_workflows")
+        if not self._org_workflow_refs or not isinstance(refs, list):
+            return None
+        central = [item for item in refs if isinstance(item, dict) and
+                   isinstance(item.get("path"), str) and
+                   item["path"].startswith(ORG_WORKFLOW_PREFIX)]
+        if len(central) != 1:
+            return None
+        item = central[0]
+        if item["path"] not in self._org_workflow_refs or \
+                item.get("sha") != item["path"][len(ORG_WORKFLOW_PREFIX):]:
+            return None
+        return item["path"]
+
+    @classmethod
+    def _trusted_pull_request(cls, pr: Any, repo: str, head_sha: str,
+                              branch: str, number: int) -> bool:
+        if not isinstance(pr, dict) or type(pr.get("number")) is not int or \
+                pr["number"] != number or pr.get("state") != "open" or \
+                pr.get("merged") is not False or not cls._trusted_user(pr.get("user")):
+            return False
+        head, base = pr.get("head"), pr.get("base")
+        return isinstance(head, dict) and isinstance(base, dict) and \
+            head.get("sha") == head_sha and head.get("ref") == branch and \
+            isinstance(head.get("repo"), dict) and \
+            isinstance(base.get("repo"), dict) and \
+            head["repo"].get("full_name") == repo and \
+            head["repo"].get("private") is True and \
+            head["repo"].get("fork") is False and \
+            base["repo"].get("full_name") == repo and \
+            base["repo"].get("private") is True
+
+    def _resolve_trusted_pull_request(self, run: Any, repo: str) -> dict[str, Any] | None:
+        if not self._trusted_run(run, repo):
+            return None
+        branch = run["head_branch"]
+        associations = run["pull_requests"]
+        if associations:
+            association = associations[0]
+            associated_head = association.get("head")
+            if associated_head is not None and (not isinstance(associated_head, dict) or
+                    associated_head.get("sha", run["head_sha"]) != run["head_sha"] or
+                    associated_head.get("ref", branch) != branch):
+                return None
+            for side, metadata in (("head", associated_head),
+                                   ("base", association.get("base"))):
+                if metadata is None:
+                    continue
+                if not isinstance(metadata, dict):
+                    return None
+                related_repo = metadata.get("repo")
+                if related_repo is not None and (not isinstance(related_repo, dict) or
+                        related_repo.get("full_name", repo) != repo or
+                        related_repo.get("private", True) is not True or
+                        (side == "head" and related_repo.get("fork", False) is not False)):
+                    return None
+            number = association["number"]
+            pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
+        else:
+            head = urllib.parse.quote(f"{ORG_NAME}:{branch}", safe="")
+            found = self.request("GET", f"{self.repo_path(repo)}/pulls?state=open&head={head}&per_page=100")
+            if not isinstance(found, list) or len(found) != 1 or \
+                    not isinstance(found[0], dict) or type(found[0].get("number")) is not int or \
+                    found[0]["number"] < 1:
+                return None
+            number = found[0]["number"]
+            pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
+        if not self._trusted_pull_request(pr, repo, run["head_sha"], branch, number):
+            return None
+        return pr
 
     def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
         return self.request("POST", f"{self.repo_path(repo)}/actions/runners/generate-jitconfig", {
             "name": runner_name_for_trigger(job_id), "runner_group_id": group_id,
             "labels": ["self-hosted", "linux", "x64", label], "work_folder": "_work",
         })
+
+    def verify_org_group(self, cfg: dict[str, Any]) -> None:
+        validate_org_config(cfg)
+        group_id = cfg["org_runner_group_id"]
+        base = f"/orgs/{ORG_NAME}/actions/runner-groups/{group_id}"
+        group = self.request("GET", base)
+        if not isinstance(group, dict) or group.get("id") != group_id or \
+                group.get("name") != ORG_GROUP_NAME or \
+                group.get("visibility") != "selected" or \
+                group.get("default") is not False or \
+                group.get("inherited") is not False or \
+                group.get("allows_public_repositories") is not False or \
+                group.get("restricted_to_workflows") is not True or \
+                not isinstance(group.get("selected_workflows"), list) or \
+                not all(isinstance(ref, str) for ref in group["selected_workflows"]) or \
+                len(group["selected_workflows"]) != len(configured_org_workflow_refs(cfg)) or \
+                set(group["selected_workflows"]) != set(configured_org_workflow_refs(cfg)):
+            raise RunnerError("organization runner group policy is not verified")
+        selected = self.request("GET", base + "/repositories?per_page=100&page=1")
+        expected = cfg["org_repository_ids"]
+        if not isinstance(selected, dict) or selected.get("total_count") != len(expected) or \
+                not isinstance(selected.get("repositories"), list) or \
+                len(selected["repositories"]) != len(expected):
+            raise RunnerError("organization runner group repository access is not verified")
+        actual = {}
+        for item in selected["repositories"]:
+            if not isinstance(item, dict) or item.get("private") is not True or \
+                    not isinstance(item.get("full_name"), str) or \
+                    not isinstance(item.get("id"), int) or isinstance(item["id"], bool) or \
+                    item["full_name"] in actual:
+                raise RunnerError("organization runner group repository access is not verified")
+            actual[item["full_name"]] = item["id"]
+        if actual != expected:
+            raise RunnerError("organization runner group repository access is not verified")
+
+    def generate_org_jit(self, job_id: int, group_id: int, repo: str,
+                         profile: str) -> dict[str, Any]:
+        if profile not in POOL_LIMITS or not isinstance(group_id, int) or group_id < 1:
+            raise RunnerError("invalid organization JIT request")
+        return self.request("POST", f"/orgs/{ORG_NAME}/actions/runners/generate-jitconfig", {
+            "name": runner_name_for_trigger(job_id), "runner_group_id": group_id,
+            "labels": ["self-hosted", "linux", "x64", f"trusted-{profile}",
+                       organization_repository_label(repo)], "work_folder": "_work",
+        })
+
+    def get_org_runner(self, runner_id: int) -> dict[str, Any]:
+        runner = self.request("GET", f"/orgs/{ORG_NAME}/actions/runners/{runner_id}")
+        if not isinstance(runner, dict) or runner.get("id") != runner_id or \
+                runner.get("status") not in {"online", "offline"} or \
+                not isinstance(runner.get("busy"), bool):
+            raise RunnerError("GitHub returned an invalid organization runner response")
+        return runner
+
+    def delete_org_runner(self, runner_id: int) -> None:
+        try:
+            self.request("DELETE", f"/orgs/{ORG_NAME}/actions/runners/{runner_id}")
+        except NotFound:
+            return
 
     def find_assigned_job(self, repo: str, runner_id: int,
                           runner_name: str, *,
@@ -777,6 +1148,35 @@ class GitHubClient:
             raise RunnerError("GitHub returned an invalid job response")
         return job
 
+    def verify_org_assignment(self, state: dict[str, Any],
+                              assignment: dict[str, Any]) -> str:
+        repo = state["repo"]
+        job = self.get_job(repo, assignment["job_id"])
+        profile = state.get("profile")
+        if profile not in POOL_LIMITS or job.get("run_id") != assignment["run_id"] or \
+                job.get("runner_id") != state.get("runner_id") or \
+                job.get("runner_name") != state.get("runner_name") or \
+                job.get("runner_group_id") != state.get("runner_group_id") or \
+                job.get("runner_group_name") != ORG_GROUP_NAME or \
+                not organization_labels_match(job.get("labels"), repo, profile):
+            raise RunnerError("organization runner assignment policy mismatch")
+        # The JIT request was tied to a selected trigger job. The scheduler may
+        # give this ephemeral runner another trusted job, but neither workflow
+        # reference may escape the exact organization allowlist.
+        if state.get("workflow_ref") not in self._org_workflow_refs:
+            raise RunnerError("organization runner trigger workflow is not admitted")
+        run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
+        if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
+            raise RunnerError("organization runner assignment is not a trusted PR run")
+        actual_ref = self._verified_workflow_ref(run)
+        if actual_ref is None:
+            raise RunnerError("organization runner assignment workflow is not admitted")
+        if "actual_workflow_ref" in state and state["actual_workflow_ref"] != actual_ref:
+            raise RunnerError("organization runner assignment workflow changed")
+        if self._resolve_trusted_pull_request(run, repo) is None:
+            raise RunnerError("organization runner assignment is not a trusted PR")
+        return actual_ref
+
 
 def validate_repositories(cfg: dict[str, Any]) -> list[str]:
     repos = cfg.get("repositories", [])
@@ -803,8 +1203,9 @@ def read_token(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-    if not args or args[0] not in {"list", "launch", "destroy"} or len(args) > 2:
+def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
+           check: bool = True, profile: str | None = None) -> subprocess.CompletedProcess[bytes]:
+    if not args or args[0] not in {"list", "resources", "launch", "destroy"} or len(args) > 2:
         raise RunnerError("invalid host helper operation")
     operation = args[0]
     request_id = secrets.token_hex(16)
@@ -818,10 +1219,18 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     if operation == "launch":
         if stdin is None:
             raise RunnerError("launch requires JIT configuration")
-        request["vcpus"] = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
-        request["memory_mib"] = configured_resource(
-            cfg, "runner_memory_mib", RUNNER_MEMORY_MIB
-        )
+        if four_pool(cfg):
+            if profile is None:
+                raise RunnerError("four-pool launch requires a profile")
+            request["profile"] = profile
+            request["vcpus"], request["memory_mib"] = pool_resources(profile)
+        else:
+            if profile not in (None, "heavy"):
+                raise RunnerError("legacy launch accepts only heavy profile")
+            request["vcpus"] = configured_resource(cfg, "runner_vcpus", RUNNER_VCPUS)
+            request["memory_mib"] = configured_resource(
+                cfg, "runner_memory_mib", RUNNER_MEMORY_MIB
+            )
         stdin = validate_jit_config(stdin)
     elif stdin is not None:
         raise RunnerError("host helper payload is only valid for launch")
@@ -831,7 +1240,7 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     command = ["host-helper", operation, *args[1:]]
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
-            connection.settimeout(HELPER_QUERY_TIMEOUT_SECONDS if operation == "list"
+            connection.settimeout(HELPER_QUERY_TIMEOUT_SECONDS if operation in {"list", "resources"}
                                   else HELPER_MUTATION_TIMEOUT_SECONDS)
             connection.connect(str(cfg["helper_socket"]))
             if connection.send(header) != len(header):
@@ -852,9 +1261,11 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None, check: b
     if response.get("ok") is True and set(response) == {"v", "id", "ok", "result"}:
         result = response["result"]
         if (operation == "list" and not isinstance(result, dict)) or \
-                (operation != "list" and result is not None):
+                (operation == "resources" and not isinstance(result, list)) or \
+                (operation not in {"list", "resources"} and result is not None):
             raise RunnerError("host helper returned an invalid response")
-        stdout = json.dumps(result, sort_keys=True).encode("utf-8") if operation == "list" else b""
+        stdout = json.dumps(result, sort_keys=True).encode("utf-8") \
+            if operation in {"list", "resources"} else b""
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
     error = response.get("error")
     if response.get("ok") is not False or set(response) != {"v", "id", "ok", "error"} or error not in HELPER_ERROR_CODES:
@@ -875,7 +1286,8 @@ def with_lock(path: Path):
 def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
            metadata: dict[str, Any] | None = None,
            dispatch_history_key: str | None = None,
-           dispatch_history_claimed: bool = False) -> None:
+           dispatch_history_claimed: bool = False,
+           profile: str = "heavy") -> None:
     lease = validate_lease_id(lease)
     jit = read_jit_config(jit_source) if isinstance(jit_source, Path) else validate_jit_config(jit_source)
     store = StateStore(Path(cfg["state_dir"]))
@@ -905,7 +1317,8 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             for state_lease, item in state_by_lease.items()
         ):
             raise RunnerError("runner lifecycle state requires reconciliation")
-        concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+        concurrency = FOUR_POOL_CONCURRENCY if four_pool(cfg) else \
+            configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
             LOG.info("admission denied reason=runner_slot_exhausted active=%s", len(state_by_lease))
             raise CapacityUnavailable(
@@ -913,13 +1326,28 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             )
         if lease in state_by_lease or lease in inventory:
             raise RunnerError("lease already exists")
-        failures = capacity_errors(cfg, len(state_by_lease) + 1)
+        active = None
+        if four_pool(cfg):
+            active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
+            if not isinstance(active, list) or \
+                    {item.get("lease") for item in active if isinstance(item, dict)} != set(inventory) or \
+                    len(active) != len(inventory) or any(
+                        not isinstance(item, dict) or
+                        item.get("profile") != state_by_lease[item["lease"]].get("profile", "heavy") or
+                        item.get("bounded") is not True
+                        for item in active if isinstance(item, dict)):
+                raise RunnerError("runner resource inventory requires reconciliation")
+        failures = capacity_errors(cfg, len(state_by_lease) + 1,
+                                   profile=profile, active=active) if four_pool(cfg) \
+            else capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
             LOG.info("admission denied active=%s reasons=%s", len(state_by_lease),
                      "; ".join(failures))
             raise CapacityUnavailable("; ".join(failures))
         LOG.info("admission allowed active=%s runner_slot_available=true", len(state_by_lease))
         state = {"lease": lease, "phase": "provisioning", "launched_at": now}
+        if four_pool(cfg):
+            state["profile"] = profile
         if metadata:
             state.update(metadata)
         if dispatch_history_key is not None:
@@ -938,7 +1366,10 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         launch_started = time.monotonic()
         LOG.info("launch requested lease=%s", lease)
         try:
-            helper(cfg, "launch", lease, stdin=jit)
+            if four_pool(cfg):
+                helper(cfg, "launch", lease, stdin=jit, profile=profile)
+            else:
+                helper(cfg, "launch", lease, stdin=jit)
         except Exception:
             # The socket may close while the root-side mutation is still being
             # terminated. Keep the cleanup obligation durable so the next
@@ -954,16 +1385,32 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
                  round((time.monotonic() - launch_started) * 1000))
 
 
-def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any]) -> None:
+def runner_scope(state: dict[str, Any]) -> str:
+    scope = state.get("scope", "repository")
+    if scope == "repository":
+        return scope
+    if scope == "organization" and state.get("org") == ORG_NAME:
+        return scope
+    raise RunnerError("runner registration scope is invalid")
+
+
+def cleanup_github_runner(client: GitHubClient | None, state: dict[str, Any],
+                          org_client: GitHubClient | None = None) -> None:
     repo = state.get("repo")
     runner_id = state.get("runner_id")
     if repo is None and runner_id is None:
         return
-    if client is None:
-        raise RunnerError("GitHub client is required to clean a registered runner")
     if not isinstance(repo, str) or not isinstance(runner_id, int):
         raise RunnerError("lease contains invalid GitHub runner identity")
-    client.delete_runner(repo, runner_id)
+    scope = runner_scope(state)
+    if scope == "organization":
+        if org_client is None:
+            raise RunnerError("organization GitHub client is required for runner cleanup")
+        org_client.delete_org_runner(runner_id)
+    else:
+        if client is None:
+            raise RunnerError("GitHub client is required to clean a registered runner")
+        client.delete_runner(repo, runner_id)
 
 
 def has_dispatch_target(state: dict[str, Any]) -> bool:
@@ -972,8 +1419,14 @@ def has_dispatch_target(state: dict[str, Any]) -> bool:
 
 def record_verified_assignment(store: StateStore, client: GitHubClient | None,
                                state: dict[str, Any], *,
-                               include_completed: bool) -> dict[str, Any]:
-    if client is None or isinstance(state.get("actual_job_id"), int):
+                               include_completed: bool,
+                               org_client: GitHubClient | None = None) -> dict[str, Any]:
+    selected_client = org_client if runner_scope(state) == "organization" else client
+    if isinstance(state.get("actual_job_id"), int):
+        return state
+    if selected_client is None:
+        if runner_scope(state) == "organization":
+            raise RunnerError("organization assignment lookup is unavailable")
         return state
     repo = state.get("repo")
     runner_name = state.get("runner_name")
@@ -986,7 +1439,7 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
             or trigger_id is None:
         return state
     try:
-        assignment = client.find_assigned_job(
+        assignment = selected_client.find_assigned_job(
             repo,
             runner_id,
             runner_name,
@@ -999,6 +1452,8 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
             "trigger_job_id=%s error=%s",
             lease, repo, runner_id, trigger_id, exc,
         )
+        if runner_scope(state) == "organization":
+            raise
         return state
     if assignment is None:
         return state
@@ -1006,8 +1461,16 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
     actual_run_id = assignment.get("run_id")
     if not isinstance(actual_job_id, int) or not isinstance(actual_run_id, int):
         return state
+    scope = runner_scope(state)
+    actual_workflow_ref = None
+    if scope == "organization":
+        actual_workflow_ref = selected_client.verify_org_assignment(state, assignment)
+        if not isinstance(actual_workflow_ref, str):
+            raise RunnerError("organization assignment workflow was not verified")
     updated = dict(state)
     updated.update({"actual_job_id": actual_job_id, "actual_run_id": actual_run_id})
+    if scope == "organization":
+        updated["actual_workflow_ref"] = actual_workflow_ref
     store.write(lease, updated)
     LOG.info(
         "runner assignment verified lease=%s repo=%s runner_id=%s runner_name=%s "
@@ -1018,7 +1481,8 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
 
 
 def unassigned_lease_is_stale(client: GitHubClient | None,
-                              state: dict[str, Any], now: int) -> bool:
+                              state: dict[str, Any], now: int,
+                              org_client: GitHubClient | None = None) -> bool:
     """Identify an unassigned runner with positive offline evidence.
 
     Trigger identity is only an admission hint: a JIT runner can accept another
@@ -1027,7 +1491,13 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
     non-busy registration is safe to reap before the local domain stops or its
     hard TTL expires.
     """
-    if client is None or isinstance(state.get("actual_job_id"), int):
+    scope = runner_scope(state)
+    selected_client = org_client if scope == "organization" else client
+    if isinstance(state.get("actual_job_id"), int):
+        return False
+    if selected_client is None:
+        if scope == "organization":
+            raise RunnerError("organization trigger lookup is unavailable")
         return False
     repo = state.get("repo")
     runner_id = state.get("runner_id")
@@ -1037,13 +1507,15 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
             or not isinstance(lease, str) or trigger_id is None:
         return False
     try:
-        job = client.get_job(repo, trigger_id)
+        job = selected_client.get_job(repo, trigger_id)
     except (NotFound, RunnerError) as exc:
         LOG.warning(
             "runner trigger status could not be verified lease=%s repo=%s "
             "runner_id=%s trigger_job_id=%s error=%s",
             lease, repo, runner_id, trigger_id, exc,
         )
+        if runner_scope(state) == "organization":
+            raise
         return False
     job_status = job.get("status")
     if job_status not in {"queued", "in_progress", "completed"}:
@@ -1058,7 +1530,10 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
             or launched_at + REGISTRATION_GRACE_SECONDS >= now:
         return False
     try:
-        runner = client.get_runner(repo, runner_id)
+        if scope == "organization":
+            runner = selected_client.get_org_runner(runner_id)
+        else:
+            runner = selected_client.get_runner(repo, runner_id)
     except NotFound:
         LOG.info(
             "preserving unassigned lease with missing ephemeral registration "
@@ -1072,6 +1547,8 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
             "runner_id=%s trigger_job_id=%s error=%s",
             lease, repo, runner_id, trigger_id, exc,
         )
+        if runner_scope(state) == "organization":
+            raise
         return False
     if runner["status"] == "offline" and runner["busy"] is False:
         LOG.warning(
@@ -1084,14 +1561,16 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
 
 
 def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
-                           state: dict[str, Any], now: int) -> None:
+                           state: dict[str, Any], now: int,
+                           org_client: GitHubClient | None = None) -> None:
     repo = state.get("repo")
     job_id = trigger_job_id(state)
-    if client is None or not isinstance(repo, str) or not isinstance(job_id, int):
+    selected_client = org_client if runner_scope(state) == "organization" else client
+    if selected_client is None or not isinstance(repo, str) or not isinstance(job_id, int):
         store.defer_handoff_check(state, now)
         return
     try:
-        job = client.get_job(repo, job_id)
+        job = selected_client.get_job(repo, job_id)
     except NotFound:
         store.remove_cleanup(state)
         LOG.info(
@@ -1113,9 +1592,24 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
         return
     if status == "queued":
         key = f"{repo}:{job_id}"
-        delay = DispatchHistory(store.directory).retry_after_cooldown(
-            key, now, int(state.get("dispatch_attempts", 1))
-        )
+        verified_other_job = isinstance(state.get("actual_job_id"), int) and \
+            not isinstance(state["actual_job_id"], bool) and \
+            state["actual_job_id"] != job_id
+        trigger_run_id = state.get("trigger_run_id", state.get("run_id"))
+        unassigned_trigger = isinstance(trigger_run_id, int) and \
+            not isinstance(trigger_run_id, bool) and \
+            job.get("id") == job_id and job.get("run_id") == trigger_run_id and \
+            job.get("runner_id") is None and job.get("runner_name") in (None, "")
+        clean_handoff = state.get("local_cleanup_verified") is True and \
+            verified_other_job and unassigned_trigger and \
+            not any(item.get("lease") == state.get("lease") for item in store.leases())
+        history = DispatchHistory(store.directory)
+        if clean_handoff:
+            delay = history.retry_after_verified_handoff(
+                key, now, int(state.get("dispatch_attempts", 1)))
+        else:
+            delay = history.retry_after_cooldown(
+                key, now, int(state.get("dispatch_attempts", 1)))
         store.remove_cleanup(state)
         LOG.info(
             "dispatch handoff trigger queued for retry repo=%s trigger_job_id=%s retry_after=%s",
@@ -1129,15 +1623,17 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
     )
 
 
-def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None) -> None:
+def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None,
+            org_client: GitHubClient | None = None) -> None:
     lease = validate_lease_id(lease)
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         LOG.info("destroy requested lease=%s", lease)
         state = next((item for item in store.leases() if item.get("lease") == lease), {"lease": lease})
         helper(cfg, "destroy", lease)
+        state["local_cleanup_verified"] = True
         try:
-            cleanup_github_runner(client, state)
+            cleanup_github_runner(client, state, org_client)
         except RunnerError:
             store.defer_cleanup(lease, state, int(time.time()))
             raise
@@ -1153,14 +1649,15 @@ def destroy(cfg: dict[str, Any], lease: str, client: GitHubClient | None = None)
 
 
 def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: int,
-                          active_states: list[dict[str, Any]] | None = None) -> None:
+                          active_states: list[dict[str, Any]] | None = None,
+                          org_client: GitHubClient | None = None) -> None:
     active_keys = {store.cleanup_key(state) for state in (active_states or [])
                    if isinstance(state.get("repo"), str) and isinstance(state.get("runner_id"), int)}
     for state in store.cleanup_items():
         lease = validate_lease_id(str(state.get("lease", "")))
         if state.get("phase") == "handoff_pending":
             if int(state.get("next_retry_at", 0)) <= now:
-                retry_dispatch_handoff(store, client, state, now)
+                retry_dispatch_handoff(store, client, state, now, org_client)
             continue
         if state.get("phase") == "registration_pending" and store.cleanup_key(state) in active_keys:
             store.remove_cleanup(state)
@@ -1169,7 +1666,7 @@ def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: i
         if int(state.get("next_retry_at", 0)) > now:
             continue
         try:
-            cleanup_github_runner(client, state)
+            cleanup_github_runner(client, state, org_client)
         except RunnerError as exc:
             LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
             store.defer_cleanup(lease, state, now)
@@ -1182,7 +1679,8 @@ def retry_pending_cleanup(store: StateStore, client: GitHubClient | None, now: i
                 LOG.info("GitHub runner cleanup completed lease=%s", lease)
 
 
-def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
+def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
+              org_client: GitHubClient | None = None) -> None:
     store = StateStore(Path(cfg["state_dir"]))
     with with_lock(Path(cfg["lock_file"])):
         result = helper(cfg, "list", check=True)
@@ -1196,20 +1694,13 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
             lease for lease, domain_state in domains.items()
             if domain_state == "running" and states.get(lease, {}).get("phase") == "running"
         } - expired
-        for lease, state in list(states.items()):
-            states[lease] = record_verified_assignment(
-                store, client, state, include_completed=lease not in healthy
-            )
-        stale_unassigned = {
-            lease for lease in healthy
-            if unassigned_lease_is_stale(client, states[lease], now)
-        }
-        healthy -= stale_unassigned
-        for lease in sorted(known - healthy):
+
+        def cleanup_local(lease: str) -> None:
             LOG.warning("cleaning completed or missing domain lease=%s", lease)
             helper(cfg, "destroy", lease)
+            states[lease]["local_cleanup_verified"] = True
             try:
-                cleanup_github_runner(client, states[lease])
+                cleanup_github_runner(client, states[lease], org_client)
             except RunnerError as exc:
                 LOG.warning("GitHub runner cleanup deferred lease=%s error=%s", lease, exc)
                 store.defer_cleanup(lease, states[lease], now)
@@ -1221,16 +1712,91 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None) -> None:
                         and isinstance(states[lease].get("repo"), str) \
                         and isinstance(states[lease].get("runner_id"), int):
                     store.remove_cleanup(states[lease])
+
+        # Local TTL and stopped-domain cleanup must not wait for GitHub. Preserve
+        # any remote registration as a durable cleanup obligation on API failure.
+        assignment_error: RunnerError | None = None
+        for lease, state in list(states.items()):
+            if lease not in healthy and runner_scope(state) == "organization":
+                continue
+            try:
+                states[lease] = record_verified_assignment(
+                    store, client, state, include_completed=lease not in healthy,
+                    org_client=org_client,
+                )
+            except RunnerError as exc:
+                if lease in healthy:
+                    assignment_error = assignment_error or exc
+                else:
+                    LOG.warning("terminal runner assignment unverified lease=%s error=%s",
+                                lease, exc)
+        for lease in sorted(known - healthy):
+            cleanup_local(lease)
         for lease in sorted(set(domains) - known):
             LOG.warning("destroying orphan domain lease=%s", lease)
             helper(cfg, "destroy", lease)
-        retry_pending_cleanup(store, client, now, store.leases())
+        if assignment_error is not None:
+            raise assignment_error
+        stale_unassigned = {
+            lease for lease in healthy
+            if unassigned_lease_is_stale(client, states[lease], now, org_client)
+        }
+        for lease in sorted(stale_unassigned):
+            cleanup_local(lease)
+        retry_pending_cleanup(store, client, now, store.leases(), org_client)
 
 
-def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
+def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
+                            profile: str) -> list[str]:
+    """Read current four-pool capacity without creating a GitHub runner."""
+    states = store.leases()
+    state_by_lease: dict[str, dict[str, Any]] = {}
+    for state in states:
+        lease = state.get("lease")
+        if not isinstance(lease, str) or lease in state_by_lease:
+            raise RunnerError("runner lifecycle state requires reconciliation")
+        state_by_lease[validate_lease_id(lease)] = state
+    inventory = validate_inventory(json.loads(
+        helper(cfg, "list").stdout.decode("utf-8")))
+    if set(state_by_lease) != set(inventory) or any(
+            state.get("phase") != "running" or inventory[lease] != "running"
+            for lease, state in state_by_lease.items()):
+        raise RunnerError("runner lifecycle state requires reconciliation")
+    active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
+    if not isinstance(active, list) or len(active) != len(inventory) or \
+            any(not isinstance(item, dict) or
+                not isinstance(item.get("lease"), str) or
+                item["lease"] not in state_by_lease or
+                item.get("profile") != state_by_lease[item["lease"]].get("profile", "heavy") or
+                item.get("bounded") is not True
+                for item in active) or \
+            {item["lease"] for item in active} != set(inventory):
+        raise RunnerError("runner resource inventory requires reconciliation")
+    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active)
+    if any(error.startswith("active runner") for error in errors):
+        raise RunnerError("runner resource inventory requires reconciliation")
+    return errors
+
+
+def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
+                  profile: str = "heavy", scope: str = "repository") -> bool:
+    if scope == "organization":
+        if not org_routing_enabled(cfg) or profile not in POOL_LIMITS:
+            raise RunnerError("organization dispatch is disabled or invalid")
+        validate_org_config(cfg)
+    elif scope != "repository" or profile != "heavy":
+        raise RunnerError("repository dispatch accepts only the heavy profile")
     store = StateStore(Path(cfg["state_dir"]))
-    concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
-    available_slots = concurrency - len(store.leases())
+    states = store.leases()
+    if four_pool(cfg):
+        if any(state.get("profile", "heavy") not in POOL_LIMITS for state in states):
+            raise RunnerError("runner lifecycle state has an unknown profile")
+        active_profile = sum(state.get("profile", "heavy") == profile for state in states)
+        available_slots = min(FOUR_POOL_CONCURRENCY - len(states),
+                              POOL_LIMITS[profile] - active_profile)
+    else:
+        concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+        available_slots = concurrency - len(states)
     if available_slots <= 0:
         return False
     now = int(time.time())
@@ -1238,23 +1804,41 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
     lifecycle_lock = Path(
         cfg.get("lock_file", Path(cfg["state_dir"]) / ".dispatch.lock")
     )
-    label = str(cfg.get("runner_label", "trusted-heavy"))
+    label = str(cfg.get("runner_label", "trusted-heavy")) if profile == "heavy" else \
+        str(cfg.get("medium_runner_label", "trusted-medium"))
     launched = 0
-    for repo in validate_repositories(cfg):
+    repos = list(cfg["org_repository_ids"]) if scope == "organization" else \
+        validate_repositories(cfg)
+    for repo in repos:
         if launched >= available_slots:
             break
         for job in client.candidate_jobs(repo, label):
             if launched >= available_slots:
                 break
+            if scope == "organization" and \
+                    job.get("workflow_ref") not in configured_org_workflow_refs(cfg):
+                raise RunnerError("organization candidate workflow reference is invalid")
             key = f"{repo}:{job['job_id']}"
             with with_lock(lifecycle_lock):
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
                     continue
+                if four_pool(cfg):
+                    failures = pre_jit_capacity_errors(cfg, store, profile)
+                    if failures:
+                        LOG.info("pre-JIT capacity unavailable profile=%s reasons=%s",
+                                 profile, "; ".join(failures))
+                        return launched > 0
                 history.quarantine(key, now)
             try:
                 response = client.generate_jit(
-                    repo, job["job_id"], int(cfg.get("runner_group_id", 1)), label
+                    repo, job["job_id"],
+                    cfg["org_runner_group_id"] if scope == "organization" else
+                    int(cfg.get("runner_group_id", 1)), label
                 )
+            except OrgPreflightRejected:
+                with with_lock(lifecycle_lock):
+                    history.remove(key, now)
+                raise
             except RateLimited:
                 with with_lock(lifecycle_lock):
                     history.remove(key, now)
@@ -1282,6 +1866,10 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                 "trigger_run_id": job["run_id"],
                 "trigger_job_id": job["job_id"],
             }
+            if scope == "organization":
+                registration.update({"scope": scope, "org": ORG_NAME,
+                                     "runner_group_id": cfg["org_runner_group_id"],
+                                     "workflow_ref": job["workflow_ref"]})
             registration["runner_name"] = runner_name
             if not isinstance(encoded, str) or not isinstance(runner_id, int) \
                     or runner_name_conflicts:
@@ -1297,13 +1885,15 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                         store.remove_cleanup(registration)
                 raise RunnerError("GitHub returned an invalid JIT response")
             try:
-                launch(cfg, lease, encoded.encode("ascii"), metadata={
-                    "repo": repo,
-                    "runner_id": runner_id,
-                    "runner_name": runner_name,
-                    "trigger_run_id": job["run_id"],
-                    "trigger_job_id": job["job_id"],
-                }, dispatch_history_key=key, dispatch_history_claimed=True)
+                launch_options: dict[str, Any] = {
+                    "metadata": {field: value for field, value in registration.items()
+                                 if field != "lease"},
+                    "dispatch_history_key": key,
+                    "dispatch_history_claimed": True,
+                }
+                if scope == "organization":
+                    launch_options["profile"] = profile
+                launch(cfg, lease, encoded.encode("ascii"), **launch_options)
                 LOG.info(
                     "runner registered lease=%s repo=%s runner_id=%s trigger_run_id=%s "
                     "trigger_job_id=%s assignment=unverified",
@@ -1335,6 +1925,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
                             "runner_name": runner_name,
                             "trigger_run_id": job["run_id"],
                             "trigger_job_id": job["job_id"],
+                            **({"scope": scope, "org": ORG_NAME,
+                                "runner_group_id": cfg["org_runner_group_id"]}
+                               if scope == "organization" else {}),
                         }, int(time.time()), preserve_lease=True)
                     except OSError as state_error:
                         LOG.critical(
@@ -1361,10 +1954,108 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient) -> bool:
     return launched > 0
 
 
+class WorkflowListSnapshot:
+    """Share only Actions run/job list responses within one dispatch cycle."""
+
+    def __init__(self) -> None:
+        self._runs: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self._jobs: dict[tuple[str, int], tuple[Any, ...]] = {}
+
+    def workflow_runs(self, client: GitHubClient, repo: str,
+                      status: str) -> tuple[Any, ...]:
+        key = (repo, status)
+        if key not in self._runs:
+            runs = client.request("GET", f"{client.repo_path(repo)}/actions/runs?status={status}&per_page=100")
+            if not isinstance(runs, dict) or not isinstance(runs.get("workflow_runs"), list):
+                raise RunnerError("GitHub returned invalid workflow runs")
+            self._runs[key] = tuple(runs["workflow_runs"])
+        return self._runs[key]
+
+    def workflow_jobs(self, client: GitHubClient, repo: str,
+                      run_id: int) -> tuple[Any, ...]:
+        key = (repo, run_id)
+        if key not in self._jobs:
+            jobs = client.request("GET", f"{client.repo_path(repo)}/actions/runs/"
+                                  f"{run_id}/jobs?filter=latest&per_page=100")
+            if not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list):
+                raise RunnerError("GitHub returned invalid workflow jobs")
+            self._jobs[key] = tuple(jobs["jobs"])
+        return self._jobs[key]
+
+
+class OrganizationDispatchClient:
+    """Use repository metadata for candidates and separate organization JIT rights."""
+
+    def __init__(self, cfg: dict[str, Any], repo_client: GitHubClient,
+                 org_client: GitHubClient, profile: str,
+                 snapshot: WorkflowListSnapshot | None = None) -> None:
+        self.cfg = cfg
+        self.repo_client = repo_client
+        self.org_client = org_client
+        self.profile = profile
+        self.snapshot = snapshot
+
+    def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
+        if repo not in self.cfg["org_repository_ids"] or label != f"trusted-{self.profile}":
+            raise RunnerError("organization dispatch candidate policy is invalid")
+        if self.snapshot is None:
+            return self.org_client.candidate_trusted_jobs(repo, self.profile)
+        return self.org_client.candidate_trusted_jobs(repo, self.profile,
+                                                      snapshot=self.snapshot)
+
+    def generate_jit(self, repo: str, job_id: int, group_id: int,
+                     label: str) -> dict[str, Any]:
+        if repo not in self.cfg["org_repository_ids"] or \
+                group_id != self.cfg["org_runner_group_id"] or \
+                label != f"trusted-{self.profile}":
+            raise OrgPreflightRejected("organization dispatch JIT policy is invalid")
+        try:
+            self.org_client.verify_org_group(self.cfg)
+        except RateLimited:
+            raise
+        except RunnerError as exc:
+            raise OrgPreflightRejected("organization group preflight failed") from exc
+        return self.org_client.generate_org_jit(job_id, group_id, repo, self.profile)
+
+    def delete_runner(self, repo: str, runner_id: int) -> None:
+        if repo not in self.cfg["org_repository_ids"]:
+            raise RunnerError("organization cleanup repository is invalid")
+        self.org_client.delete_org_runner(runner_id)
+
+
+def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,
+                               org_client: GitHubClient) -> bool:
+    validate_org_config(cfg)
+    org_client.verify_org_group(cfg)
+    launched = False
+    snapshot = WorkflowListSnapshot()
+    for profile in ("heavy", "medium"):
+        adapter = OrganizationDispatchClient(cfg, repo_client, org_client,
+                                             profile, snapshot)
+        launched = dispatch_once(cfg, adapter, profile=profile,
+                                 scope="organization") or launched
+    return launched
+
+
 def configure_logging(path: Path) -> None:
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.FileHandler(path, encoding="utf-8"), logging.StreamHandler()])
+
+
+def organization_client(cfg: dict[str, Any]) -> GitHubClient | None:
+    path = cfg.get("org_github_token_file")
+    if path != ORG_CREDENTIAL_PATH:
+        if org_routing_enabled(cfg):
+            raise RunnerError("organization GitHub credential path is invalid")
+        return None
+    credential = Path(path)
+    if not org_routing_enabled(cfg) and not credential.is_file():
+        return None
+    return GitHubClient(
+        read_token(credential), str(cfg.get("github_api_url", "https://api.github.com")),
+        org_workflow_refs=configured_org_workflow_refs(cfg) if org_routing_enabled(cfg) else (),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1387,18 +2078,23 @@ def main(argv: list[str] | None = None) -> int:
             launch(cfg, args.lease, args.jit_config_file)
         elif args.command == "destroy":
             client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
-            destroy(cfg, args.lease, client)
+            destroy(cfg, args.lease, client, organization_client(cfg))
         elif args.command == "reconcile":
             client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
-            reconcile(cfg, client)
+            reconcile(cfg, client, organization_client(cfg))
         else:
             if args.interval < 5:
                 raise RunnerError("daemon interval must be at least 5 seconds")
             client = GitHubClient(read_token(Path(cfg["github_token_file"])), str(cfg.get("github_api_url", "https://api.github.com")))
+            org_client = organization_client(cfg)
             while True:
                 try:
-                    reconcile(cfg, client)
+                    reconcile(cfg, client, org_client)
                     dispatch_once(cfg, client)
+                    if org_routing_enabled(cfg):
+                        if org_client is None:
+                            raise RunnerError("organization GitHub client is unavailable")
+                        dispatch_organization_once(cfg, client, org_client)
                 except RateLimited as exc:
                     LOG.warning("GitHub rate limited; retrying later")
                     time.sleep(exc.retry_after)

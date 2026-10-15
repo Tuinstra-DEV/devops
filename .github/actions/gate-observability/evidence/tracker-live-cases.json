@@ -1,0 +1,56 @@
+{
+  "environment": "verification",
+  "cases": [
+    {
+      "heal_case_id": "4d687bfb3b6c46778cef06e1203bbfc9",
+      "external_issue_id": "153492670",
+      "last_event_id": "3d22ee91a23f4384a22b5ce384ac6df1",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
+      "artifact_digest": "sha256:0631deb67cb484db27cff241120498785fd6c1db79e7394d57ceccb1f405f7d0",
+      "source_path": "code/web/app/utils/sentry-verification.ts",
+      "source_line": "24"
+    },
+    {
+      "heal_case_id": "9192771e7782460bb14f4b2a1e3f2d23",
+      "external_issue_id": "153795126",
+      "last_event_id": "6c1f9ec5dbe34f5db40c16296972a470",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "api",
+      "environment": "verification",
+      "source_commit": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
+      "source_line": "49"
+    },
+    {
+      "heal_case_id": "c8405acb559f47d68879f31b4eb71041",
+      "external_issue_id": "153795169",
+      "last_event_id": "f0635ab6a0b14612b1bf8e4201393a53",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "worker",
+      "environment": "verification",
+      "source_commit": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+      "source_line": "29"
+    }
+  ]
+}

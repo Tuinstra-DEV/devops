@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import fcntl
 import grp
 import json
@@ -15,11 +16,14 @@ import pwd
 import re
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 from typing import Any
+import xml.etree.ElementTree as ET
 
 LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PREFIX = "sanctuary-ci-"
@@ -29,13 +33,22 @@ BASE_IMAGE = IMAGE_ROOT / "ubuntu-24.04-runner.qcow2"
 IMAGE_RE = re.compile(r"^ubuntu-24\.04-runner-[a-f0-9]{64}\.qcow2$")
 NETWORK = "sanctuary-ci"
 LIBVIRT_URI = "qemu:///system"
-MAX_CONCURRENCY = 1
+MAX_CONCURRENCY = 4
+LEGACY_CONCURRENCY = 1
 VCPUS = 4
 MEMORY_MIB = 6144
 DISK_GIB = "120G"
+PROFILE_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
+PROFILE_LIMITS = {"heavy": 2, "medium": 2}
+PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
+EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
+                        "medium": frozenset({4})}
+MIN_FREE_DISK_GIB = 60
+DISK_MARGIN_GIB = 2
 MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
 HELPER_PATH = "/usr/local/libexec/ci-runner-host-helper"
+POLICY_PATH = Path("/etc/ci-runner/manager.toml")
 MANAGER_USER = "ci-runner-manager"
 QEMU_USER = "libvirt-qemu"
 QEMU_GROUP = "kvm"
@@ -46,10 +59,15 @@ MAX_RESPONSE_BYTES = 65536
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 ERROR_CODES = frozenset({"invalid_request", "unauthorized", "operation_failed", "busy"})
 DIAGNOSTIC_COMMANDS = frozenset({
-    "cloud-localds", "qemu-img", "systemctl", "systemd-run", "virsh", "virt-install",
+    "blockdev", "cloud-localds", "fallocate", "findmnt", "mkfs.ext4",
+    "qemu-img", "losetup", "nsenter", "systemctl", "systemd-mount",
+    "systemd-run", "udevadm", "virsh", "virt-install",
 })
 UNKNOWN_REQUEST_ID = "0" * 32
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
+LOOP_GET_STATUS64 = 0x4C05
+LOOP_INFO64_SIZE = 232  # Linux uapi/linux/loop.h: five u64, four u32, 176 bytes.
+MAX_LOOP_DEVICES = 256
 
 
 class ProtocolError(ValueError):
@@ -75,10 +93,11 @@ def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], *, check: bool = True,
+        input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=90)
+                              stderr=subprocess.PIPE, timeout=90, input=input_text)
     except subprocess.CalledProcessError as exc:
         raise HostCommandError(command[0], exc.returncode) from exc
     except subprocess.TimeoutExpired as exc:
@@ -132,13 +151,353 @@ def validate_jit_payload(encoded_jit: bytes) -> bytes:
     return encoded_jit
 
 
-def validate_resources(vcpus: Any, memory_mib: Any) -> tuple[int, int]:
-    if not isinstance(vcpus, int) or isinstance(vcpus, bool) or vcpus != VCPUS:
-        raise ProtocolError(f"vcpus must be exactly {VCPUS}")
+def validate_resources(vcpus: Any, memory_mib: Any,
+                       profile: str | None = None) -> tuple[int, int]:
+    if profile is None:
+        expected = (VCPUS, MEMORY_MIB)
+    else:
+        if not isinstance(profile, str):
+            raise ProtocolError("invalid runner profile")
+        expected = PROFILE_RESOURCES.get(profile)
+        if expected is None:
+            raise ProtocolError("invalid runner profile")
+    if not isinstance(vcpus, int) or isinstance(vcpus, bool) or vcpus != expected[0]:
+        raise ProtocolError(f"vcpus must be exactly {expected[0]}")
     if not isinstance(memory_mib, int) or isinstance(memory_mib, bool) \
-            or memory_mib != MEMORY_MIB:
-        raise ProtocolError(f"memory_mib must be exactly {MEMORY_MIB}")
+            or memory_mib != expected[1]:
+        raise ProtocolError(f"memory_mib must be exactly {expected[1]}")
     return vcpus, memory_mib
+
+
+def policy_mode_from_mapping(cfg: dict[str, Any]) -> str:
+    common = {"runner_vcpus": 4, "runner_memory_mib": 6144,
+              "runner_label": "trusted-heavy", "host_memory_reserve_mib": 4096,
+              "min_free_disk_gib": 60}
+    mode = cfg.get("pool_mode", "legacy")
+    expected = dict(common)
+    if mode == "legacy":
+        expected["max_concurrency"] = 1
+        forbidden = {"medium_runner_label", "medium_runner_vcpus",
+                     "medium_runner_memory_mib", "storage_mode", "max_heavy",
+                     "max_medium", "heavy_disk_reservation_gib",
+                     "medium_disk_reservation_gib"}
+        if forbidden.intersection(cfg):
+            raise ProtocolError("legacy policy has four-pool keys")
+    elif mode == "four":
+        expected.update({
+            "max_concurrency": 4, "medium_runner_label": "trusted-medium",
+            "medium_runner_vcpus": 2, "medium_runner_memory_mib": 3072,
+            "max_heavy": 2, "max_medium": 2,
+            "heavy_disk_reservation_gib": 24,
+            "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop",
+        })
+    else:
+        raise ProtocolError("invalid installed runner pool mode")
+    for key, value in expected.items():
+        if key not in cfg or type(cfg[key]) is not type(value) or cfg[key] != value:
+            raise ProtocolError("installed runner pool policy is not approved")
+    return mode
+
+
+def active_pool_mode() -> str:
+    for path in (POLICY_PATH.parent, POLICY_PATH):
+        metadata = path.lstat()
+        if metadata.st_uid != 0 or metadata.st_mode & 0o022 or \
+                (path == POLICY_PATH and not stat.S_ISREG(metadata.st_mode)) or \
+                (path != POLICY_PATH and not stat.S_ISDIR(metadata.st_mode)):
+            raise ProtocolError("installed runner policy ownership is invalid")
+    with POLICY_PATH.open("rb") as handle:
+        return policy_mode_from_mapping(tomllib.load(handle))
+
+
+def enforce_launch_mode(profile: str | None) -> None:
+    mode = active_pool_mode()
+    if mode == "four" and (not isinstance(profile, str)
+                           or profile not in PROFILE_RESOURCES):
+        raise ProtocolError("four-pool launch requires a bounded profile")
+    if mode == "legacy" and profile is not None:
+        raise ProtocolError("legacy launch rejects bounded profiles")
+
+
+def profile_has_slot(counts: dict[str, int], profile: str) -> bool:
+    if profile not in PROFILE_LIMITS or set(counts) - set(PROFILE_LIMITS):
+        return False
+    if any(not isinstance(count, int) or count < 0 for count in counts.values()):
+        return False
+    projected = dict(counts)
+    projected[profile] = projected.get(profile, 0) + 1
+    return all(projected.get(kind, 0) <= maximum
+               for kind, maximum in PROFILE_LIMITS.items()) and sum(
+                   projected.get(kind, 0) * PROFILE_RESOURCES[kind][0]
+                   for kind in PROFILE_LIMITS
+               ) <= 12 and sum(projected.values()) <= MAX_CONCURRENCY
+
+
+def reservation_fits(free_bytes: int, profile: str) -> bool:
+    if profile not in PROFILE_DISK_GIB:
+        return False
+    return free_bytes - PROFILE_DISK_GIB[profile] * 1024**3 >= \
+        (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3
+
+
+def bounded_paths(lease: str) -> tuple[Path, Path, Path]:
+    directory = lease_dir(lease)
+    return directory, directory / "bounded.img", directory / "work"
+
+
+def validated_bounded_profile(lease: str, *, allow_empty: bool = False) -> \
+        tuple[str, Path, Path, os.stat_result]:
+    directory = lease_dir(lease)
+    marker = directory / "profile"
+    if marker.is_symlink():
+        raise RuntimeError("runner profile marker is a link")
+    if not marker.is_file():
+        raise RuntimeError("runner profile marker is invalid")
+    profile = marker.read_text(encoding="ascii").strip()
+    if profile not in PROFILE_RESOURCES:
+        raise RuntimeError("runner profile marker is invalid")
+    _, backing, mountpoint = bounded_paths(lease)
+    if backing.is_symlink() or not backing.is_file():
+        raise RuntimeError("runner bounded backing file is invalid")
+    metadata = backing.stat()
+    approved_sizes = {size * 1024**3 for size in EXISTING_BACKING_GIB[profile]}
+    if metadata.st_size not in approved_sizes and not (allow_empty and metadata.st_size == 0):
+        raise RuntimeError("runner bounded backing file has an unapproved size")
+    return profile, backing, mountpoint, metadata
+
+
+def recorded_profile(lease: str) -> str:
+    directory = lease_dir(lease)
+    marker = directory / "profile"
+    if marker.is_symlink():
+        raise RuntimeError("runner profile marker is a link")
+    if marker.is_file():
+        profile, backing, mountpoint, metadata = validated_bounded_profile(lease)
+        if metadata.st_blocks * 512 < metadata.st_size:
+            raise RuntimeError("runner bounded backing file is not fully allocated")
+        if not verify_bounded_mount(backing, mountpoint):
+            raise RuntimeError("runner bounded mount is not active")
+        return profile
+    if (directory / "root.qcow2").is_file() and not (directory / "bounded.img").exists():
+        return "heavy"
+    raise RuntimeError("runner profile is not known")
+
+
+def visible_mount_source(result: subprocess.CompletedProcess[str], mountpoint: Path,
+                         error: str) -> str | None:
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        return None
+    if result.returncode != 0:
+        raise RuntimeError(error)
+    try:
+        rows = json.loads(result.stdout)["filesystems"]
+        if len(rows) != 1:
+            raise ValueError("expected one visible mount")
+        row = rows[0]
+        source = row["source"]
+        if row["target"] != str(mountpoint) or not isinstance(source, str) or \
+                not re.fullmatch(r"/dev/loop[0-9]+", source):
+            raise ValueError("unexpected mount target or source")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise RuntimeError(error) from exc
+    return source
+
+
+def host_mount_source(mountpoint: Path) -> str | None:
+    result = run([
+        "nsenter", "--mount=/proc/1/ns/mnt", "--", "findmnt", "--kernel",
+        "--uniq", "--json", "--output", "SOURCE,TARGET", "--mountpoint",
+        str(mountpoint),
+    ], check=False)
+    return visible_mount_source(result, mountpoint,
+                                "runner mount state cannot be verified")
+
+
+def local_mount_source(mountpoint: Path) -> str | None:
+    result = run(["findmnt", "--kernel", "--uniq", "--json", "--output",
+                  "SOURCE,TARGET", "--mountpoint", str(mountpoint)], check=False)
+    return visible_mount_source(result, mountpoint,
+                                "local runner mount state cannot be verified")
+
+
+def kernel_encode_dev(device: int) -> int:
+    """Match Linux huge_encode_dev(stat.dev), not libc's st_dev layout."""
+    major, minor = os.major(device), os.minor(device)
+    if major >= 1 << 12 or minor >= 1 << 20:
+        raise RuntimeError("runner backing device number is unsupported")
+    return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12)
+
+
+def backing_identity(backing: Path) -> tuple[int, int]:
+    if backing.is_symlink():
+        raise RuntimeError("runner backing file is a link")
+    metadata = backing.stat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("runner backing file is invalid")
+    return kernel_encode_dev(metadata.st_dev), metadata.st_ino
+
+
+def loop_status(loop: str) -> tuple[int, int, int, int, int]:
+    """Read kernel file identity; loop backing path changes with mount namespaces."""
+    match = re.fullmatch(r"/dev/loop([0-9]+)", loop)
+    if not match:
+        raise RuntimeError("runner loop device is invalid")
+    fd = os.open(loop, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        device = os.fstat(fd)
+        if not stat.S_ISBLK(device.st_mode) or os.major(device.st_rdev) != 7 or \
+                os.minor(device.st_rdev) != int(match.group(1)):
+            raise RuntimeError("runner loop device identity is invalid")
+        buffer = bytearray(LOOP_INFO64_SIZE)
+        fcntl.ioctl(fd, LOOP_GET_STATUS64, buffer, True)
+        backing_device, inode, _rdevice, offset, limit, number, *_ = \
+            struct.unpack_from("=QQQQQIIII", buffer)
+        return backing_device, inode, offset, limit, number
+    finally:
+        os.close(fd)
+
+
+def associated_loop(backing: Path) -> str | None:
+    expected = backing_identity(backing)
+    try:
+        devices = os.listdir("/sys/class/block")
+    except OSError as exc:
+        raise RuntimeError("runner loop association cannot be verified") from exc
+    candidates = [item for item in devices if re.fullmatch(r"loop[0-9]+", item)]
+    if len(candidates) > MAX_LOOP_DEVICES:
+        raise RuntimeError("runner loop association cannot be verified")
+    matches = []
+    for item in sorted(candidates, key=lambda value: int(value[4:])):
+        loop = "/dev/" + item
+        try:
+            identity = loop_status(loop)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                continue  # An existing but unbound loop device.
+            raise RuntimeError("runner loop association cannot be verified") from exc
+        if identity[:2] == expected:
+            if identity[2:] != (0, 0, int(item[4:])):
+                raise RuntimeError("runner loop association is invalid")
+            matches.append(loop)
+    if len(matches) > 1:
+        raise RuntimeError("multiple loop devices match runner backing file")
+    return matches[0] if matches else None
+
+
+def loop_discard_limit(loop: str) -> int:
+    if not re.fullmatch(r"/dev/loop[0-9]+", loop):
+        raise RuntimeError("runner loop device is invalid")
+    path = f"/sys/class/block/{Path(loop).name}/queue/discard_max_bytes"
+    value = run(["nsenter", "--mount=/proc/1/ns/mnt", "--", "cat", path]).stdout.strip()
+    if not value.isdecimal():
+        raise RuntimeError("runner loop discard limit cannot be verified")
+    return int(value)
+
+
+def disable_loop_discard(loop: str) -> None:
+    if not re.fullmatch(r"/dev/loop[0-9]+", loop):
+        raise RuntimeError("runner loop device is invalid")
+    path = f"/sys/class/block/{Path(loop).name}/queue/discard_max_bytes"
+    run(["nsenter", "--mount=/proc/1/ns/mnt", "--", "tee", path], input_text="0\n")
+    if loop_discard_limit(loop) != 0:
+        raise RuntimeError("runner loop discard could not be disabled")
+
+
+def verify_loop_binding(backing: Path, loop: str, *, require_discard: bool = True) -> None:
+    match = re.fullmatch(r"/dev/loop([0-9]+)", loop)
+    if not match:
+        raise RuntimeError("runner mount is not loop-backed")
+    expected = backing_identity(backing)
+    try:
+        identity = loop_status(loop)
+    except OSError as exc:
+        raise RuntimeError("runner loop identity cannot be verified") from exc
+    if identity != (*expected, 0, 0, int(match.group(1))) or \
+            associated_loop(backing) != loop:
+        raise RuntimeError("runner loop backing file does not match lease")
+    size = run(["blockdev", "--getsize64", loop]).stdout.strip()
+    if not size.isdecimal() or int(size) != backing.stat().st_size:
+        raise RuntimeError("runner loop size does not match lease")
+    if require_discard and loop_discard_limit(loop) != 0:
+        raise RuntimeError("runner loop discard is enabled")
+
+
+def verify_bounded_mount(backing: Path, mountpoint: Path) -> bool:
+    source = host_mount_source(mountpoint)
+    local = local_mount_source(mountpoint)
+    if source is None:
+        if local is not None:
+            raise RuntimeError("runner mount namespaces disagree")
+        return False
+    if local != source:
+        raise RuntimeError("runner mount namespaces disagree")
+    verify_loop_binding(backing, source)
+    return True
+
+
+def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
+    directory, backing, mountpoint = bounded_paths(lease)
+    if not reservation_fits(shutil.disk_usage(OVERLAY_ROOT).free, profile):
+        raise RuntimeError("bounded runner reservation would breach NVMe floor")
+    bytes_reserved = PROFILE_DISK_GIB[profile] * 1024**3
+    marker = directory / "profile"
+    with marker.open("x", encoding="ascii") as handle:
+        handle.write(profile + "\n")
+    marker.chmod(0o600)
+    fd = os.open(backing, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
+    run(["fallocate", "--length", str(bytes_reserved), str(backing)])
+    stat = backing.stat()
+    if stat.st_size != bytes_reserved or stat.st_blocks * 512 < bytes_reserved:
+        raise RuntimeError("runner backing file is not fully allocated")
+    if shutil.disk_usage(OVERLAY_ROOT).free < \
+            (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3:
+        raise RuntimeError("NVMe floor was breached during reservation")
+    run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", "nodiscard", str(backing)])
+    if backing.stat().st_blocks * 512 < bytes_reserved:
+        raise RuntimeError("filesystem creation released backing reservation")
+    if associated_loop(backing) is not None:
+        raise RuntimeError("runner backing file already has a loop device")
+    loop = run(["losetup", "--find", "--show", "--nooverlap", str(backing)]).stdout.strip()
+    verify_loop_binding(backing, loop, require_discard=False)
+    disable_loop_discard(loop)
+    verify_loop_binding(backing, loop)
+    mountpoint.mkdir(mode=0o700)
+    run(["systemd-mount", "--collect", "--type=ext4",
+         "--options=nodiscard,nodev,nosuid,noexec", loop, str(mountpoint)])
+    if not verify_bounded_mount(backing, mountpoint):
+        raise RuntimeError("runner mount did not become visible in both namespaces")
+    if backing.stat().st_blocks * 512 < bytes_reserved:
+        raise RuntimeError("runner backing reservation changed before guest creation")
+    set_qemu_access(mountpoint, 0, qemu_gid, 0o710)
+    return mountpoint
+
+
+def remove_bounded_storage(lease: str) -> None:
+    directory, backing, mountpoint = bounded_paths(lease)
+    _, _, _, metadata = validated_bounded_profile(lease, allow_empty=True)
+    if metadata.st_size == 0:
+        if host_mount_source(mountpoint) is not None or \
+                local_mount_source(mountpoint) is not None or associated_loop(backing) is not None:
+            raise RuntimeError("empty runner backing file is still attached")
+        shutil.rmtree(directory)
+        return
+    source = host_mount_source(mountpoint)
+    loop = associated_loop(backing)
+    if source is not None:
+        if source != loop:
+            raise RuntimeError("runner mount does not match lease loop")
+        verify_loop_binding(backing, source, require_discard=False)
+        run(["systemd-mount", "--umount", str(mountpoint)])
+    if host_mount_source(mountpoint) is not None or local_mount_source(mountpoint) is not None:
+        raise RuntimeError("runner mount remains active")
+    if loop is not None:
+        verify_loop_binding(backing, loop, require_discard=False)
+        run(["losetup", "--detach", loop])
+        run(["udevadm", "settle", "--timeout=10"])
+        if associated_loop(backing) is not None:
+            raise RuntimeError("runner loop device release is not verified")
+    shutil.rmtree(directory)
 
 
 def cloud_init_user_data(encoded_jit: bytes) -> str:
@@ -196,37 +555,53 @@ ethernets:
     match:
       name: "en*"
     dhcp4: true
+    dhcp-identifier: mac
     dhcp6: false
 """
 
 
 def launch(lease: str, encoded_jit: bytes | None = None, *,
-           vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB) -> None:
+           vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB,
+           profile: str | None = None) -> None:
     if os.geteuid() != 0:
         raise PermissionError("helper must run as root")
+    enforce_launch_mode(profile)
     validate_lease(lease)
     if encoded_jit is None:
         encoded_jit = sys.stdin.buffer.read(MAX_JIT_BYTES + 1).strip()
     encoded_jit = validate_jit_payload(encoded_jit)
-    vcpus, memory_mib = validate_resources(vcpus, memory_mib)
+    vcpus, memory_mib = validate_resources(vcpus, memory_mib, profile)
     base_image = resolved_base_image()
     existing = run(["virsh", "--connect", LIBVIRT_URI, "list", "--all", "--name"])
     runner_domains = [
         line for line in existing.stdout.splitlines() if line.startswith(PREFIX)
     ]
-    if len(runner_domains) >= MAX_CONCURRENCY:
-        raise RuntimeError("all sanctuary CI domain slots are occupied")
+    if profile is None:
+        if len(runner_domains) >= LEGACY_CONCURRENCY:
+            raise RuntimeError("all sanctuary CI domain slots are occupied")
+    else:
+        counts = {"heavy": 0, "medium": 0}
+        for domain in runner_domains:
+            existing_lease = domain[len(PREFIX):]
+            existing_directory = lease_dir(existing_lease)
+            if not (existing_directory / "profile").is_file():
+                raise RuntimeError("bounded pool requires all legacy domains to drain")
+            counts[recorded_profile(existing_lease)] += 1
+        if not profile_has_slot(counts, profile):
+            raise RuntimeError("all sanctuary CI profile slots are occupied")
     if name(lease) in runner_domains:
         raise RuntimeError("sanctuary CI domain already exists")
     directory = lease_dir(lease)
     if directory.exists():
         raise FileExistsError("lease directory already exists")
     directory.mkdir(mode=0o700)
-    overlay = directory / "root.qcow2"
-    seed = directory / "seed.iso"
     qemu_uid, qemu_gid = qemu_identity()
     set_qemu_access(directory, 0, qemu_gid, 0o710)
     try:
+        work = create_bounded_storage(lease, profile, qemu_gid) \
+            if profile is not None else directory
+        overlay = work / "root.qcow2"
+        seed = work / "seed.iso"
         run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_image), str(overlay), DISK_GIB])
         set_qemu_access(overlay, qemu_uid, qemu_gid, 0o600)
         user_data = cloud_init_user_data(encoded_jit)
@@ -271,9 +646,15 @@ def destroy(lease: str) -> None:
     run(["systemctl", "stop", f"{PREFIX}expire-{lease}.timer"], check=False)
     run(["virsh", "--connect", LIBVIRT_URI, "destroy", domain], check=False)
     run(["virsh", "--connect", LIBVIRT_URI, "undefine", domain, "--nvram"], check=False)
+    remaining = run(["virsh", "--connect", LIBVIRT_URI, "list", "--all", "--name"])
+    if domain in remaining.stdout.splitlines():
+        raise RuntimeError("runner domain remains defined; preserving lease storage")
     directory = lease_dir(lease)
     if directory.exists():
-        shutil.rmtree(directory)
+        if (directory / "profile").exists() or (directory / "bounded.img").exists():
+            remove_bounded_storage(lease)
+        else:
+            shutil.rmtree(directory)
 
 
 def list_leases() -> dict[str, str]:
@@ -283,6 +664,59 @@ def list_leases() -> dict[str, str]:
         state = run(["virsh", "--connect", LIBVIRT_URI, "domstate", domain]).stdout.strip().lower()
         leases[domain[len(PREFIX):]] = state
     return leases
+
+
+def qemu_rss_mib(domain: str) -> int | None:
+    matches: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            arguments = (entry / "cmdline").read_bytes().split(b"\0")
+            names = [arguments[index + 1] for index, value in enumerate(arguments[:-1])
+                     if value == b"-name"]
+            if not any(name.decode("ascii", "ignore").split(",")[0] == f"guest={domain}"
+                       for name in names):
+                continue
+            executable = (entry / "exe").resolve(strict=True).name
+            if not executable.startswith("qemu-system-"):
+                continue
+            for line in (entry / "status").read_text(encoding="ascii").splitlines():
+                if line.startswith("VmRSS:"):
+                    matches.append((int(line.split()[1]) + 1023) // 1024)
+                    break
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+    return matches[0] if len(matches) == 1 else None
+
+
+def domain_resources(domain: str) -> tuple[int, int]:
+    xml = run(["virsh", "--connect", LIBVIRT_URI, "dumpxml", domain]).stdout
+    root = ET.fromstring(xml)
+    cpu_text = root.findtext("vcpu")
+    memory = root.find("memory")
+    if cpu_text is None or memory is None or memory.text is None:
+        raise RuntimeError("runner domain resources are missing")
+    cpu = int(cpu_text.strip())
+    unit = memory.attrib.get("unit", "KiB")
+    if unit not in {"KiB", "MiB"}:
+        raise RuntimeError("runner domain memory unit is unsupported")
+    memory_mib = int(memory.text.strip()) // 1024 if unit == "KiB" \
+        else int(memory.text.strip())
+    return cpu, memory_mib
+
+
+def list_resource_details() -> list[dict[str, Any]]:
+    details = []
+    for lease, state in list_leases().items():
+        domain = name(lease)
+        cpu, memory = domain_resources(domain)
+        details.append({
+            "lease": lease, "state": state, "profile": recorded_profile(lease),
+            "vcpus": cpu, "memory_mib": memory, "rss_mib": qemu_rss_mib(domain),
+            "bounded": (lease_dir(lease) / "profile").is_file(),
+        })
+    return details
 
 
 def parse_request(packet: bytes) -> dict[str, Any]:
@@ -300,13 +734,15 @@ def parse_request(packet: bytes) -> dict[str, Any]:
     if not isinstance(request_id, str) or not REQUEST_ID_RE.fullmatch(request_id):
         raise ProtocolError("invalid request id")
     operation = request.get("op")
-    if operation == "list":
+    if operation in {"list", "resources"}:
         if set(request) != {"v", "id", "op"}:
-            raise ProtocolError("invalid list request schema")
+            raise ProtocolError("invalid query request schema")
     elif operation in {"launch", "destroy"}:
         expected = {"v", "id", "op", "lease"}
         if operation == "launch":
             expected.update({"vcpus", "memory_mib"})
+            if "profile" in request:
+                expected.add("profile")
         if set(request) != expected:
             raise ProtocolError("invalid mutation request schema")
         lease = request.get("lease")
@@ -317,7 +753,11 @@ def parse_request(packet: bytes) -> dict[str, Any]:
         except ValueError as exc:
             raise ProtocolError("invalid lease") from exc
         if operation == "launch":
-            validate_resources(request.get("vcpus"), request.get("memory_mib"))
+            if "profile" in request and (not isinstance(request["profile"], str)
+                                         or request["profile"] not in PROFILE_RESOURCES):
+                raise ProtocolError("invalid runner profile")
+            validate_resources(request.get("vcpus"), request.get("memory_mib"),
+                               request.get("profile"))
     else:
         raise ProtocolError("invalid operation")
     return request
@@ -379,6 +819,8 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
         request_packet = recv_packet(connection, MAX_REQUEST_BYTES)
         request_id = request_id_from_packet(request_packet)
         request = parse_request(request_packet)
+        if request["op"] == "launch":
+            enforce_launch_mode(request.get("profile"))
         jit_payload = None
         if request["op"] == "launch":
             jit_payload = validate_jit_payload(recv_packet(connection, MAX_JIT_BYTES))
@@ -388,10 +830,16 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
             fcntl.flock(lock, fcntl.LOCK_EX)
             if request["op"] == "list":
                 result: Any = list_leases()
+            elif request["op"] == "resources":
+                result = list_resource_details()
             elif request["op"] == "launch":
+                launch_kwargs: dict[str, Any] = {
+                    "vcpus": request["vcpus"], "memory_mib": request["memory_mib"],
+                }
+                if "profile" in request:
+                    launch_kwargs["profile"] = request["profile"]
                 launch(
-                    request["lease"], jit_payload,
-                    vcpus=request["vcpus"], memory_mib=request["memory_mib"],
+                    request["lease"], jit_payload, **launch_kwargs,
                 )
                 result = None
             else:

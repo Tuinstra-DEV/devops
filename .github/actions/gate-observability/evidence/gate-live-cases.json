@@ -1,0 +1,56 @@
+{
+  "environment": "verification",
+  "cases": [
+    {
+      "heal_case_id": "703956074e8444c8a22c13fe48c40452",
+      "external_issue_id": "153459774",
+      "last_event_id": "6d492df9237b4aae9fd160635cbb668d",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "57b129f787141dd0a476879fd347712aef36757b",
+      "artifact_digest": "sha256:913c2bcdfb2a259de12892d0880ded0894bf55cc33ec377d3132f0d3b03db1b5",
+      "source_path": "frontend/app/utils/sentry-verification.ts",
+      "source_line": "3"
+    },
+    {
+      "heal_case_id": "d7cb3637622148b99a882261fedf6f4b",
+      "external_issue_id": "153466262",
+      "last_event_id": "61e333e2a7be4b5699095076ee1162d9",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "nitro",
+      "environment": "verification",
+      "source_commit": "57b129f787141dd0a476879fd347712aef36757b",
+      "artifact_digest": "sha256:913c2bcdfb2a259de12892d0880ded0894bf55cc33ec377d3132f0d3b03db1b5",
+      "source_path": "frontend/server/utils/sentry-verification.ts",
+      "source_line": "3"
+    },
+    {
+      "heal_case_id": "8dc9d7207d2745149d810e492ece5783",
+      "external_issue_id": "153477147",
+      "last_event_id": "1f489e7b97854b688ee71bd71c3d4c52",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "backend",
+      "environment": "verification",
+      "source_commit": "910c53cbe27637c8691bd7d6b437779fa0504ec1",
+      "artifact_digest": "sha256:3bae6e2f059e4b86322b8dfe7a1663faf4955482ecfcc1522b36877b8b2d0c64",
+      "source_path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+      "source_line": "42"
+    }
+  ]
+}

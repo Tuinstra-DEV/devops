@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "repository": "Tuinstra-DEV/gate",
+  "components": [
+    {
+      "id": "backend",
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source"
+    },
+    {
+      "id": "browser",
+      "runtime": "browser-js",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps"
+    },
+    {
+      "id": "nitro",
+      "runtime": "node",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps"
+    }
+  ],
+  "processes": {
+    "php": "backend",
+    "messenger-worker": "backend",
+    "heal-supervisor": "backend",
+    "frontend-browser": "browser",
+    "frontend-server": "nitro"
+  }
+}

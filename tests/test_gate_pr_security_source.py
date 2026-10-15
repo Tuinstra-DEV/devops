@@ -15,6 +15,12 @@ spec = importlib.util.spec_from_file_location("gate_pr_security_source", MODULE)
 source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
 A, B, T = "a" * 40, "b" * 40, "c" * 40
+TRACKER_BINDING = {
+    "image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:" + "a" * 64,
+    "policy_digest": "sha256:70119e1c38a2598b4f2cfbcc69a3922819adff3c95ec492788a002e6087686e9",
+    "bundle_digest": "sha256:" + "b" * 64,
+    "dataset_digest": "sha256:" + "b" * 64,
+}
 
 
 class SourceTests(unittest.TestCase):
@@ -33,19 +39,114 @@ class SourceTests(unittest.TestCase):
                 "pull_request": 7, "run_id": "900", "run_attempt": 2,
                 "base_sha": A, "head_sha": B, "base_tree": T, "head_tree": T}
 
-    def context(self):
-        return {"GATE_REPOSITORY": "Tuinstra-DEV/gate", "GATE_REPOSITORY_ID": "42",
+    def context(self, repository="Tuinstra-DEV/gate"):
+        return {"GATE_REPOSITORY": repository, "GATE_REPOSITORY_ID": "42",
                 "GATE_OWNER_ID": "12", "GATE_PR_NUMBER": "7", "GATE_RUN_ID": "900",
                 "GATE_RUN_ATTEMPT": "2", "GITHUB_TOKEN": "secret-test-token",
                 "GATE_EVENT_NAME": "pull_request_target"}
 
-    def provider(self, *, head=B, attempt=2, merged=False):
-        repo = {"id": 42, "owner": {"id": 12}, "full_name": "Tuinstra-DEV/gate"}
+    def provider(self, *, head=B, attempt=2, merged=False, repository="Tuinstra-DEV/gate"):
+        repo = {"id": 42, "owner": {"id": 12}, "full_name": repository}
         pr = {"number": 7, "state": "open", "merged": merged,
               "base": {"sha": A, "repo": repo}, "head": {"sha": B, "repo": {"id": 99}}}
         run = {"id": 900, "run_attempt": attempt, "event": "pull_request_target", "head_sha": head,
                "repository": repo, "head_repository": {"id": 99}, "pull_requests": []}
         return [repo, pr, run, run.copy()]
+
+    def test_scan_selects_native_tracker_profile_from_verified_state(self):
+        marker, report = self.scan_fixture()
+        state = self.state()
+        state["repository"] = "Tuinstra-DEV/tracker"
+        state["scanner_binding"] = TRACKER_BINDING.copy()
+        source.save_state(self.work, state)
+        invoke, calls = self.docker(marker, report)
+        with patch.object(source, "run", side_effect=invoke):
+            source.scan(self.work)
+        profile = source.constants.profile_for_binding(state["repository"], TRACKER_BINDING)
+        create = next(command for command, _ in calls if command[1] == "create")
+        self.assertIn(profile["image"], create)
+        self.assertEqual(create[create.index("--platform") + 1], "linux/amd64")
+        self.assertEqual("none", create[create.index("--network") + 1])
+        self.assertIn("--read-only", create)
+        self.assertIn("--cap-drop", create)
+        self.assertIn("no-new-privileges", create)
+        self.assertNotIn(json.dumps(TRACKER_BINDING), create)
+        self.assertNotIn("--env", create)
+        self.assertNotIn("--env-file", create)
+        self.assertEqual(json.loads((self.work / "state.json").read_text())["scanner_image"], profile["image"])
+
+    def test_unknown_repository_never_launches_scanner(self):
+        self.marker()
+        state = self.state()
+        state["repository"] = "other/repository"
+        source.save_state(self.work, state)
+        with patch.object(source, "run") as invoke:
+            with self.assertRaisesRegex(source.Failure, "repository_profile_not_enrolled"):
+                source.scan(self.work)
+        invoke.assert_not_called()
+
+    def test_prepared_image_uses_same_fixed_repository_profile(self):
+        self.marker()
+        state = self.state()
+        state["repository"] = "Tuinstra-DEV/tracker"
+        state["scanner_binding"] = TRACKER_BINDING.copy()
+        source.save_state(self.work, state)
+        self.assertEqual(source.prepared_image(self.work), TRACKER_BINDING["image"])
+
+    def test_tracker_requires_binding_and_rejects_cross_repository_binding(self):
+        state = self.state() | {"repository": "Tuinstra-DEV/tracker"}
+        with self.assertRaisesRegex(source.Failure, "^tracker_scanner_binding_required$"):
+            source.profile_for_state(state)
+        state["scanner_binding"] = TRACKER_BINDING.copy()
+        with self.assertRaisesRegex(source.Failure, "^scanner_binding_repository_mismatch$"):
+            source.profile_for_state(self.state(), json.dumps(TRACKER_BINDING))
+
+    def test_tracker_binding_snapshot_survives_environment_change_after_prepare(self):
+        state = self.state() | {"repository": "Tuinstra-DEV/tracker", "scanner_binding": TRACKER_BINDING.copy()}
+        def init(_command, **_kwargs):
+            (self.work / "objects.git").mkdir()
+            return 0, b""
+        with patch.object(source, "provider_state", return_value=(state, "secret-test-token")), \
+             patch.object(source, "run", side_effect=init), \
+             patch.object(source, "git", side_effect=[b"", A.encode(), B.encode()]), \
+             patch.object(source, "materialize", side_effect=lambda _store, _commit, destination: (destination.mkdir(), T)[1]):
+            source.prepare(self.work, self.context() | {"GATE_TRACKER_SCANNER_BINDING": json.dumps(TRACKER_BINDING)})
+
+        changed_binding = TRACKER_BINDING | {"image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:" + "c" * 64}
+        saved = json.loads((self.work / "state.json").read_text())
+        self.assertEqual(TRACKER_BINDING, saved["scanner_binding"])
+        with patch.dict(os.environ, {"GATE_TRACKER_SCANNER_BINDING": json.dumps(changed_binding)}):
+            self.assertEqual(TRACKER_BINDING["image"], source.prepared_image(self.work))
+            report = {"schema_version": "1.0", "document_type": "ci-pair-result", "base_sha": A,
+                      "head_sha": B, "outcome": "pass", "coverage": [], "findings": [], "inputs": [],
+                      "reasons": [], "uncompared_findings": []}
+            marker = json.loads((self.work / ".gate-work.json").read_text())
+            invoke, calls = self.docker(marker, report)
+            with patch.object(source, "run", side_effect=invoke):
+                source.scan(self.work)
+        create = next(command for command, _ in calls if command[1] == "create")
+        self.assertIn(TRACKER_BINDING["image"], create)
+        self.assertNotIn(changed_binding["image"], create)
+        saved_after_scan = json.loads((self.work / "state.json").read_text())
+        self.assertEqual(TRACKER_BINDING, saved_after_scan["scanner_binding"])
+        self.assertEqual(TRACKER_BINDING["image"], saved_after_scan["scanner_image"])
+
+    def test_tracker_scan_rejects_tampered_or_cross_profile_binding_before_docker(self):
+        for binding in (
+            TRACKER_BINDING | {"image": source.constants.profile_for("Tuinstra-DEV/gate")["image"]},
+            TRACKER_BINDING | {"policy_digest": "sha256:" + "c" * 64},
+            TRACKER_BINDING | {"dataset_digest": "sha256:" + "c" * 64},
+        ):
+            with self.subTest(binding=binding):
+                marker = self.marker()
+                for name in ("objects.git", "base", "head", "output"):
+                    (self.work / name).mkdir()
+                state = self.state() | {"repository": "Tuinstra-DEV/tracker", "scanner_binding": binding}
+                source.save_state(self.work, state)
+                with patch.object(source, "run") as invoke, self.assertRaises(source.Failure):
+                    source.scan(self.work)
+                invoke.assert_not_called()
+                shutil.rmtree(self.work, ignore_errors=True)
 
     def marker(self):
         self.work.mkdir()
@@ -100,6 +201,24 @@ class SourceTests(unittest.TestCase):
         self.assertEqual((A, B, "42", 2), (state["base_sha"], state["head_sha"], state["repository_id"], state["run_attempt"]))
         self.assertEqual("secret-test-token", token)
         self.assertTrue(api.call_args_list[-1].args[0].endswith("/attempts/2"))
+
+    def test_tracker_provider_freezes_the_validated_repository_binding(self):
+        context = self.context("Tuinstra-DEV/tracker") | {
+            "GATE_TRACKER_SCANNER_BINDING": json.dumps(TRACKER_BINDING),
+        }
+        with patch.object(source, "api", side_effect=self.provider(repository="Tuinstra-DEV/tracker")):
+            state, _ = source.provider_state(context)
+        self.assertEqual(TRACKER_BINDING, state["scanner_binding"])
+        self.assertEqual(TRACKER_BINDING["image"], source.profile_for_state(state)["image"])
+
+    def test_tracker_provider_fails_closed_for_missing_or_invalid_binding(self):
+        for binding in (None, "", "{}", '{"image":"x","image":"y"}'):
+            context = self.context("Tuinstra-DEV/tracker")
+            if binding is not None:
+                context["GATE_TRACKER_SCANNER_BINDING"] = binding
+            with self.subTest(binding=binding), patch.object(source, "api", side_effect=self.provider(repository="Tuinstra-DEV/tracker")):
+                with self.assertRaises(source.Failure):
+                    source.provider_state(context)
 
     def test_only_registered_target_event_is_accepted(self):
         for event in (None, "pull_request", "workflow_dispatch"):

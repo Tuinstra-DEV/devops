@@ -62,6 +62,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
 else
   echo "Native signing-key regression skipped: ansible-playbook is not installed"
 fi
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
@@ -76,5 +77,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_es
 ./scripts/production-backup-contract-test.sh
 ./scripts/production-umami-test.sh
 
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source.py tests/test_gate_pr_security_evidence.py tests/test_gate_pr_security_local_integration.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source.py tests/test_gate_pr_security_profiles.py tests/test_gate_pr_security_evidence.py tests/test_gate_pr_security_local_integration.py
 ruby scripts/gate-pr-security-contract-test.rb
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
+
+# The assurance action parses data only; never execute dependency install hooks.
+npm ci --ignore-scripts --no-audit --no-fund --prefix .github/actions/gate-observability
+node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs

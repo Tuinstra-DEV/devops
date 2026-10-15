@@ -4,6 +4,17 @@ audit_log = "/mnt/hdd1000-01/ci-audit/manager.log"
 helper_socket = "/run/ci-runner-host-helper.sock"
 overlay_root = "{{ runner_overlay_root }}"
 max_concurrency = {{ runner_max_concurrency | int }}
+{% if runner_pool_mode == 'four' %}
+pool_mode = "four"
+medium_runner_label = "trusted-medium"
+medium_runner_vcpus = {{ runner_medium_vcpus | int }}
+medium_runner_memory_mib = {{ runner_medium_memory_mib | int }}
+max_heavy = {{ runner_max_heavy | int }}
+max_medium = {{ runner_max_medium | int }}
+heavy_disk_reservation_gib = {{ runner_heavy_disk_reservation_gib | int }}
+medium_disk_reservation_gib = {{ runner_medium_disk_reservation_gib | int }}
+storage_mode = "bounded-loop"
+{% endif %}
 runner_vcpus = {{ runner_vcpus | int }}
 runner_memory_mib = {{ runner_memory_mib | int }}
 host_memory_reserve_mib = {{ runner_host_memory_reserve_mib | int }}
@@ -16,3 +27,13 @@ allowed_owner = "Tuinstra-DEV"
 repositories = {{ runner_allowed_repositories | to_json }}
 runner_label = "trusted-heavy"
 runner_group_id = 1
+{% if runner_org_routing_enabled | bool %}
+org_routing_enabled = true
+org_github_token_file = "/run/credentials/ci-runner-manager.service/org_github_token"
+org_runner_group_id = {{ runner_org_runner_group_id | int }}
+org_workflow_ref = {{ runner_org_workflow_ref | to_json }}
+[org_repository_ids]
+{% for repository, repository_id in runner_org_repository_ids | dictsort %}
+{{ repository | to_json }} = {{ repository_id | int }}
+{% endfor %}
+{% endif %}

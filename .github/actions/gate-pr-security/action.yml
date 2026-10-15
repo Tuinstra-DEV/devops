@@ -31,9 +31,9 @@ runs:
         set -euo pipefail
         export DOCKER_CONFIG="$GATE_WORK_DIR/docker-auth"
         mkdir -m 700 "$DOCKER_CONFIG"
-        gate_image=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from constants import IMAGE; print(IMAGE)' "$GITHUB_ACTION_PATH")
+        gate_image=$(python3 "$GITHUB_ACTION_PATH/source.py" image --work-dir "$GATE_WORK_DIR")
         printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null
-        docker pull --platform linux/arm64 "$gate_image" >/dev/null
+        docker pull --platform linux/amd64 "$gate_image" >/dev/null
         docker logout ghcr.io >/dev/null
         rm -f "$DOCKER_CONFIG/config.json"
         rmdir "$DOCKER_CONFIG"
@@ -101,7 +101,7 @@ runs:
         state_path = Path(work) / "state.json" if work else None
         state = json.loads(state_path.read_text()) if state_path and state_path.is_file() else {}
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-            summary.write("## Gate producer execution\n\nRunner: ubuntu-24.04-arm. Job limit: 20 minutes.\n\n")
+            summary.write("## Gate producer execution\n\nRunner: ubuntu-24.04. Job limit: 20 minutes.\n\n")
             for label, key in [("Preparation", "prepare_duration_ms"), ("Scanner", "scan_duration_ms")]:
                 value = state.get(key)
                 text = f"{value / 1000:.3f} seconds" if type(value) is int and value >= 0 else "unavailable"

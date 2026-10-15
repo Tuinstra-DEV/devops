@@ -54,8 +54,8 @@ def setup_work(work: Path, fixture: str, exit_code: int | None = None):
     work.mkdir()
     (work / "output/pair").mkdir(parents=True)
     report_path = ROOT / "tests/fixtures/gate-pr-security" / fixture
-    raw = report_path.read_bytes()
-    report = json.loads(raw)
+    report = current_profile(json.loads(report_path.read_bytes()))
+    raw = (json.dumps(report, indent=2) + "\n").encode()
     code = {"pass": 0, "blocked": 1, "incomplete": 2}[report["outcome"]] if exit_code is None else exit_code
     (work / "state.json").write_text(json.dumps(state(code)), encoding="utf-8")
     (work / "output/pair/result.json").write_bytes(raw)
@@ -81,6 +81,22 @@ def current_profile(report: dict) -> dict:
         if row["scanner"] == "osv":
             row["advisory_digest"] = evidence.constants.BUNDLE_DIGEST
     return report
+
+
+def content_bound_record(rule="GATE-TEXT-WORKFLOW-TRUST", identifier="IN-3-workflow-trust"):
+    workflow = ".github/workflows/gate-heal-qa-gate.yml"
+    fingerprint = "sha256:" + hashlib.sha256("\0".join((
+        "gate-text", rule, "security", workflow, rule.lower(),
+    )).encode()).hexdigest()
+    return {
+        "id": identifier, "fingerprint": fingerprint, "repository": "Tuinstra-DEV/gate",
+        "rule_id": rule, "path": workflow, "expires_at": "2030-01-01T00:00:00Z",
+        "owner": "security-team", "reason": "Synthetic bounded protocol fixture.",
+        "inputs": [
+            {"path": workflow, "sha256": "sha256:" + "a" * 64},
+            {"path": "scripts/ci/heal-qa-bridge.mjs", "sha256": "sha256:" + "b" * 64},
+        ],
+    }
 
 
 def coverage_row(scope: str, scanner: str, version: str) -> dict:
@@ -157,6 +173,16 @@ def exclusion_report(work: Path, placeholder: bytes = b"") -> tuple[dict, bytes]
     report["inputs"].append(input_row("unknown-input", "backend/src/Controller/.placeholder", ["approved_exclusion"]))
     raw = write_report(work, report)
     return report, raw
+
+
+class ScannerProfileBindingTests(unittest.TestCase):
+    def test_producer_matches_the_reviewed_scanner_manifest_bytes(self):
+        raw = (ROOT / "tests/fixtures/gate-pr-security/scanner-frozen.json").read_bytes()
+        manifest = json.loads(raw)
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        self.assertEqual(digest, evidence.constants.BUNDLE_DIGEST)
+        self.assertEqual(digest, evidence.constants.DATASET_DIGEST)
+        self.assertEqual(manifest["files"]["policy.json"], evidence.constants.POLICY_DIGEST)
 
 
 class FakeResponse:
@@ -252,6 +278,135 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                 self.assertEqual(outer["run"]["workflow_sha"], environment()["GATE_WORKFLOW_SHA"])
                 self.assertEqual(outer["scanner_image"], evidence.constants.IMAGE)
                 self.assertEqual(outer["payload_files"][0]["sha256"], "sha256:" + hashlib.sha256(raw).hexdigest())
+
+    def test_transports_exact_optional_content_bound_proof_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            report["content_bound_exceptions"] = [
+                content_bound_record(),
+                content_bound_record("GATE-TEXT-WORKFLOW-WRITE", "IN-3-workflow-write"),
+            ]
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            self.assertEqual(json.loads(raw)["content_bound_exceptions"], report["content_bound_exceptions"])
+            outer = json.loads((staging / "evidence.json").read_bytes())
+            self.assertNotIn("content_bound_exceptions", outer)
+            self.assertEqual(outer["payload_files"][0]["sha256"], "sha256:" + hashlib.sha256(raw).hexdigest())
+
+    def test_transports_partial_bound_proof_without_grant_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            report["content_bound_exceptions"] = [content_bound_record()]
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            self.assertEqual(json.loads(raw)["content_bound_exceptions"], report["content_bound_exceptions"])
+
+    def test_producer_transports_past_dated_proof_without_expiry_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            record = content_bound_record()
+            record["expires_at"] = "2020-01-01T00:00:00Z"
+            report["content_bound_exceptions"] = [record]
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+
+    def test_rejects_gate_bound_proof_for_other_state_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-pass.json")
+            current_profile(report)
+            report["content_bound_exceptions"] = [content_bound_record()]
+            write_report(work, report)
+            state_data = json.loads((work / "state.json").read_text())
+            state_data["repository"] = "acme/app"
+            (work / "state.json").write_text(json.dumps(state_data))
+            with self.assertRaisesRegex(evidence.EvidenceError, "unknown_repository"):
+                evidence.package(work, environment())
+            self.assertFalse((work / "staging").exists())
+
+    def test_empty_optional_bound_proof_preserves_genuine_incomplete_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory) / "work"
+            _, report = setup_work(work, "pair-incomplete.json")
+            current_profile(report)
+            report["content_bound_exceptions"] = []
+            raw = write_report(work, report)
+            staging = evidence.package(work, environment())
+            self.assertEqual((staging / "reports/result.json").read_bytes(), raw)
+            self.assertEqual(json.loads((staging / "evidence.json").read_bytes())["outcome"], "incomplete")
+
+    def test_rejects_malformed_optional_content_bound_proof_before_staging(self):
+        def mutate(case, report):
+            records = report["content_bound_exceptions"]
+            record = records[0]
+            if case == "not_list":
+                report["content_bound_exceptions"] = {}
+            elif case == "extra_report_field":
+                report["unapproved_field"] = []
+            elif case == "extra_record_field":
+                record["unapproved_field"] = "x"
+            elif case == "wrong_repo":
+                record["repository"] = "acme/app"
+            elif case == "wrong_rule":
+                record["rule_id"] = "OTHER"
+            elif case == "wrong_fingerprint":
+                record["fingerprint"] = "sha256:" + "c" * 64
+            elif case == "wrong_path":
+                record["path"] = "other.yml"
+            elif case == "wrong_order":
+                record["inputs"].reverse()
+            elif case == "duplicate_input":
+                record["inputs"][1]["path"] = record["inputs"][0]["path"]
+            elif case == "extra_input_field":
+                record["inputs"][0]["extra"] = True
+            elif case == "bad_digest":
+                record["inputs"][0]["sha256"] = "sha256:" + "A" * 64
+            elif case == "bad_calendar_date":
+                record["expires_at"] = "2030-02-30T00:00:00Z"
+            elif case == "non_utc_date":
+                record["expires_at"] = "2030-01-01T00:00:00+00:00"
+            elif case == "blank_owner":
+                record["owner"] = "  "
+            elif case == "long_owner":
+                record["owner"] = "é" * 101
+            elif case == "long_reason":
+                record["reason"] = "x" * 501
+            elif case == "duplicate_id":
+                second = content_bound_record("GATE-TEXT-WORKFLOW-WRITE", record["id"])
+                records.append(second)
+            elif case == "duplicate_fingerprint":
+                second = content_bound_record(identifier="different-id")
+                records.append(second)
+            elif case == "too_many":
+                records.extend([content_bound_record(identifier="other-1"), content_bound_record(identifier="other-2")])
+
+        cases = (
+            "not_list", "extra_report_field", "extra_record_field", "wrong_repo", "wrong_rule",
+            "wrong_fingerprint", "wrong_path", "wrong_order", "duplicate_input", "extra_input_field",
+            "bad_digest", "bad_calendar_date", "non_utc_date", "blank_owner", "long_owner",
+            "long_reason", "duplicate_id", "duplicate_fingerprint", "too_many",
+        )
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                _, report = setup_work(work, "pair-pass.json")
+                current_profile(report)
+                report["content_bound_exceptions"] = [content_bound_record()]
+                mutate(case, report)
+                write_report(work, report)
+                error = "invalid_report" if case == "extra_report_field" else "invalid_content_bound_exceptions"
+                with self.assertRaisesRegex(evidence.EvidenceError, error):
+                    evidence.package(work, environment())
+                self.assertFalse((work / "staging").exists())
 
     def test_verified_absence_is_preserved_without_rewriting_report(self):
         with tempfile.TemporaryDirectory() as directory:

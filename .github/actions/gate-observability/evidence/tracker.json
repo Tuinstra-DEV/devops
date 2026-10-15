@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0",
+  "policy_id": "gate-observability-1",
+  "repository": "Tuinstra-DEV/tracker",
+  "project_id": "4511896763891792",
+  "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
+  "fingerprints": {
+    "sdk_initialization": "sha256:47bc0c86a2baa539bc20c1a68429ddb295113460839b51bfd9670a6f70381511",
+    "routing": "sha256:d103976532b3f73113fdb217bdae113b656a92f8c6873e083587abc2e9a8924d",
+    "privacy_filters": "sha256:4f2d6deea88c41362a941fbfb954aadbc5f3cef99bb22b47d873862a834d6463",
+    "deployment_symbols": "sha256:00bf15138d0dc9838fe92dfe503a35b3df335ce67d0d122de7139d2e19410f18"
+  },
+  "components": [
+    {
+      "id": "browser",
+      "verification_source": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
+      "artifact_digest": "sha256:0631deb67cb484db27cff241120498785fd6c1db79e7394d57ceccb1f405f7d0",
+      "run": {
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38505044151",
+        "attempt": 1,
+        "source_sha": "52f16c01726e7b40980dceac00e06e037d5fd8d2"
+      },
+      "sentry": {
+        "issue_id": "153492670",
+        "event_ids": [
+          "3d22ee91a23f4384a22b5ce384ac6df1"
+        ]
+      },
+      "heal_case_id": "4d687bfb3b6c46778cef06e1203bbfc9",
+      "source_frame": {
+        "path": "code/web/app/utils/sentry-verification.ts",
+        "line": 24
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 2,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        }
+      }
+    },
+    {
+      "id": "api",
+      "verification_source": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
+      "run": {
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38703197385",
+        "attempt": 1,
+        "source_sha": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6"
+      },
+      "sentry": {
+        "issue_id": "153795126",
+        "event_ids": [
+          "6c1f9ec5dbe34f5db40c16296972a470"
+        ]
+      },
+      "heal_case_id": "9192771e7782460bb14f4b2a1e3f2d23",
+      "source_frame": {
+        "path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
+        "line": 49
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 1,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        }
+      }
+    },
+    {
+      "id": "worker",
+      "verification_source": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6",
+      "artifact_digest": "sha256:a10ef29dc113dcc6ab6b3449d11d4097497219eb5af334686c37edce823a8b28",
+      "run": {
+        "workflow": ".github/workflows/sentry-verification.yml",
+        "id": "38703197385",
+        "attempt": 1,
+        "source_sha": "23d6fa5b6b279da03ba5aecc3ef6d47ff37322c6"
+      },
+      "sentry": {
+        "issue_id": "153795169",
+        "event_ids": [
+          "f0635ab6a0b14612b1bf8e4201393a53"
+        ]
+      },
+      "heal_case_id": "c8405acb559f47d68879f31b4eb71041",
+      "source_frame": {
+        "path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+        "line": 29
+      },
+      "checks": {
+        "privacy": {
+          "user_fields_count": 0,
+          "private_fields_count": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "deduplication": {
+          "occurrences": 1,
+          "triage_attempts": 1,
+          "case_count": 1,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        },
+        "disabled_fixes": {
+          "fix_attempts": 0,
+          "verification_refs": [
+            "tracker-local-verification.md",
+            "tracker-live-cases.json",
+            "tracker-production-runtime.json"
+          ]
+        }
+      }
+    }
+  ],
+  "provenance": {
+    "captured_at": "2026-10-15",
+    "source": "operator-verified-actual-sdk-and-signed-intake",
+    "verification_environment": "verification",
+    "production_event": false
+  },
+  "process_bindings": {
+    "php": "api",
+    "php-mcp": "api",
+    "worker": "worker",
+    "catalog-worker": "worker",
+    "release-evidence-worker": "worker",
+    "sentry-worker": "worker",
+    "nginx-browser": "browser"
+  }
+}

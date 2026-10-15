@@ -1,9 +1,148 @@
-"""Reviewed producer profile. Changes require a new immutable workflow pin."""
+"""Reviewed native producer profiles. Changes require an immutable workflow pin."""
 
-IMAGE = "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:3fcdefee1936f3e973209fd8f7ed1cb476935f6b0ee6cd7f7d591c0084481355"
-POLICY_DIGEST = "sha256:eb75f555e8d08280cbb658c9317020c24196e67148267bc6a957a16f45374a0b"
-EXCLUDED_INPUTS_DIGEST = "sha256:5a505cf05b24a383e619d8c6a12d5c59912042d5db752775b831e1e89c6cfad6"
-BUNDLE_DIGEST = "sha256:baede296ee579f2a6b7a171816641b2584cf4915ca2e314cd092cb298f327bf9"
-DATASET_DIGEST = BUNDLE_DIGEST
+from __future__ import annotations
+
+import json
+import re
+from types import MappingProxyType
+
 ENDPOINT = "https://gate.tuinstra.dev/integrations/github/pr-security/receipts"
 AUDIENCE = "https://gate.tuinstra.dev/pr-security"
+
+_PROFILE_DATA = {
+    "Tuinstra-DEV/gate": {
+        "image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:7c8e368736a4fe78026b6f42509be15d0bcabb45cc3c87a2cad9cc0d6fd53289",
+        "platform": "linux/amd64",
+        "policy_digest": "sha256:4cb64334618d558d08da5cd4ef3fe33ab7055b6f430013e20f7508d642d75bff",
+        "bundle_digest": "sha256:4f004763e61e1e52c4e1c20188d87fb725273a2f187be580e662760dfefb6217",
+        "dataset_digest": "sha256:4f004763e61e1e52c4e1c20188d87fb725273a2f187be580e662760dfefb6217",
+        "excluded_inputs_digest": "sha256:f4432b6c1dcf0e387b1eaa1e56065d6e2dc487586c32db32bc439e5841535091",
+        "exclusions_file": "excluded-inputs.json",
+        "tool_versions": {
+            "semgrep": "1.179.0", "gitleaks": "8.30.1", "osv": "2.3.8",
+            "gate-text": "1", "policy-exclusion": "1",
+        },
+        "scope_scanners": {
+            "secrets": "gitleaks", "php": "semgrep", "javascript-typescript": "semgrep",
+            "composer": "osv", "npm": "osv", "pnpm": "osv", "embedded-web": "semgrep",
+            "configuration": "gate-text", "shell-infrastructure": "gate-text",
+            "dockerfile": "gate-text", "web-assets": "gate-text", "template": "gate-text",
+            "php-framework": "gate-text", "build-configuration": "gate-text",
+            "opaque-input": "policy-exclusion", "unknown-input": "policy-exclusion",
+            "embedded-code": "policy-exclusion", "python": "semgrep",
+        },
+    },
+    "Tuinstra-DEV/tracker": {
+        "image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:fe54383ae144931c798391568a17d6585c5a231b766c57d94158fb457db0e66b",
+        "platform": "linux/amd64",
+        "policy_digest": "sha256:70119e1c38a2598b4f2cfbcc69a3922819adff3c95ec492788a002e6087686e9",
+        "bundle_digest": "sha256:57c42d26810429cfff7d122c2001930c9f3fa64c977912a73020da162f751037",
+        "dataset_digest": "sha256:57c42d26810429cfff7d122c2001930c9f3fa64c977912a73020da162f751037",
+        "excluded_inputs_digest": "sha256:2ec8b98a1ac94a3905c6034c798fecc1ea29e28f128856e2d1a2cdfe2e646024",
+        "exclusions_file": "excluded-inputs-tracker.json",
+        "tool_versions": {
+            "semgrep": "1.179.0", "gitleaks": "8.30.1", "osv": "2.3.8",
+            "gate-text": "1", "gate-assets": "1", "policy-exclusion": "1",
+        },
+        "scope_scanners": {
+            "secrets": "gitleaks", "php": "semgrep", "javascript-typescript": "semgrep",
+            "composer": "osv", "npm": "osv", "pnpm": "osv", "embedded-web": "semgrep",
+            "configuration": "gate-text", "shell-infrastructure": "gate-text",
+            "dockerfile": "gate-text", "web-assets": "gate-text", "template": "gate-text",
+            "php-framework": "gate-text", "build-configuration": "gate-text",
+            "opaque-input": "policy-exclusion", "unknown-input": "policy-exclusion",
+            "embedded-code": "policy-exclusion", "python": "semgrep",
+            "patched-javascript": "semgrep", "static-assets": "gate-assets",
+        },
+    },
+}
+
+PROFILES = MappingProxyType({
+    repository: MappingProxyType({
+        **profile,
+        "tool_versions": MappingProxyType(profile["tool_versions"]),
+        "scope_scanners": MappingProxyType(profile["scope_scanners"]),
+    })
+    for repository, profile in _PROFILE_DATA.items()
+})
+
+def profile_for(repository: object):
+    """Return the fixed profile for an allowlisted repository name."""
+    if not isinstance(repository, str):
+        raise ValueError("unknown_repository")
+    try:
+        return PROFILES[repository]
+    except KeyError:
+        raise ValueError("unknown_repository") from None
+
+
+_TRACKER_BINDING_KEYS = {"image", "policy_digest", "bundle_digest", "dataset_digest"}
+_DIGEST_RE = re.compile(r"\Asha256:[a-f0-9]{64}\Z")
+_TRACKER_IMAGE_RE = re.compile(r"\Aghcr\.io/tuinstra-dev/gate/ci-scanner@sha256:[a-f0-9]{64}\Z")
+
+
+def validate_tracker_scanner_binding(value: object) -> dict[str, str]:
+    """Validate the trusted operator binding captured for the Tracker repo."""
+    if not isinstance(value, dict) or set(value) != _TRACKER_BINDING_KEYS:
+        raise ValueError("invalid_tracker_scanner_binding")
+    if any(not isinstance(value.get(key), str) for key in _TRACKER_BINDING_KEYS):
+        raise ValueError("invalid_tracker_scanner_binding")
+    if _TRACKER_IMAGE_RE.fullmatch(value["image"]) is None:
+        raise ValueError("invalid_tracker_scanner_binding")
+    tracker = PROFILES["Tuinstra-DEV/tracker"]
+    gate_image = PROFILES["Tuinstra-DEV/gate"]["image"]
+    if (value["image"] == gate_image
+            or value["policy_digest"] != tracker["policy_digest"]
+            or _DIGEST_RE.fullmatch(value["bundle_digest"]) is None
+            or value["bundle_digest"] != value["dataset_digest"]):
+        raise ValueError("invalid_tracker_scanner_binding")
+    return {key: value[key] for key in ("image", "policy_digest", "bundle_digest", "dataset_digest")}
+
+
+def parse_tracker_scanner_binding(raw: object) -> dict[str, str]:
+    """Decode a bounded repository variable, rejecting duplicate JSON keys."""
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("tracker_scanner_binding_required")
+    try:
+        if len(raw.encode("utf-8")) > 2048:
+            raise ValueError("invalid_tracker_scanner_binding")
+    except UnicodeEncodeError:
+        raise ValueError("invalid_tracker_scanner_binding") from None
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate_binding_key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid_binding_json")))
+    except (ValueError, UnicodeError):
+        raise ValueError("invalid_tracker_scanner_binding") from None
+    return validate_tracker_scanner_binding(value)
+
+
+def profile_for_binding(repository: object, binding: object = None):
+    """Select an immutable profile, requiring a validated Tracker binding."""
+    profile = profile_for(repository)
+    if repository == "Tuinstra-DEV/tracker":
+        if binding is None:
+            raise ValueError("tracker_binding_required")
+        validated = validate_tracker_scanner_binding(binding)
+        return MappingProxyType({**profile, **validated})
+    if binding is not None:
+        raise ValueError("binding_repository_mismatch")
+    return profile
+
+# Legacy Gate aliases retained for existing imports and focused tests.
+_GATE = PROFILES["Tuinstra-DEV/gate"]
+IMAGE = _GATE["image"]
+POLICY_DIGEST = _GATE["policy_digest"]
+EXCLUDED_INPUTS_DIGEST = _GATE["excluded_inputs_digest"]
+BUNDLE_DIGEST = _GATE["bundle_digest"]
+DATASET_DIGEST = _GATE["dataset_digest"]
+TOOL_VERSIONS = _GATE["tool_versions"]
+SCOPE_SCANNERS = _GATE["scope_scanners"]

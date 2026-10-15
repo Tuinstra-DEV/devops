@@ -15,6 +15,136 @@ import ci_runner_manager as manager
 
 
 class ManagerTests(unittest.TestCase):
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_admission_counts_unresident_memory_once(
+            self, disk, _available, _total, _cpu):
+        disk.return_value = mock.Mock(free=76 * 1024**3)
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 5120}]
+        self.assertEqual(manager.capacity_errors(cfg, profile="medium", active=active), [])
+        self.assertIn("host projected free memory is below the configured reserve",
+                      manager.capacity_errors(cfg, profile="medium", active=active,
+                                              available_override_mib=8000))
+        self.assertIn("active runner memory is not verified",
+                      manager.capacity_errors(cfg, profile="medium", active=[{
+                          "profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                          "rss_mib": None}] ))
+
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_rejects_tier_and_disk_overcommit(
+            self, disk, _available, _total, _cpu):
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 5000}] * 2
+        disk.return_value = mock.Mock(free=97 * 1024**3)
+        self.assertIn("heavy runner slots are occupied",
+                      manager.capacity_errors(cfg, profile="heavy", active=active))
+        disk.return_value = mock.Mock(free=65 * 1024**3)
+        self.assertIn("bounded overlay reservation would breach NVMe floor",
+                      manager.capacity_errors(cfg, profile="medium", active=active))
+
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    def test_four_pool_24g_heavy_reservation_serializes_at_98g_free(
+            self, disk, _available, _total, _cpu):
+        cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
+               "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
+        disk.return_value = mock.Mock(free=98 * 1024**3)
+        self.assertEqual(manager.capacity_errors(cfg, profile="heavy", active=[]), [])
+
+        # After one 24-GiB allocation, another heavy would breach the 60+2 floor.
+        disk.return_value = mock.Mock(free=74 * 1024**3)
+        active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
+                   "rss_mib": 6000}]
+        self.assertIn("bounded overlay reservation would breach NVMe floor",
+                      manager.capacity_errors(cfg, profile="heavy", active=active))
+        self.assertEqual(manager.capacity_errors(cfg, profile="medium", active=active), [])
+
+    @mock.patch.object(manager.os, "cpu_count", return_value=16)
+    @mock.patch.object(manager, "memory_total_mib", return_value=31744)
+    @mock.patch.object(manager, "memory_available_mib", return_value=20000)
+    @mock.patch.object(manager.shutil, "disk_usage")
+    @mock.patch.object(manager, "launch")
+    @mock.patch.object(manager, "helper")
+    def test_pre_jit_capacity_waits_without_claim_then_dispatches_after_space_returns(
+            self, helper, launch, disk, _available, _total, _cpu):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "pool_mode": "four", "max_concurrency": 4,
+                   "overlay_root": "/x", "host_memory_reserve_mib": 4096,
+                   "min_free_disk_gib": 60, "runner_label": "trusted-heavy",
+                   "repositories": ["Tuinstra-DEV/gate"]}
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20},
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 21}]
+            client.generate_jit.return_value = {
+                "encoded_jit_config": base64.b64encode(b"jit").decode(),
+                "runner": {"id": 30}}
+            helper.side_effect = lambda _cfg, op, **_kwargs: mock.Mock(
+                stdout=b"{}" if op == "list" else b"[]")
+            disk.return_value = mock.Mock(free=72 * 1024**3)
+
+            self.assertFalse(manager.dispatch_once(cfg, client))
+            client.generate_jit.assert_not_called()
+            launch.assert_not_called()
+            self.assertEqual(helper.call_count, 2)  # one list and one resources probe
+            self.assertEqual(manager.DispatchHistory(root / "state").load(), {})
+
+            disk.return_value = mock.Mock(free=96 * 1024**3)
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            self.assertTrue(manager.dispatch_once(cfg, client))
+            client.generate_jit.assert_called_once()
+            launch.assert_called_once()
+
+    @mock.patch.object(manager, "helper")
+    def test_pre_jit_unknown_inventory_fails_without_claim_or_jit(self, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock",
+                   "pool_mode": "four", "max_concurrency": 4,
+                   "overlay_root": "/x", "host_memory_reserve_mib": 4096,
+                   "min_free_disk_gib": 60, "runner_label": "trusted-heavy",
+                   "repositories": ["Tuinstra-DEV/gate"]}
+            client = mock.Mock()
+            client.candidate_jobs.return_value = [
+                {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
+            helper.return_value = mock.Mock(stdout=b'{"orphan":"running"}')
+
+            with self.assertRaisesRegex(manager.RunnerError, "reconciliation"):
+                manager.dispatch_once(cfg, client)
+            client.generate_jit.assert_not_called()
+            self.assertEqual(manager.DispatchHistory(root / "state").load(), {})
+
+    def test_two_medium_leases_leave_both_heavy_dispatch_slots_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            store = manager.StateStore(state)
+            store.write("medium-1", {"lease": "medium-1", "phase": "running",
+                                     "profile": "medium"})
+            store.write("medium-2", {"lease": "medium-2", "phase": "running",
+                                     "profile": "medium"})
+            cfg = {"state_dir": state, "pool_mode": "four", "max_concurrency": 4,
+                   "runner_label": "trusted-heavy", "repositories": ["Tuinstra-DEV/gate"]}
+            client = mock.Mock()
+            client.candidate_jobs.return_value = []
+            self.assertFalse(manager.dispatch_once(cfg, client))
+            client.candidate_jobs.assert_called_once_with("Tuinstra-DEV/gate",
+                                                          "trusted-heavy")
+
     @staticmethod
     def github_redirect(code, *locations):
         headers = email.message.Message()
@@ -79,6 +209,28 @@ class ManagerTests(unittest.TestCase):
             path = Path(directory) / "manager.toml"
             path.write_text(source + '\nrunner_cpu_sets = ["4,12,5,13"]\n', encoding="utf-8")
             with self.assertRaisesRegex(manager.RunnerError, "unsupported"):
+                manager.load_config(path)
+
+    def test_four_pool_configuration_requires_explicit_bounded_policy(self):
+        source = (Path(__file__).parents[1] / "config" / "manager.toml").read_text()
+        four = source.replace("max_concurrency = 1", "max_concurrency = 4") + (
+            '\npool_mode = "four"\nmedium_runner_label = "trusted-medium"\n'
+            'medium_runner_vcpus = 2\nmedium_runner_memory_mib = 3072\n'
+            'max_heavy = 2\nmax_medium = 2\nheavy_disk_reservation_gib = 24\n'
+            'medium_disk_reservation_gib = 4\nstorage_mode = "bounded-loop"\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manager.toml"
+            path.write_text(four, encoding="utf-8")
+            self.assertEqual(manager.load_config(path)["max_concurrency"], 4)
+            path.write_text(four.replace('storage_mode = "bounded-loop"',
+                                         'storage_mode = "sparse-qcow2"'), encoding="utf-8")
+            with self.assertRaises(manager.RunnerError):
+                manager.load_config(path)
+            path.write_text(four.replace('heavy_disk_reservation_gib = 24',
+                                         'heavy_disk_reservation_gib = 12'), encoding="utf-8")
+            with self.assertRaisesRegex(manager.RunnerError,
+                                        'heavy_disk_reservation_gib must be exactly 24'):
                 manager.load_config(path)
 
     @mock.patch.object(manager.secrets, "token_hex", return_value="a" * 32)
@@ -1898,6 +2050,147 @@ class ManagerTests(unittest.TestCase):
 
             self.assertEqual(store.cleanup_items(), [])
             self.assertFalse(history.contains("Tuinstra-DEV/gate:20", 1091))
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_verified_cross_assignment_cleanup_retries_queued_trigger_in_30_seconds(
+            self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            key = "Tuinstra-DEV/gate:20"
+            history = manager.DispatchHistory(cfg["state_dir"])
+            for _ in range(5):
+                history.quarantine(key, 1000)
+            store.write("gh-20", {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "trigger_job_id": 20, "trigger_run_id": 10,
+                "actual_job_id": 21, "actual_run_id": 10,
+                "dispatch_attempts": 5,
+            })
+            client = mock.Mock()
+            client.get_job.return_value = {"id": 20, "run_id": 10, "status": "queued"}
+
+            manager.destroy(cfg, "gh-20", client)
+            client.delete_runner.assert_called_once_with("Tuinstra-DEV/gate", 30)
+            self.assertEqual(store.leases(), [])
+            self.assertTrue(store.cleanup_items()[0].get("local_cleanup_verified"))
+            manager.retry_pending_cleanup(store, client, 1031)
+
+            self.assertEqual(store.cleanup_items(), [])
+            self.assertTrue(history.contains(key, 1060))
+            self.assertFalse(history.contains(key, 1061))
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_uncertain_handoff_and_failed_runner_delete_do_not_fast_retry(
+            self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            key = "Tuinstra-DEV/gate:20"
+            history = manager.DispatchHistory(cfg["state_dir"])
+            for _ in range(5):
+                history.quarantine(key, 1000)
+            store.write("gh-20", {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "trigger_job_id": 20, "trigger_run_id": 10,
+                "dispatch_attempts": 5,
+            })
+            client = mock.Mock()
+            client.delete_runner.side_effect = manager.RunnerError("delete unavailable")
+            client.get_job.return_value = {"id": 20, "run_id": 10, "status": "queued"}
+
+            with self.assertRaisesRegex(manager.RunnerError, "delete unavailable"):
+                manager.destroy(cfg, "gh-20", client)
+            self.assertEqual(store.cleanup_items()[0]["phase"], "cleanup_pending")
+            self.assertTrue(history.contains(key, 1061))
+
+            client.delete_runner.side_effect = None
+            manager.retry_pending_cleanup(store, client, 1031)
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+            manager.retry_pending_cleanup(store, client, 1061)
+            self.assertTrue(history.contains(key, 2020))
+            self.assertFalse(history.contains(key, 2021))
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_deferred_runner_cleanup_preserves_cross_assignment_proof(
+            self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            key = "Tuinstra-DEV/gate:20"
+            history = manager.DispatchHistory(cfg["state_dir"])
+            for _ in range(5):
+                history.quarantine(key, 1000)
+            store.write("gh-20", {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "trigger_job_id": 20, "trigger_run_id": 10,
+                "actual_job_id": 21, "actual_run_id": 10,
+                "dispatch_attempts": 5,
+            })
+            client = mock.Mock()
+            client.delete_runner.side_effect = manager.RunnerError("delete unavailable")
+            client.get_job.return_value = {"id": 20, "run_id": 10, "status": "queued"}
+
+            with self.assertRaisesRegex(manager.RunnerError, "delete unavailable"):
+                manager.destroy(cfg, "gh-20", client)
+            self.assertEqual(store.cleanup_items()[0]["phase"], "cleanup_pending")
+            self.assertTrue(store.cleanup_items()[0]["local_cleanup_verified"])
+            client.delete_runner.side_effect = None
+            manager.retry_pending_cleanup(store, client, 1031)
+            self.assertEqual(store.cleanup_items()[0]["phase"], "handoff_pending")
+            manager.retry_pending_cleanup(store, client, 1061)
+            self.assertFalse(history.contains(key, 1091))
+
+    @mock.patch.object(manager.time, "time", return_value=1001)
+    @mock.patch.object(manager, "helper")
+    def test_queued_but_assigned_trigger_keeps_conservative_handoff_retry(
+            self, helper, _time):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            key = "Tuinstra-DEV/gate:20"
+            history = manager.DispatchHistory(cfg["state_dir"])
+            for _ in range(5):
+                history.quarantine(key, 1000)
+            store.write("gh-20", {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "trigger_job_id": 20, "trigger_run_id": 10,
+                "actual_job_id": 21, "dispatch_attempts": 5,
+            })
+            client = mock.Mock()
+            client.get_job.return_value = {
+                "id": 20, "run_id": 10, "status": "queued", "runner_id": 99}
+
+            manager.destroy(cfg, "gh-20", client)
+            manager.retry_pending_cleanup(store, client, 1031)
+            self.assertTrue(history.contains(key, 1990))
+            self.assertFalse(history.contains(key, 1991))
+
+    @mock.patch.object(manager, "helper", side_effect=manager.RunnerError("destroy incomplete"))
+    def test_failed_local_destroy_never_creates_fast_handoff_proof(self, helper):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {"state_dir": root / "state", "lock_file": root / "lock"}
+            store = manager.StateStore(cfg["state_dir"])
+            store.write("gh-20", {
+                "lease": "gh-20", "repo": "Tuinstra-DEV/gate", "runner_id": 30,
+                "trigger_job_id": 20, "trigger_run_id": 10,
+                "actual_job_id": 21, "dispatch_attempts": 5,
+            })
+            client = mock.Mock()
+
+            with self.assertRaisesRegex(manager.RunnerError, "destroy incomplete"):
+                manager.destroy(cfg, "gh-20", client)
+            self.assertNotIn("local_cleanup_verified", store.leases()[0])
+            self.assertEqual(store.cleanup_items(), [])
+            client.delete_runner.assert_not_called()
 
     @staticmethod
     def write_finished_dispatch(store, history, *, now=1000):

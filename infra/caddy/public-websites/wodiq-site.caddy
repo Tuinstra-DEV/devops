@@ -1,0 +1,10 @@
+# DEV-26: retain both existing hosts; automatic HTTPS also owns HTTP redirects.
+wodiq.nl, www.wodiq.nl {
+	encode zstd gzip
+	header {
+		>Strict-Transport-Security "max-age=31536000"
+		>X-Content-Type-Options "nosniff"
+		>Referrer-Policy "strict-origin-when-cross-origin"
+	}
+	reverse_proxy wodiq-site:80
+}

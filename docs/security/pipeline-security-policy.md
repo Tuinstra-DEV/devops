@@ -47,7 +47,9 @@ the DevOps platform.
 
 ### 6) Runner Trust Boundary
 
-- Public contracts expose only `hosted` and `trusted-heavy`; arbitrary labels, groups, and `runs-on` fragments are prohibited.
+- Existing public contracts expose only `hosted` and `trusted-heavy`; arbitrary caller labels, groups, and `runs-on` fragments remain prohibited.
+- The optional `reusable-trusted-verification` contract adds fixed `medium`/`heavy` profiles only inside an organization group restricted to its exact full-SHA workflow. Its jobs derive trusted human same-repository PR identity from GitHub event and REST evidence, preserve the validated PR merge revision, and use fixed repository-specific routing labels. Unknown, fork, bot, stale, and PR-target contexts retain hosted verification.
+- New organization JIT registration and cleanup use a separate least-privilege host credential. Group policy, selected private repository IDs and immutable workflow must match before admission; absence or mismatch leaves this route disabled. Repository labels or post-assignment bookkeeping alone never prove permission to execute PR code.
 - `hosted` is the default and the fallback whenever a caller omits or supplies an invalid class.
 - Fork pull requests, Dependabot, and `pull_request_target` must never schedule `trusted-heavy`. The hosted preflight enforces this before a heavy job is queued and routes a valid forbidden request to the documented hosted/full fallback.
 - Consumer repository variables may select the execution class only with an explicit hosted fallback. Manual inputs must be enumerated choices.

@@ -1,0 +1,9 @@
+# Gate chain evidence — IN-37
+
+Captured 14 October 2026. Actual SDK events passed through Sentry and signed intake into the existing Gate cases. Browser/Nitro use verification source `57b129f787141dd0a476879fd347712aef36757b`, protected build 38475524705/1, archive `sha256:913c2bcdfb2a259de12892d0880ded0894bf55cc33ec377d3132f0d3b03db1b5`. PHP supervisor uses deployed source `910c53cbe27637c8691bd7d6b437779fa0504ec1`, deployment38487479438 and exact PHP digest in the case record. Sources remained unchanged across the later history-only release merge.
+
+Browser and Nitro each repeated into one case, two occurrences, one triage and no fix. PHP supervisor produced one actual event; its repetition behavior is covered by the local intake/dedup regression suite, not a claimed second live event. All cases retain original repository/component/source/artifact binding. Actual events had no populated user data or processing errors. Synthetic data redaction is also covered by SDK/privacy tests.
+
+Attributable local checks: 268 Heal unit tests / 1,218 assertions including wrong webhook, project, source, component, redaction and retry binding; 13 frontend tests; actual credentialless/offline SDK execution and bounded transport. Full local PHP static checks, frontend lint/typecheck/build/map checks passed. Required release/CI checks passed on910c53. Production configuration and database identity were checked separately; verification events are not production events. The isolated runner retains no network or credentials.
+
+This protected versioned technical record preserves the operator-observed chain after short-lived runtime artifacts expire. It does not claim those archives remain available. New integration fingerprints require renewed observed chain evidence. No UI changed. Human Story acceptance remains separate.

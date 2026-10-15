@@ -36,12 +36,16 @@ history entry or re-running the workflow.
 During teardown the bounded assignment search also inspects recent queued
 workflow runs because GitHub can return an overall run to `queued` between its
 serial ephemeral jobs while retaining completed-job runner metadata.
-After runner cleanup, the manager keeps a durable handoff tombstone, waits for
-API consistency, and retries a still-queued trigger with exponential cooldown
-capped at one hour. Pending handoffs block
-duplicate dispatch even if history is absent. The manager uses the single
-configured runner slot and removes an offline GitHub runner record if VM launch
-fails. Any malformed API
+After runner cleanup, the manager keeps a durable handoff tombstone and waits
+for API consistency. A verified assignment to a different job can use a short
+retry only after local storage cleanup, successful GitHub runner deletion and a
+fresh queued-trigger response are proven. Uncertain handoffs retain exponential
+cooldown capped at one hour. Pending handoffs block duplicate dispatch even if
+history is absent. Four-pool dispatch checks live capacity before requesting a
+JIT registration; definitive capacity shortage waits for the next poll without
+creating a registration or claim. Launch still repeats its authoritative check
+to handle resource races. The manager enforces configured pool slot limits and
+removes an unused GitHub runner record when a definitive prelaunch refusal occurs. Any malformed API
 response, permission error, transport failure, or rate limit fails closed;
 rate-limit responses honor a bounded retry interval.
 
@@ -258,3 +262,8 @@ containing unit directory remains inaccessible to other users. The helper does
 not print token contents or change credential permissions.
 Grant only repository-level Actions read and self-hosted-runner write access for
 allowlisted repositories and rotate it through the normal secret-management process.
+
+
+The queue-latency repair is separate from host activation. Existing long retry
+entries expire naturally; merging source does not edit live dispatch history.
+The ongoing Gate validation uses its existing attempt and 24-GiB host policy.

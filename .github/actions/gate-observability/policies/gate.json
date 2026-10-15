@@ -1,0 +1,172 @@
+{
+  "policyId": "gate-observability-1",
+  "repository": "Tuinstra-DEV/gate",
+  "projectId": "4511659790630992",
+  "installationUuid": "73812b1c-1666-407e-8234-d6ace9b95765",
+  "requiredComponents": {
+    "backend": {
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source",
+      "source_roots": [
+        "backend/src/"
+      ]
+    },
+    "browser": {
+      "runtime": "browser-js",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps",
+      "source_roots": [
+        "frontend/app/"
+      ]
+    },
+    "nitro": {
+      "runtime": "node",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps",
+      "source_roots": [
+        "frontend/server/",
+        "frontend/app/"
+      ]
+    }
+  },
+  "requiredArtifacts": [
+    "php",
+    "web",
+    "frontend",
+    "heal-runner"
+  ],
+  "processBindings": {
+    "php": "backend",
+    "messenger-worker": "backend",
+    "heal-supervisor": "backend",
+    "frontend-browser": "browser",
+    "frontend-server": "nitro"
+  },
+  "fingerprint": {
+    "Tuinstra-DEV/gate": {
+      "sdk_initialization": {
+        "files": [
+          "backend/config/packages/sentry.yaml",
+          "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+          "backend/src/MessageHandler/RunHealFixHandler.php",
+          "frontend/sentry.client.config.ts",
+          "frontend/sentry.server.config.ts"
+        ],
+        "dependencies": {
+          "composer": [
+            {
+              "manifest": "backend/composer.json",
+              "lock": "backend/composer.lock",
+              "roots": [
+                "sentry/sentry-symfony"
+              ]
+            }
+          ],
+          "pnpm": [
+            {
+              "manifest": "frontend/package.json",
+              "lock": "frontend/pnpm-lock.yaml",
+              "importer": ".",
+              "roots": [
+                "@sentry/nuxt"
+              ]
+            }
+          ]
+        }
+      },
+      "routing": {
+        "registry": {
+          "source": "gate",
+          "path": "backend/config/heal/sentry-routing.json",
+          "schema": "gate.sentry-routing.v1"
+        },
+        "gate_files": [
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryRoutingRegistry.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryFailureExtractor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryDeploymentEvidence.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryAlertIntake.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryWebhookVerifier.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEventClient.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEvidenceRedactor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/RoutedSentryEvidenceRedactor.php"
+          }
+        ]
+      },
+      "privacy_filters": {
+        "files": [
+          "backend/src/Service/Heal/SentryEventPrivacyFilter.php",
+          "frontend/shared/sentry-evidence.ts"
+        ]
+      },
+      "deployment_symbols": {
+        "files": [
+          "frontend/docker/Dockerfile",
+          "backend/docker/php/Dockerfile",
+          "frontend/nuxt.config.ts",
+          "frontend/shared/sentry-sourcemap-sources.ts",
+          "frontend/scripts/verify-sentry-sourcemaps.mjs",
+          "deploy/docker-compose.production.yml"
+        ],
+        "workflows": [
+          {
+            "path": ".github/workflows/build.yml",
+            "workflow_fields": [
+              "env",
+              "defaults",
+              "on.workflow_call.inputs"
+            ],
+            "jobs": [
+              {
+                "id": "containers",
+                "fields": [
+                  "strategy",
+                  "env",
+                  "defaults"
+                ]
+              }
+            ],
+            "steps": [
+              {
+                "name": "Build OCI image ${{ matrix.image }} once for this release candidate",
+                "job": "containers"
+              },
+              {
+                "name": "Export private frontend source maps from the same build",
+                "job": "containers"
+              },
+              {
+                "name": "Preserve private source maps for the exact release source",
+                "job": "containers"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "approvedProofSha256": "sha256:076dd5d3b9d58c20abcad0dfbfbf8f6b333be6650928e182ab1dc605bdfc8c38"
+}
