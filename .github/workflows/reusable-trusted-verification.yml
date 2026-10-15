@@ -1151,7 +1151,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'gate-php') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-php') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-medium, sanctuary-gate]
@@ -1182,7 +1182,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'gate-php') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-php') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1211,7 +1211,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'gate-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-gate]
@@ -1242,7 +1242,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'gate-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'gate-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'gate-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1271,7 +1271,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-backend-postgres') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-backend-postgres') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-tracker]
@@ -1302,7 +1302,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-backend-postgres') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-backend-postgres') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1331,7 +1331,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-frontend-static') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-medium, sanctuary-tracker]
@@ -1362,7 +1362,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-quality' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-frontend-static') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1391,7 +1391,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-api') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-api') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-tracker]
@@ -1422,7 +1422,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-api') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-api') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1451,7 +1451,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-web') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-web') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-tracker]
@@ -1482,7 +1482,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-web') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-web') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1511,7 +1511,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-php-prod') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-php-prod') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-tracker]
@@ -1542,7 +1542,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-php-prod') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-php-prod') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1571,7 +1571,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-tracker]
@@ -1602,7 +1602,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'tracker-images' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'tracker-container-nginx-prod') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1631,7 +1631,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-core') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-core') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-medium, sanctuary-wodiq-platform]
@@ -1662,7 +1662,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-core') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-core') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1691,7 +1691,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-runtime-build') && needs.preflight.outputs.trusted == 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-runtime-build') && needs.preflight.outputs.trusted == 'true' }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-medium, sanctuary-wodiq-platform]
@@ -1722,7 +1722,7 @@ jobs:
     permissions:
       contents: read
     needs: preflight
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-runtime-build') && needs.preflight.outputs.trusted != 'true' }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-runtime-build') && needs.preflight.outputs.trusted != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1751,7 +1751,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-api') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
@@ -1782,7 +1782,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-api') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1811,7 +1811,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-management') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-management') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
@@ -1842,7 +1842,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-management') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-management') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -1871,7 +1871,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-worker') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-worker') && needs.preflight.outputs.trusted == 'true' && (needs.wodiq-runtime-build-trusted.result == 'success' && needs.wodiq-runtime-build-trusted.outputs.verified == 'true' && needs.wodiq-runtime-build-hosted.result == 'skipped') }}
     runs-on:
       group: sanctuary-trusted-verification
       labels: [self-hosted, trusted-heavy, sanctuary-wodiq-platform]
@@ -1902,7 +1902,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight, wodiq-runtime-build-trusted, wodiq-runtime-build-hosted]
-    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs), 'wodiq-worker') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.bundle == 'wodiq-platform' && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-worker') && needs.preflight.outputs.trusted != 'true' && (needs.wodiq-runtime-build-hosted.result == 'success' && needs.wodiq-runtime-build-hosted.outputs.verified == 'true' && needs.wodiq-runtime-build-trusted.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
