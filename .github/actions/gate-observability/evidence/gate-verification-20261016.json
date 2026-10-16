@@ -1,0 +1,198 @@
+{
+  "environment": "verification",
+  "source": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+  "cases": [
+    {
+      "heal_case_id": "e88951a9fc114a889ed0a97bf190a4bb",
+      "external_issue_id": "154122932",
+      "last_event_id": "89f5cb91d0df4a18a595b08c58a18964",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_reason": null,
+      "fix_attempts": 0,
+      "fix_pr_url": null,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "artifact_digest": "sha256:287a9dcb81e17d96a0366eca595111f990c1b72c7c4147ceb8f70329a9a6ca11",
+      "deployment_receipt_digest": "sha256:1ef134718cbf27e0270bdb8b5e9a6fae7af72f6e6713aa77145aa5f3970c5577",
+      "source_path": "frontend/app/utils/sentry-verification.ts",
+      "source_line": "3",
+      "exception_type": "TypeError",
+      "repository": "Tuinstra-DEV/gate",
+      "configuration_digest": "sha256:c45684bb4b89224259128cfd4ac41452289c8abd0cbf8b322be7ad94ff0d776d"
+    },
+    {
+      "heal_case_id": "92639b8677064f72b0a5350534a99e59",
+      "external_issue_id": "154122878",
+      "last_event_id": "4de2fd2736454f32aa8e420c08ce0b57",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_reason": null,
+      "fix_attempts": 0,
+      "fix_pr_url": null,
+      "component": "nitro",
+      "environment": "verification",
+      "source_commit": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "artifact_digest": "sha256:287a9dcb81e17d96a0366eca595111f990c1b72c7c4147ceb8f70329a9a6ca11",
+      "deployment_receipt_digest": "sha256:b466c89a19b3ccab28925ac194e24125808ab3b3e2e2c9c2d9a0f6e85d016ded",
+      "source_path": "frontend/server/utils/sentry-verification.ts",
+      "source_line": "3",
+      "exception_type": "Error",
+      "repository": "Tuinstra-DEV/gate",
+      "configuration_digest": "sha256:c45684bb4b89224259128cfd4ac41452289c8abd0cbf8b322be7ad94ff0d776d"
+    },
+    {
+      "heal_case_id": "b5a995c64dd44f58b4ee914b302dee2e",
+      "external_issue_id": "154124016",
+      "last_event_id": "098af94ab4d34694b0752d6fbbb25308",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_reason": null,
+      "fix_attempts": 0,
+      "fix_pr_url": null,
+      "component": "backend",
+      "environment": "verification",
+      "source_commit": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "artifact_digest": "sha256:a10005eac9a541968ae9fcb5cefb5b531aac804e11c4d00780e600bbe07e9543",
+      "deployment_receipt_digest": "sha256:e297ccc6929a5de85b9300bc80471abe43b8450e27a12d74fd79fc9b524ec6cf",
+      "source_path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+      "source_line": "42",
+      "exception_type": "App\\Service\\Heal\\HealRunnerInfrastructureFailure",
+      "repository": "Tuinstra-DEV/gate",
+      "configuration_digest": "sha256:c45684bb4b89224259128cfd4ac41452289c8abd0cbf8b322be7ad94ff0d776d"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "89f5cb91d0df4a18a595b08c58a18964",
+      "issue_id": "154122932",
+      "component": "browser",
+      "release": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "environment": "verification",
+      "exception_types": [
+        "TypeError"
+      ],
+      "nonempty_user_fields": 0,
+      "processing_errors": 0,
+      "private_entries_count": 0,
+      "frame_variables_count": 0,
+      "exception_values_sanitized": true
+    },
+    {
+      "event_id": "4de2fd2736454f32aa8e420c08ce0b57",
+      "issue_id": "154122878",
+      "component": "nitro",
+      "release": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "environment": "verification",
+      "exception_types": [
+        "Error"
+      ],
+      "nonempty_user_fields": 0,
+      "processing_errors": 0,
+      "private_entries_count": 0,
+      "frame_variables_count": 0,
+      "exception_values_sanitized": true
+    },
+    {
+      "event_id": "098af94ab4d34694b0752d6fbbb25308",
+      "issue_id": "154124016",
+      "component": "backend",
+      "release": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+      "environment": "verification",
+      "exception_types": [
+        "App\\Service\\Heal\\HealRunnerInfrastructureFailure"
+      ],
+      "nonempty_user_fields": 0,
+      "processing_errors": 0,
+      "private_entries_count": 0,
+      "frame_variables_count": 0,
+      "exception_values_sanitized": true
+    }
+  ],
+  "frontend_build": {
+    "source": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+    "run": "38918185832",
+    "attempt": 1,
+    "artifact_id": 12052883179,
+    "outer_digest": "sha256:90ec779ef0cafb02272a2be09aa3756e3f2c9dd6d0e9d4f2ffab6638320faf1e",
+    "runtime_digest": "sha256:287a9dcb81e17d96a0366eca595111f990c1b72c7c4147ceb8f70329a9a6ca11"
+  },
+  "php_build": {
+    "source": "aaf0cc9f5d97c9db74caf6bccad4160f90b21a55",
+    "run": "38916893651",
+    "attempt": 1,
+    "artifact_id": 12052639481,
+    "archive_sha256": "sha256:55de9f41059a23a9f711fbd8671cc226e6cb824d727a1de701f2428b3be85206",
+    "index_digest": "sha256:a10005eac9a541968ae9fcb5cefb5b531aac804e11c4d00780e600bbe07e9543",
+    "image_manifest_digest": "sha256:d6180a749bb1920a0e85bcfdf3e224f8909d29d34f835ed1fbbbd64f9c341361",
+    "image_id": "sha256:a7da562d6636f90a26af40db73cdab0d71358370d69e3f6ac6db7c81bb8ce022"
+  },
+  "duplicate_intake": [
+    {
+      "event_id": "89f5cb91d0df4a18a595b08c58a18964",
+      "issue_id": "154122932",
+      "component": "browser",
+      "repeat": 0,
+      "http_status": 200,
+      "case_id": "e88951a9-fc11-4a88-9ed0-a97bf190a4bb",
+      "status": "triaged"
+    },
+    {
+      "event_id": "89f5cb91d0df4a18a595b08c58a18964",
+      "issue_id": "154122932",
+      "component": "browser",
+      "repeat": 1,
+      "http_status": 200,
+      "case_id": "e88951a9-fc11-4a88-9ed0-a97bf190a4bb",
+      "status": "triaged"
+    },
+    {
+      "event_id": "4de2fd2736454f32aa8e420c08ce0b57",
+      "issue_id": "154122878",
+      "component": "nitro",
+      "repeat": 0,
+      "http_status": 200,
+      "case_id": "92639b86-7706-4f72-b0a5-350534a99e59",
+      "status": "triaged"
+    },
+    {
+      "event_id": "4de2fd2736454f32aa8e420c08ce0b57",
+      "issue_id": "154122878",
+      "component": "nitro",
+      "repeat": 1,
+      "http_status": 200,
+      "case_id": "92639b86-7706-4f72-b0a5-350534a99e59",
+      "status": "triaged"
+    },
+    {
+      "event_id": "098af94ab4d34694b0752d6fbbb25308",
+      "issue_id": "154124016",
+      "component": "backend",
+      "repeat": 0,
+      "http_status": 200,
+      "case_id": "b5a995c6-4dd4-4f58-b4ee-914b302dee2e",
+      "status": "triaged"
+    },
+    {
+      "event_id": "098af94ab4d34694b0752d6fbbb25308",
+      "issue_id": "154124016",
+      "component": "backend",
+      "repeat": 1,
+      "http_status": 200,
+      "case_id": "b5a995c6-4dd4-4f58-b4ee-914b302dee2e",
+      "status": "triaged"
+    }
+  ],
+  "production_event": false,
+  "automatic_fix_attempts": 0
+}
