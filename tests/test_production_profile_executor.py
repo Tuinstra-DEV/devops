@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
 import json
 import pathlib
 import os
+import signal
 import tempfile
 import subprocess
 import sys
@@ -69,6 +71,73 @@ class ProductionProfileExecutorTest(unittest.TestCase):
             self.decode(request(operation="apply"))
         apply = request(operation="apply", approved_check_result_hash="d" * 64)
         self.assertEqual(apply, self.decode(apply))
+
+    def test_status_contract_binds_the_original_execution_operation(self) -> None:
+        payload = request(operation="status", execution_operation="apply", approved_check_result_hash="d" * 64)
+        self.assertEqual(payload, self.decode(payload))
+        for invalid in [request(operation="status"), request(operation="status", execution_operation="shell"), request(operation="status", execution_operation="apply")]:
+            with self.subTest(invalid=invalid), self.assertRaises(EXECUTOR.Rejected):
+                self.decode(invalid)
+
+    def test_status_without_journal_never_executes_or_creates_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            payload = request(operation="status", execution_operation="apply", approved_check_result_hash="d" * 64)
+            with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "run_phase") as runner, mock.patch.object(EXECUTOR, "acquire_host_lock") as locker:
+                result = EXECUTOR.read_status(payload)
+            self.assertEqual("uncertain", result["status"])
+            self.assertFalse(result["journal_present"])
+            self.assertFalse(result["journal_terminal"])
+            self.assertEqual([], list((root / "journal").iterdir()))
+            runner.assert_not_called()
+            locker.assert_not_called()
+
+    def test_status_requires_exact_original_request_and_preserves_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            original = request(operation="apply", approved_check_result_hash="d" * 64)
+            digest = EXECUTOR.hashlib.sha256(json.dumps(original, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            journal = root / "journal" / f"{original['job_id']}-{original['plan_hash']}.json"
+            for response in [None, {"status": "succeeded", "summary": "done", "retry_safe": False}]:
+                journal.write_text(json.dumps({"request_hash": digest, "response": response}))
+                journal.chmod(0o600)
+                before = journal.read_bytes()
+                query = {**original, "operation": "status", "execution_operation": "apply"}
+                with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "safe_file"), mock.patch.object(EXECUTOR, "run_phase") as runner:
+                    result = EXECUTOR.read_status(query)
+                    self.assertTrue(result["journal_present"])
+                    self.assertEqual(response is not None, result["journal_terminal"])
+                    with self.assertRaises(EXECUTOR.Rejected):
+                        EXECUTOR.read_status({**query, "approved_check_result_hash": "e" * 64})
+                self.assertEqual(before, journal.read_bytes())
+                runner.assert_not_called()
+
+    def test_status_survives_policy_rotation_and_unavailable_old_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root/'journal').mkdir(mode=0o700)
+            config = root/'config'
+            config.mkdir(mode=0o700)
+            (config/'host-identity').write_text('tuinstra-prod-01\n')
+            (config/'host-identity').chmod(0o644)
+            original = request(operation='apply', approved_check_result_hash='d'*64)
+            digest = EXECUTOR.hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            journal = root/'journal'/f"{original['job_id']}-{original['plan_hash']}.json"
+            journal.write_text(json.dumps({'request_hash':digest,'response':{'contract_version':1,'status':'succeeded'}}))
+            journal.chmod(0o600)
+            query = {**original, 'operation':'status', 'execution_operation':'apply'}
+            fake_input = mock.Mock();fake_input.buffer=io.BytesIO(command(query))
+            output = io.StringIO()
+            with mock.patch.object(EXECUTOR, 'ROOT', root), mock.patch.object(EXECUTOR, 'CONFIG_ROOT', config), mock.patch.object(EXECUTOR, 'safe_file'), mock.patch.object(EXECUTOR, 'safe_directory'), mock.patch.object(EXECUTOR.os,'geteuid',return_value=0), mock.patch.object(EXECUTOR.sys,'argv',['executor']), mock.patch.dict(EXECUTOR.os.environ,{'SUDO_USER':'console-profile-executor'}), mock.patch.object(EXECUTOR.sys,'stdin',fake_input), mock.patch.object(EXECUTOR.sys,'stdout',output), mock.patch.object(EXECUTOR,'load_policy',side_effect=EXECUTOR.Rejected('rotated profile')) as policy, mock.patch.object(EXECUTOR,'verify_bundle',side_effect=FileNotFoundError('old bundle')) as bundle:
+                code = EXECUTOR.main()
+            self.assertEqual(0, code)
+            result = json.loads(output.getvalue())
+            self.assertEqual('succeeded', result['status'])
+            self.assertTrue(result['journal_terminal'])
+            self.assertEqual(original['source_sha'],result['source_sha'])
+            policy.assert_not_called();bundle.assert_not_called()
 
     def test_normalized_evidence_hash_ignores_raw_output(self) -> None:
         payload = request()
@@ -149,6 +218,131 @@ prod01 : ok=47 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
             self.assertEqual("failed", result["status"])
             self.assertTrue(result["retry_safe"])
             runner.assert_called_once()
+
+    def test_terminal_receipt_is_persisted_before_releasing_host_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            lock_path = root / "lock"
+            lock_path.touch(mode=0o600)
+            persisted_while_locked: list[bool] = []
+            original_atomic_json = EXECUTOR.atomic_json
+
+            def acquire(_: str) -> int:
+                descriptor = os.open(lock_path, os.O_RDWR)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+
+            def persist(path: pathlib.Path, value: dict[str, object]) -> None:
+                if isinstance(value.get("response"), dict):
+                    with lock_path.open("r+") as contender:
+                        try:
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            persisted_while_locked.append(True)
+                        else:
+                            persisted_while_locked.append(False)
+                            fcntl.flock(contender, fcntl.LOCK_UN)
+                original_atomic_json(path, value)
+
+            with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "acquire_host_lock", side_effect=acquire), mock.patch.object(EXECUTOR, "run_phase", return_value={"successful": True}), mock.patch.object(EXECUTOR, "atomic_json", side_effect=persist):
+                result = EXECUTOR.execute(request(), {}, (pathlib.Path(), pathlib.Path(), pathlib.Path()))
+
+            self.assertEqual("succeeded", result["status"])
+            self.assertEqual([True], persisted_while_locked)
+
+    def test_initial_journal_write_failure_releases_host_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "journal").mkdir(mode=0o700)
+            lock_path = root / "lock"
+            lock_path.touch(mode=0o600)
+            acquired: list[int] = []
+
+            def acquire(_: str) -> int:
+                descriptor = os.open(lock_path, os.O_RDWR)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired.append(descriptor)
+                return descriptor
+
+            try:
+                with mock.patch.object(EXECUTOR, "ROOT", root), mock.patch.object(EXECUTOR, "safe_directory"), mock.patch.object(EXECUTOR, "acquire_host_lock", side_effect=acquire), mock.patch.object(EXECUTOR, "atomic_json", side_effect=OSError("synthetic receipt write failure")), mock.patch.object(EXECUTOR, "run_phase") as runner:
+                    with self.assertRaises(OSError):
+                        EXECUTOR.execute(request(), {}, (pathlib.Path(), pathlib.Path(), pathlib.Path()))
+                runner.assert_not_called()
+                with lock_path.open("r+") as contender:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(contender, fcntl.LOCK_UN)
+            finally:
+                for descriptor in acquired:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+
+    def test_disconnect_kills_descendants_before_unlock_and_persists_uncertainty(self) -> None:
+        driver = """
+import fcntl,importlib.machinery,importlib.util,json,os,pathlib,subprocess,sys,tempfile
+from unittest import mock
+loader=importlib.machinery.SourceFileLoader('executor',sys.argv[1]);spec=importlib.util.spec_from_loader(loader.name,loader);module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+root=pathlib.Path(sys.argv[2]);(root/'journal').mkdir(mode=0o700);lock=root/'lock';lock.touch(mode=0o600)
+request=json.loads(sys.argv[3])
+def acquire(host):
+    fd=os.open(lock,os.O_RDWR);fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);return fd
+def phase(request,policy,paths,phase):
+    if phase=='preflight': return {'successful':True,'evidence_hash':request['approved_check_result_hash']}
+    child="import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"
+    program="import os,pathlib,subprocess,sys,time;pathlib.Path(sys.argv[1]+'.group').write_text(str(os.getpid()));p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]);pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(60)"
+    with tempfile.TemporaryFile() as out,tempfile.TemporaryFile() as err:
+        module.run_bounded([sys.executable,'-c',program,str(root/'child.pid'),child],root,{'PATH':os.environ.get('PATH','')},out,err,45)
+with mock.patch.object(module,'ROOT',root),mock.patch.object(module,'safe_directory'),mock.patch.object(module,'acquire_host_lock',side_effect=acquire),mock.patch.object(module,'run_phase',side_effect=phase):
+    result=module.execute(request,{},(root,root,root));(root/'receipt.json').write_text(json.dumps(result))
+"""
+        for selected_signal in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=selected_signal), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                parent = subprocess.Popen([sys.executable, '-c', driver, str(ROOT/'scripts'/'production-profile-executor'), directory, json.dumps(request(operation='apply', approved_check_result_hash='d'*64))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                pid = None
+                try:
+                    deadline = time.monotonic()+5
+                    while not (root/'child.pid').exists() and parent.poll() is None and time.monotonic()<deadline:
+                        time.sleep(0.02)
+                    self.assertTrue((root/'child.pid').exists(), 'synthetic descendant did not start')
+                    pid = int((root/'child.pid').read_text())
+                    os.kill(parent.pid, selected_signal)
+                    parent.wait(timeout=8)
+                    if selected_signal == signal.SIGKILL:
+                        self.assertFalse((root/'receipt.json').exists())
+                        journals = list((root/'journal').glob('*.json'))
+                        self.assertEqual(1, len(journals))
+                        self.assertIsNone(json.loads(journals[0].read_text())['response'])
+                        with (root/'lock').open('r+') as contender:
+                            with self.assertRaises(BlockingIOError):
+                                fcntl.flock(contender, fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        continue
+                    self.assertTrue((root/'receipt.json').exists(), 'disconnect lost the durable uncertain receipt')
+                    self.assertEqual('uncertain', json.loads((root/'receipt.json').read_text())['status'])
+                    for _ in range(40):
+                        try:
+                            os.kill(pid, 0)
+                            process_state = pathlib.Path(f'/proc/{pid}/stat')
+                            if process_state.exists() and process_state.read_text().split()[2]=='Z':
+                                break
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.025)
+                    else:
+                        self.fail('descendant survived target disconnect')
+                    with (root/'lock').open('r+') as contender:
+                        fcntl.flock(contender, fcntl.LOCK_EX|fcntl.LOCK_NB)
+                finally:
+                    if parent.poll() is None:
+                        parent.kill();parent.wait()
+                    if pid is not None:
+                        try:
+                            os.killpg(int((root/'child.pid.group').read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
     def test_bounded_runner_terminates_the_entire_child_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

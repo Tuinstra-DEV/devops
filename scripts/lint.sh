@@ -99,9 +99,13 @@ ruby -c scripts/gate-pr-security-contract-test.rb
 
 python3 -c 'compile(open("scripts/gate-pr-security-local-integration.py", encoding="utf-8").read(), "scripts/gate-pr-security-local-integration.py", "exec")'
 
-echo "lint passed"
+
+python3 -c 'compile(open("scripts/test-signing-key-check.py", encoding="utf-8").read(), "scripts/test-signing-key-check.py", "exec")'
+
 node --check scripts/verify-gate-release-assurance.mjs
 node --check scripts/gate-observability-fingerprint.mjs
 node --check scripts/collect-gate-symbols.mjs
 node --check .github/actions/gate-observability/run.mjs
 ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/gate-observability/action.yml"), aliases: true)'
+
+echo "lint passed"
