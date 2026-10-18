@@ -57,6 +57,11 @@ fi
 echo "test passed"
 
 ./scripts/production-host-baseline-test.sh
+if command -v ansible-playbook >/dev/null 2>&1; then
+  python3 scripts/test-signing-key-check.py
+else
+  echo "Native signing-key regression skipped: ansible-playbook is not installed"
+fi
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
