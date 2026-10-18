@@ -30,7 +30,7 @@ class ImageContractTests(unittest.TestCase):
         source = CONTRACT.read_text().split("\ndocker buildx version", 1)[0]
         archive = io.BytesIO()
         files = {"preflight": source}
-        for name in ("composer", "corepack", "curl", "docker", "git", "jq", "node", "npm", "npx", "php8.3", "php8.4", "trivy", "unzip"):
+        for name in ("composer", "corepack", "curl", "docker", "git", "gh", "skopeo", "qemu-aarch64-static", "jq", "node", "npm", "npx", "php8.3", "php8.4", "trivy", "unzip"):
             if name != "composer" or not missing_composer:
                 files[name] = "#!/bin/sh\nexit 0\n"
         with tarfile.open(fileobj=archive, mode="w") as tar:
