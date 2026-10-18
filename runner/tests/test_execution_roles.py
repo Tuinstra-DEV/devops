@@ -800,6 +800,139 @@ class ExecutionRoleTests(unittest.TestCase):
                 adapter.generate_jit(REPO, 22, 42, 'ci-pr-security-producer')
             jit.assert_not_called()
 
+    def shared_workflow_config(self, explicit=True):
+        cfg = copy.deepcopy(self.cfg)
+        del cfg['org_workflow_ref']
+        cfg['org_workflow_refs'] = [REF, REF[:-40] + 'b' * 40, REF[:-40] + 'c' * 40]
+        revision = 'a8ace2f171d7d127bbfb3a6d6b13f158f461ba98'
+        cfg['org_execution_roles'][METADATA]['workflow_ref'] = REF[:-40] + revision
+        cfg['org_execution_roles'][PRODUCER]['workflow_ref'] = PRODUCER_REF[:-40] + revision
+        cfg['org_execution_roles'][METADATA]['events'] = ['pull_request']
+        if explicit:
+            cfg['org_workflow_refs'].append(cfg['org_execution_roles'][METADATA]['workflow_ref'])
+        return cfg
+
+    def shared_workflow_client(self, cfg):
+        # Use production configuration/factory separation; reading a synthetic
+        # token is the only substituted factory operation. No network is used.
+        with mock.patch.object(manager, 'read_token', return_value='fixture-token'):
+            return manager.organization_client(cfg)
+
+    def test_explicit_shared_fourth_pin_keeps_real_factory_preflight_and_downstream_live(self):
+        cfg = self.shared_workflow_config()
+        manager.validate_org_config(cfg)
+        trusted = manager.configured_trusted_workflow_refs(cfg)
+        self.assertEqual(trusted, tuple(cfg['org_workflow_refs']))
+        self.assertEqual(len(trusted), 4)
+        client = self.shared_workflow_client(cfg)
+        shared = cfg['org_execution_roles'][METADATA]['workflow_ref']
+        self.run['referenced_workflows'] = [{'path': shared, 'sha': shared[-40:]}]
+        self.assertEqual(len(self.candidates(client)), 1)
+        for profile in ('medium', 'heavy'):
+            self.job['labels'] = ['self-hosted', 'trusted-' + profile, 'sanctuary-tracker']
+            with self.subTest(profile=profile), mock.patch.object(client, 'request', side_effect=self.response):
+                self.assertTrue(client._trusted_run(self.run, REPO))
+                self.assertEqual(client.candidate_trusted_jobs(REPO, profile),
+                                 [{'repo': REPO, 'run_id': 11, 'job_id': 22, 'workflow_ref': shared}])
+        for legacy in trusted[:3]:
+            self.run['referenced_workflows'] = [{'path': legacy, 'sha': legacy[-40:]}]
+            with self.subTest(legacy=legacy), mock.patch.object(client, 'request', side_effect=self.response):
+                self.assertEqual(client.candidate_trusted_jobs(REPO, 'heavy')[0]['workflow_ref'], legacy)
+
+    def test_role_only_shared_pin_never_implicitly_grants_trusted_source(self):
+        cfg = self.shared_workflow_config(explicit=False)
+        manager.validate_org_config(cfg)
+        client = self.shared_workflow_client(cfg)
+        shared = cfg['org_execution_roles'][METADATA]['workflow_ref']
+        self.run['referenced_workflows'] = [{'path': shared, 'sha': shared[-40:]}]
+        self.assertEqual(len(self.candidates(client)), 1)
+        self.assertFalse(client._trusted_run(self.run, REPO))
+        self.job['labels'] = ['self-hosted', 'trusted-medium', 'sanctuary-tracker']
+        with mock.patch.object(client, 'request', side_effect=self.response):
+            self.assertEqual(client.candidate_trusted_jobs(REPO, 'medium'), [])
+        legacy = {key: value for key, value in cfg.items() if key != 'org_execution_roles'}
+        self.assertEqual(manager.configured_trusted_workflow_refs(legacy), tuple(cfg['org_workflow_refs']))
+
+    def test_shared_fourth_pin_is_bounded_to_enabled_metadata_policy_and_exact_position(self):
+        valid = self.shared_workflow_config()
+        invalid = []
+        for roles in ({}, {PRODUCER: valid['org_execution_roles'][PRODUCER]}):
+            invalid.append({**valid, 'org_execution_roles': roles})
+        for fourth in (REF[:-40] + 'f' * 40, REF[:-40] + 'main', REF,
+                       valid['org_execution_roles'][PRODUCER]['workflow_ref']):
+            invalid.append({**valid, 'org_workflow_refs': valid['org_workflow_refs'][:3] + [fourth]})
+        invalid.append({**valid, 'org_workflow_refs': valid['org_workflow_refs'] + [REF[:-40] + 'f' * 40]})
+        invalid.append({**valid, 'org_workflow_refs': [valid['org_workflow_refs'][-1]] + valid['org_workflow_refs'][:3]})
+        for field, value in (('workflow_ref', REF[:-40] + 'main'),
+                             ('actors', [{'login': 'dependabot[bot]', 'type': 'Bot'}]),
+                             ('repositories', ['Tuinstra-DEV/notify'])):
+            cfg = copy.deepcopy(valid)
+            cfg['org_execution_roles'][METADATA][field] = value
+            invalid.append(cfg)
+        for number, cfg in enumerate(invalid):
+            with self.subTest(case=number), self.assertRaises(manager.RunnerError):
+                manager.configured_trusted_workflow_refs(cfg)
+
+    def test_shared_pin_keeps_unchanged_human_nonfork_and_current_source_checks(self):
+        for changed in ('actor', 'trigger', 'author', 'run-fork', 'pr-fork', 'source', 'target-event'):
+            with self.subTest(changed=changed):
+                self.setUp()
+                cfg = self.shared_workflow_config()
+                client = self.shared_workflow_client(cfg)
+                shared = cfg['org_execution_roles'][METADATA]['workflow_ref']
+                self.run['referenced_workflows'] = [{'path': shared, 'sha': shared[-40:]}]
+                self.job['labels'] = ['self-hosted', 'trusted-medium', 'sanctuary-tracker']
+                bot = {'login': 'dependabot[bot]', 'type': 'Bot'}
+                if changed == 'actor':
+                    self.run['actor'] = bot
+                elif changed == 'trigger':
+                    self.run['triggering_actor'] = bot
+                elif changed == 'author':
+                    self.pr['user'] = bot
+                elif changed == 'run-fork':
+                    self.run['head_repository'] = {**self.run['head_repository'], 'fork': True}
+                elif changed == 'pr-fork':
+                    self.pr['head']['repo'] = {**self.pr['head']['repo'], 'fork': True}
+                elif changed == 'source':
+                    self.pr['head']['sha'] = 'f' * 40
+                else:
+                    self.run['event'] = 'pull_request_target'
+                with mock.patch.object(client, 'request', side_effect=self.response):
+                    self.assertEqual(client.candidate_trusted_jobs(REPO, 'medium'), [])
+
+    def test_producer_pin_still_cannot_enter_trusted_route_with_shared_fourth(self):
+        cfg = self.shared_workflow_config()
+        client = self.shared_workflow_client(cfg)
+        self.producer()
+        producer = cfg['org_execution_roles'][PRODUCER]['workflow_ref']
+        self.run['referenced_workflows'] = [{'path': producer, 'sha': producer[-40:]}]
+        self.assertEqual(len(self.candidates(client, PRODUCER)), 1)
+        for event in ('pull_request_target', 'pull_request'):
+            self.run['event'] = event
+            self.assertFalse(client._trusted_run(self.run, REPO))
+            self.job['labels'] = ['self-hosted', 'trusted-heavy', 'sanctuary-tracker']
+            with mock.patch.object(client, 'request', side_effect=self.response):
+                self.assertEqual(client.candidate_trusted_jobs(REPO, 'heavy'), [])
+
+    def test_shared_fourth_still_requires_exact_five_ref_group_union(self):
+        cfg = self.shared_workflow_config()
+        client = self.shared_workflow_client(cfg)
+        refs = manager.configured_org_workflow_refs(cfg)
+        self.assertEqual(len(refs), 5)
+        self.assertEqual(set(refs), set(cfg['org_workflow_refs']) | {
+                         cfg['org_execution_roles'][PRODUCER]['workflow_ref']})
+        group = {'id': 42, 'name': manager.ORG_GROUP_NAME, 'visibility': 'selected',
+                 'default': False, 'inherited': False, 'allows_public_repositories': False,
+                 'restricted_to_workflows': True, 'selected_workflows': list(reversed(refs))}
+        selection = {'total_count': 1, 'repositories': [self.metadata]}
+        with mock.patch.object(client, 'request', side_effect=[group, selection]):
+            client.verify_org_group(cfg)
+        for wrong in (list(refs[:-1]), list(refs) + [REF[:-40] + 'f' * 40],
+                      list(refs[:-1]) + [REF[:-40] + 'f' * 40], list(refs) + [refs[0]]):
+            with self.subTest(refs=wrong), mock.patch.object(client, 'request', return_value={**group, 'selected_workflows': wrong}):
+                with self.assertRaises(manager.RunnerError):
+                    client.verify_org_group(cfg)
+
 
 if __name__ == '__main__':
     unittest.main()
