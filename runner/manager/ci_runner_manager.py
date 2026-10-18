@@ -228,11 +228,15 @@ def configured_trusted_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     if single == multiple:
         raise RunnerError("organization workflow requires exactly one reference policy")
     refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
-    if not isinstance(refs, list) or not 1 <= len(refs) <= 3 or \
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 4 or \
             any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
                 re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
                 for ref in refs) or len(set(refs)) != len(refs):
         raise RunnerError("organization workflows must be distinct exact commit references")
+    if len(refs) == 4:
+        metadata = configured_org_execution_roles(cfg).get("metadata-preflight")
+        if metadata is None or refs[-1] != metadata["workflow_ref"]:
+            raise RunnerError("fourth trusted workflow must explicitly share the enabled metadata role pin")
     return tuple(refs)
 
 
@@ -275,8 +279,9 @@ def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
-    # Keep the historical one-to-three trusted pins, plus at most one exact pin
-    # per separately reviewed role. No wildcard or general workflow admission.
+    # Preserve three legacy trusted pins and an optional explicitly trusted
+    # shared metadata pin, plus separately reviewed roles. Sharing is deduplicated
+    # for exact group equality; a role-only pin never grants trusted execution.
     refs = list(configured_trusted_workflow_refs(cfg))
     refs.extend(policy["workflow_ref"] for policy in configured_org_execution_roles(cfg).values())
     return tuple(dict.fromkeys(refs))
