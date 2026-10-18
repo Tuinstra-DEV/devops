@@ -25,3 +25,9 @@ php84_version   = "REPLACE_EXACT_APT_VERSION"
 composer_version = "REPLACE_EXACT_VERSION"
 composer_sha384   = "REPLACE_96_HEX"
 playwright_version = "REPLACE_EXACT_VERSION"
+
+# Installed during the image build; hardened jobs never install these tools.
+skopeo_version = "REPLACE_EXACT_APT_VERSION"
+gh_version = "REPLACE_EXACT_APT_VERSION"
+php83_xdebug_version = "REPLACE_EXACT_APT_VERSION"
+qemu_user_static_version = "REPLACE_EXACT_APT_VERSION"

@@ -93,6 +93,22 @@ variable "playwright_version" {
   type = string
 }
 
+variable "skopeo_version" {
+  type = string
+}
+
+variable "gh_version" {
+  type = string
+}
+
+variable "php83_xdebug_version" {
+  type = string
+}
+
+variable "qemu_user_static_version" {
+  type = string
+}
+
 source "qemu" "ubuntu_runner" {
   iso_url          = var.ubuntu_iso_url
   iso_checksum     = "sha256:${var.ubuntu_iso_checksum}"
@@ -144,6 +160,10 @@ build {
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; echo 'packer' | sudo -S env {{ .Vars }} bash '{{ .Path }}'"
     environment_vars = [
+      "SKOPEO_VERSION=${var.skopeo_version}",
+      "GH_VERSION=${var.gh_version}",
+      "PHP83_XDEBUG_VERSION=${var.php83_xdebug_version}",
+      "QEMU_USER_STATIC_VERSION=${var.qemu_user_static_version}",
       "RUNNER_VERSION=${var.runner_version}",
       "RUNNER_SHA256=${var.runner_sha256}",
       "DOCKER_KEY_SHA256=${var.docker_key_sha256}",

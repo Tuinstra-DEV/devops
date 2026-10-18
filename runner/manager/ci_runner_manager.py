@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime
 import fcntl
 import hashlib
 import json
@@ -69,6 +70,28 @@ ORG_CREDENTIAL_PATH = "/run/credentials/ci-runner-manager.service/org_github_tok
 ORG_WORKFLOW_PREFIX = (f"{ORG_NAME}/devops/.github/workflows/"
                        "reusable-trusted-verification.yml@")
 
+# Execution identity is independent of the host-helper capacity profile. These
+# immutable workflow entrypoints are the only possible additional admissions;
+# no configured command, deploy workflow, label or path is accepted.
+EXECUTION_ROLES = {
+    "metadata-preflight": {
+        "profile": "medium", "label": "ci-metadata-preflight",
+        "workflow": ORG_WORKFLOW_PREFIX[:-1],
+        "events": {"pull_request", "push", "workflow_dispatch", "schedule"},
+        "actors": {(ORG_ACTOR, "User")},
+    },
+    "pr-security-producer": {
+        "profile": "heavy", "label": "ci-pr-security-producer",
+        "workflow": f"{ORG_NAME}/devops/.github/workflows/reusable-gate-pr-security.yml",
+        "events": {"pull_request_target"},
+        "actors": {(ORG_ACTOR, "User")},
+    },
+}
+ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
+ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
+                   "run_attempt", "source_sha", "pr_head_sha", "base_sha", "base_ref",
+                   "default_branch", "default_sha", "pr_number", "event", "head_branch", "execution_sha")
+
 
 class RunnerError(RuntimeError):
     pass
@@ -76,6 +99,10 @@ class RunnerError(RuntimeError):
 
 class OrgPreflightRejected(RunnerError):
     """The organization guard failed before a JIT POST was attempted."""
+
+
+class AssignmentMismatch(RunnerError):
+    """Positive assignment identity violation; stop only the affected role VM."""
 
 
 class CapacityUnavailable(RunnerError):
@@ -195,7 +222,7 @@ def org_routing_enabled(cfg: dict[str, Any]) -> bool:
     return value
 
 
-def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
+def configured_trusted_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     single = "org_workflow_ref" in cfg
     multiple = "org_workflow_refs" in cfg
     if single == multiple:
@@ -209,7 +236,110 @@ def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     return tuple(refs)
 
 
+def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
+    roles = cfg.get("org_execution_roles", {})
+    if not isinstance(roles, dict) or set(roles) - set(EXECUTION_ROLES):
+        raise RunnerError("organization execution roles are invalid")
+    if roles and (not org_routing_enabled(cfg) or not four_pool(cfg)):
+        raise RunnerError("execution roles require organization four-pool routing")
+    for role, policy in roles.items():
+        spec = EXECUTION_ROLES[role]
+        if not isinstance(policy, dict) or set(policy) != {
+                "workflow_ref", "repositories", "events", "actors"}:
+            raise RunnerError("execution role requires an exact local policy")
+        ref = policy["workflow_ref"]
+        if not isinstance(ref, str) or not re.fullmatch(
+                re.escape(spec["workflow"]) + r"@[a-f0-9]{40}", ref):
+            raise RunnerError("execution role workflow must be an exact reviewed commit")
+        for key, allowed in (("repositories", ROLE_REPOSITORIES), ("events", spec["events"])):
+            values = policy[key]
+            if not isinstance(values, list) or not values or \
+                    any(not isinstance(value, str) or value not in allowed for value in values) or \
+                    len(values) != len(set(values)):
+                raise RunnerError("execution role repository or event policy is invalid")
+        if not set(policy["repositories"]).issubset(cfg.get("org_repository_ids", {})):
+            raise RunnerError("execution role repository is not in the selected group")
+        actors = policy["actors"]
+        if not isinstance(actors, list) or not actors or len(actors) > len(spec["actors"]):
+            raise RunnerError("execution role actors must be explicitly selected")
+        selected = []
+        for actor in actors:
+            if not isinstance(actor, dict) or set(actor) != {"login", "type"} or \
+                    not isinstance(actor["login"], str) or not isinstance(actor["type"], str) or \
+                    (actor["login"], actor["type"]) not in spec["actors"]:
+                raise RunnerError("execution role actor is not eligible")
+            selected.append((actor["login"], actor["type"]))
+        if len(set(selected)) != len(selected):
+            raise RunnerError("execution role actors must be distinct")
+    return roles
+
+
+def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
+    # Keep the historical one-to-three trusted pins, plus at most one exact pin
+    # per separately reviewed role. No wildcard or general workflow admission.
+    refs = list(configured_trusted_workflow_refs(cfg))
+    refs.extend(policy["workflow_ref"] for policy in configured_org_execution_roles(cfg).values())
+    return tuple(dict.fromkeys(refs))
+
+
+def role_run_label(run_id: int, run_attempt: int) -> str:
+    if any(type(value) is not int or not 0 < value < 2**63 for value in (run_id, run_attempt)):
+        raise RunnerError("execution role run binding is invalid")
+    return f"ci-run-{run_id}-{run_attempt}"
+
+
+def role_source_head(labels: Any) -> str | None:
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        return None
+    heads = [label for label in labels if label.startswith("ci-pr-head-")]
+    if not heads:
+        return ""
+    if len(heads) != 1 or not re.fullmatch(r"ci-pr-head-[a-f0-9]{40}", heads[0]):
+        return None
+    return heads[0][len("ci-pr-head-"):]
+
+
+def role_execution_sha(labels: Any) -> str | None:
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        return None
+    bindings = [label for label in labels if label.startswith("ci-execution-sha-")]
+    if not bindings:
+        return ""
+    if len(bindings) != 1 or not re.fullmatch(r"ci-execution-sha-[a-f0-9]{40}", bindings[0]):
+        return None
+    return bindings[0][len("ci-execution-sha-"):]
+
+
+def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
+                      run_attempt: int, pr_head_sha: str = "", execution_sha: str = "") -> bool:
+    if role not in EXECUTION_ROLES or repo not in ROLE_REPOSITORIES or \
+            not isinstance(labels, list) or any(not isinstance(label, str) for label in labels) or \
+            not isinstance(execution_sha, str):
+        return False
+    try:
+        binding = role_run_label(run_id, run_attempt)
+    except RunnerError:
+        return False
+    required = {"self-hosted", EXECUTION_ROLES[role]["label"],
+                organization_repository_label(repo), binding}
+    if pr_head_sha:
+        if not isinstance(pr_head_sha, str) or re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None:
+            return False
+        required.add("ci-pr-head-" + pr_head_sha)
+    if role == "pr-security-producer":
+        if not pr_head_sha or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
+            return False
+        required.add("ci-execution-sha-" + execution_sha)
+    elif execution_sha:
+        # Target metadata is deliberately unsupported; ordinary PR/push role
+        # jobs cannot smuggle an execution-controller assertion into labels.
+        return False
+    return len(labels) == len(set(labels)) and (set(labels) == required or
+                                               set(labels) == required | {"linux", "x64"})
+
+
 def validate_org_config(cfg: dict[str, Any]) -> None:
+    configured_org_execution_roles(cfg)
     if not org_routing_enabled(cfg):
         return
     if not four_pool(cfg):
@@ -244,7 +374,9 @@ def organization_labels_match(labels: Any, repo: str, profile: str) -> bool:
             not all(isinstance(label, str) for label in labels):
         return False
     repo_label = organization_repository_label(repo)
-    return {"self-hosted", f"trusted-{profile}", repo_label}.issubset(labels) and \
+    return not any(label in {spec["label"] for spec in EXECUTION_ROLES.values()}
+                   for label in labels) and \
+        {"self-hosted", f"trusted-{profile}", repo_label}.issubset(labels) and \
         {label for label in labels if label in {"trusted-heavy", "trusted-medium"}} == \
         {f"trusted-{profile}"} and \
         {label for label in labels if label.startswith("sanctuary-")} == {repo_label}
@@ -603,7 +735,9 @@ class DispatchHistory:
 
 class GitHubClient:
     def __init__(self, token: str, api_url: str = "https://api.github.com", *,
-                 org_workflow_refs: tuple[str, ...] = ()) -> None:
+                 org_workflow_refs: tuple[str, ...] = (),
+                 org_execution_roles: dict[str, Any] | None = None,
+                 org_trusted_workflow_refs: tuple[str, ...] | None = None) -> None:
         if not token or "\n" in token:
             raise RunnerError("invalid GitHub credential")
         parsed_api_url = urllib.parse.urlsplit(api_url.rstrip("/"))
@@ -624,6 +758,14 @@ class GitHubClient:
         self._token = token
         self._api_url = api_url.rstrip("/")
         self._org_workflow_refs = org_workflow_refs
+        self._org_execution_roles = configured_org_execution_roles({
+            "org_execution_roles": {} if org_execution_roles is None else org_execution_roles,
+            "org_routing_enabled": True, "pool_mode": "four",
+            "org_repository_ids": dict.fromkeys(ROLE_REPOSITORIES),
+        })
+        self._trusted_workflow_refs = org_trusted_workflow_refs if org_trusted_workflow_refs is not None else tuple(
+            ref for ref in org_workflow_refs
+            if ref not in {policy["workflow_ref"] for policy in self._org_execution_roles.values()})
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -866,7 +1008,8 @@ class GitHubClient:
                     if job.get("status") == "queued" and required_label in labels and \
                             not any(isinstance(value, str) and value.startswith("sanctuary-")
                                     for value in labels):
-                        candidates.append({"repo": repo, "run_id": int(run["id"]), "job_id": int(job["id"])})
+                        candidates.append({"repo": repo, "run_id": int(run["id"]),
+                                           "job_id": int(job["id"]), **queue_timestamp(job)})
         return candidates
 
     def candidate_trusted_jobs(self, repo: str, profile: str, *,
@@ -897,9 +1040,252 @@ class GitHubClient:
                     continue
                 workflow_ref = self._verified_workflow_ref(detail)
                 candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"],
-                                   "workflow_ref": workflow_ref}
+                                   "workflow_ref": workflow_ref, **queue_timestamp(job)}
                                   for job in matching)
         return candidates
+
+    def _protected_branch_sha(self, repo: str, ref: Any) -> str | None:
+        if not isinstance(ref, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", ref) or \
+                ".." in ref or "//" in ref or ref.endswith("/"):
+            return None
+        branch = self.request("GET", f"{self.repo_path(repo)}/branches/"
+                              + urllib.parse.quote(ref, safe=""))
+        if not isinstance(branch, dict) or branch.get("name") != ref or \
+                branch.get("protected") is not True or not isinstance(branch.get("commit"), dict):
+            return None
+        sha = branch["commit"].get("sha")
+        return sha if isinstance(sha, str) and re.fullmatch(r"[a-f0-9]{40}", sha) else None
+
+    def _role_run_evidence(self, run: Any, repo: str, role: str) -> dict[str, Any] | None:
+        policy = self._org_execution_roles.get(role)
+        if policy is None or repo not in policy["repositories"] or not isinstance(run, dict):
+            return None
+        ref = policy["workflow_ref"]
+        if ref not in self._org_workflow_refs or run.get("event") not in policy["events"]:
+            return None
+        for actor in (run.get("actor"), run.get("triggering_actor")):
+            if not isinstance(actor, dict) or not any(
+                    actor.get("login") == expected["login"] and actor.get("type") == expected["type"]
+                    for expected in policy["actors"]):
+                return None
+        for key in ("id", "run_attempt"):
+            if type(run.get(key)) is not int or run[key] < 1:
+                return None
+        sha = run.get("head_sha")
+        if not isinstance(sha, str) or re.fullmatch(r"[a-f0-9]{40}", sha) is None:
+            return None
+        for key in ("repository", "head_repository"):
+            repository = run.get(key)
+            if not isinstance(repository, dict) or repository.get("full_name") != repo or \
+                    repository.get("private") is not True or repository.get("fork") is not False:
+                return None
+        refs = run.get("referenced_workflows")
+        if not isinstance(refs, list):
+            return None
+        matching = [item for item in refs if isinstance(item, dict) and
+                    isinstance(item.get("path"), str) and
+                    item["path"].startswith(EXECUTION_ROLES[role]["workflow"] + "@")]
+        if len(matching) != 1 or matching[0].get("path") != ref or \
+                matching[0].get("sha") != ref.rsplit("@", 1)[1]:
+            return None
+        branch = run.get("head_branch")
+        if not isinstance(branch, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
+                ".." in branch or "//" in branch or branch.endswith("/"):
+            return None
+        return {"execution_role": role, "workflow_ref": ref, "run_id": run["id"],
+                "run_attempt": run["run_attempt"], "source_sha": sha,
+                "event": run["event"], "head_branch": branch}
+
+    def _resolve_role_pull_request(self, run: dict[str, Any], repo: str,
+                                   source_head: str) -> dict[str, Any] | None:
+        associations = run.get("pull_requests")
+        if not isinstance(associations, list) or len(associations) > 1:
+            return None
+        if associations:
+            item = associations[0]
+            if not isinstance(item, dict) or type(item.get("number")) is not int or item["number"] < 1:
+                return None
+            number = item["number"]
+        else:
+            # API run head/branch identify PR source for both PR events. The
+            # separate execution-SHA label binds a target controller; never
+            # substitute that controller/default SHA for the PR source.
+            query = "?state=open&per_page=100"
+            if run["event"] in {"pull_request", "pull_request_target"}:
+                query += "&head=" + urllib.parse.quote(f"{ORG_NAME}:{run['head_branch']}", safe="")
+            found = self.request("GET", self.repo_path(repo) + "/pulls" + query)
+            if not isinstance(found, list) or len(found) >= 100 or any(
+                    not isinstance(item, dict) for item in found):
+                return None
+            matches = [item for item in found if item.get("state") == "open"
+                       and isinstance(item.get("head"), dict)
+                       and item["head"].get("sha") == source_head
+                       and isinstance(item["head"].get("repo"), dict)
+                       and item["head"]["repo"].get("full_name") == repo]
+            if len(matches) != 1 or type(matches[0].get("number")) is not int or matches[0]["number"] < 1:
+                return None
+            number = matches[0]["number"]
+        pr = self.request("GET", f"{self.repo_path(repo)}/pulls/{number}")
+        if not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] != number:
+            return None
+        return pr
+
+    def _role_evidence(self, run: Any, repo: str, role: str,
+                       source_head: str, execution_sha: str) -> dict[str, Any] | None:
+        immutable = self._role_run_evidence(run, repo, role)
+        if immutable is None:
+            return None
+        policy = self._org_execution_roles[role]
+        sha = immutable["source_sha"]
+        metadata = self.request("GET", self.repo_path(repo))
+        if not isinstance(metadata, dict) or metadata.get("full_name") != repo or \
+                metadata.get("private") is not True or metadata.get("fork") is not False:
+            return None
+        default = metadata.get("default_branch")
+        default_sha = self._protected_branch_sha(repo, default)
+        if default_sha is None:
+            return None
+        # API run head is PR source on target events as well. The immutable
+        # workflow separately labels github.sha and guards its execution ref;
+        # validate that controller against the current protected default, not
+        # against the PR head or the independently protected PR base.
+        base_ref, base_sha = default, default_sha
+        event = run["event"]
+        if event == "pull_request_target":
+            if role != "pr-security-producer" or execution_sha != default_sha:
+                return None
+        elif execution_sha != "":
+            return None
+        pr_sha = ""
+        number = 0
+        associations = run.get("pull_requests")
+        if event in {"pull_request", "pull_request_target"}:
+            if not isinstance(source_head, str) or re.fullmatch(r"[a-f0-9]{40}", source_head) is None:
+                return None
+            pr = self._resolve_role_pull_request(run, repo, source_head)
+            if pr is None or pr.get("state") != "open" or pr.get("merged") is not False:
+                return None
+            number = pr["number"]
+            author = pr.get("user")
+            if not isinstance(author, dict) or not any(
+                    author.get("login") == expected["login"] and author.get("type") == expected["type"]
+                    for expected in policy["actors"]):
+                return None
+            for side in ("head", "base"):
+                part = pr.get(side)
+                if not isinstance(part, dict) or not isinstance(part.get("repo"), dict) or \
+                        part["repo"].get("full_name") != repo or \
+                        part["repo"].get("private") is not True or part["repo"].get("fork") is not False:
+                    return None
+            base_ref = pr["base"].get("ref")
+            base_sha = default_sha if base_ref == default else self._protected_branch_sha(repo, base_ref)
+            if base_sha is None or pr["base"].get("sha") != base_sha:
+                return None
+            pr_sha = pr["head"].get("sha")
+            if pr_sha != source_head:
+                return None
+            if associations:
+                association = associations[0]
+                for side, expected_sha in (("head", pr_sha), ("base", base_sha)):
+                    associated = association.get(side)
+                    if not isinstance(associated, dict) or associated.get("sha") != expected_sha:
+                        return None
+            if sha != pr_sha or run.get("head_branch") != pr["head"].get("ref"):
+                return None
+        elif source_head:
+            return None
+        if event not in {"pull_request", "pull_request_target"} and (sha != default_sha or run.get("head_branch") != default):
+            return None
+        return {**immutable, "pr_head_sha": pr_sha, "base_sha": base_sha, "base_ref": base_ref,
+                "default_branch": default, "default_sha": default_sha, "pr_number": number,
+                "execution_sha": execution_sha}
+
+    def candidate_role_jobs(self, repo: str, role: str, *,
+                            snapshot: WorkflowListSnapshot | None = None) -> list[dict[str, Any]]:
+        policy = self._org_execution_roles.get(role)
+        if policy is None or repo not in policy["repositories"]:
+            return []
+        listings = snapshot if snapshot is not None else WorkflowListSnapshot()
+        candidates = []
+        for status in ("queued", "in_progress"):
+            for run in listings.workflow_runs(self, repo, status):
+                if not isinstance(run, dict) or type(run.get("id")) is not int:
+                    continue
+                matching = []
+                for job in listings.workflow_jobs(self, repo, run["id"]):
+                    if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
+                            type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
+                            type(job.get("run_attempt")) is not int or job.get("status") != "queued":
+                        continue
+                    head = role_source_head(job.get("labels"))
+                    execution = role_execution_sha(job.get("labels"))
+                    if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
+                            run["id"], run.get("run_attempt"), head, execution):
+                        matching.append((job, head, execution))
+                if not matching:
+                    continue
+                detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
+                if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
+                        for key in ("id", "run_attempt", "head_sha", "head_branch")):
+                    continue
+                for job, head, execution in matching:
+                    evidence = self._role_evidence(detail, repo, role, head, execution)
+                    if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
+                            job.get("head_sha") == evidence["source_sha"]:
+                        candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
+        return candidates
+
+    def verify_role_job(self, candidate: dict[str, Any], job: dict[str, Any], *,
+                        current: bool = True) -> str:
+        error = RunnerError if current else AssignmentMismatch
+        role, repo = candidate.get("execution_role"), candidate.get("repo")
+        if any(field not in candidate for field in ROLE_PIN_FIELDS) or \
+                role not in self._org_execution_roles or repo not in ROLE_REPOSITORIES or \
+                any(type(job.get(key)) is not int for key in ("id", "run_id", "run_attempt")) or \
+                job.get("head_sha") != candidate.get("source_sha") or \
+                job.get("id") != candidate.get("job_id") or \
+                job.get("run_id") != candidate.get("run_id") or \
+                job.get("run_attempt") != candidate.get("run_attempt") or \
+                not role_labels_match(job.get("labels"), repo, role, candidate["run_id"],
+                                      candidate["run_attempt"], candidate["pr_head_sha"], candidate["execution_sha"]):
+            raise error("execution role job identity changed")
+        path = f"{self.repo_path(repo)}/actions/runs/{candidate['run_id']}"
+        if not current:
+            path += f"/attempts/{candidate['run_attempt']}"
+        run = self.request("GET", path)
+        # Current tips matter before registration. Once assigned, only immutable
+        # run/job/attempt/source identity is rechecked; moving branches or a
+        # merged PR cannot invalidate a healthy, already admitted execution.
+        evidence = self._role_evidence(run, repo, role, candidate["pr_head_sha"], candidate["execution_sha"]) if current else \
+            self._role_run_evidence(run, repo, role)
+        fields = ROLE_PIN_FIELDS if current else (() if evidence is None else tuple(evidence))
+        if evidence is None or any(evidence.get(key) != candidate.get(key) for key in fields if key != "job_id"):
+            raise error("execution role source or attempt changed")
+        return evidence["workflow_ref"]
+
+    def generate_role_jit(self, job_id: int, group_id: int, repo: str, role: str,
+                          run_id: int, run_attempt: int, pr_head_sha: str = "",
+                          execution_sha: str = "") -> dict[str, Any]:
+        if role not in self._org_execution_roles or \
+                repo not in self._org_execution_roles[role]["repositories"] or \
+                type(group_id) is not int or group_id < 1 or type(job_id) is not int or job_id < 1 or \
+                not isinstance(execution_sha, str) or not isinstance(pr_head_sha, str) or (pr_head_sha and
+                re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None):
+            raise RunnerError("invalid execution role JIT request")
+        labels = ["self-hosted", "linux", "x64", EXECUTION_ROLES[role]["label"],
+                  organization_repository_label(repo), role_run_label(run_id, run_attempt)]
+        if pr_head_sha:
+            labels.append("ci-pr-head-" + pr_head_sha)
+        if execution_sha:
+            labels.append("ci-execution-sha-" + execution_sha)
+        if not role_labels_match(labels, repo, role, run_id, run_attempt, pr_head_sha, execution_sha):
+            raise RunnerError("invalid execution role labels")
+        return self.request("POST", f"/orgs/{ORG_NAME}/actions/runners/generate-jitconfig", {
+            "name": runner_name_for_trigger(job_id), "runner_group_id": group_id,
+            "labels": labels, "work_folder": "_work",
+        })
 
     @staticmethod
     def _trusted_user(value: Any) -> bool:
@@ -942,7 +1328,7 @@ class GitHubClient:
 
     def _verified_workflow_ref(self, run: dict[str, Any]) -> str | None:
         refs = run.get("referenced_workflows")
-        if not self._org_workflow_refs or not isinstance(refs, list):
+        if not self._trusted_workflow_refs or not isinstance(refs, list):
             return None
         central = [item for item in refs if isinstance(item, dict) and
                    isinstance(item.get("path"), str) and
@@ -950,7 +1336,7 @@ class GitHubClient:
         if len(central) != 1:
             return None
         item = central[0]
-        if item["path"] not in self._org_workflow_refs or \
+        if item["path"] not in self._trusted_workflow_refs or \
                 item.get("sha") != item["path"][len(ORG_WORKFLOW_PREFIX):]:
             return None
         return item["path"]
@@ -1101,13 +1487,13 @@ class GitHubClient:
                         or reported_runner_id != runner_id:
                     continue
                 if reported_runner_name not in (None, "", runner_name):
-                    raise RunnerError("GitHub returned a conflicting runner assignment")
+                    raise AssignmentMismatch("GitHub returned a conflicting runner assignment")
                 id_matches[key] = assignment
 
         if isinstance(preferred_run_id, int) and preferred_run_id > 0:
             inspect_run(preferred_run_id)
             if len(id_matches) > 1:
-                raise RunnerError("GitHub returned an ambiguous runner assignment")
+                raise AssignmentMismatch("GitHub returned an ambiguous runner assignment")
             if id_matches:
                 return next(iter(id_matches.values()))
 
@@ -1123,7 +1509,7 @@ class GitHubClient:
                 if run_id != preferred_run_id:
                     inspect_run(run_id)
         if len(id_matches) > 1:
-            raise RunnerError("GitHub returned an ambiguous runner assignment")
+            raise AssignmentMismatch("GitHub returned an ambiguous runner assignment")
         return next(iter(id_matches.values())) if id_matches else None
 
     def delete_runner(self, repo: str, runner_id: int) -> None:
@@ -1153,6 +1539,18 @@ class GitHubClient:
         repo = state["repo"]
         job = self.get_job(repo, assignment["job_id"])
         profile = state.get("profile")
+        role = state.get("execution_role")
+        if role is not None:
+            if role not in EXECUTION_ROLES or profile != EXECUTION_ROLES[role]["profile"] or \
+                    assignment.get("repo") != repo or \
+                    assignment.get("job_id") != state.get("trigger_job_id") or \
+                    assignment.get("run_id") != state.get("trigger_run_id") or \
+                    job.get("runner_id") != state.get("runner_id") or \
+                    job.get("runner_name") != state.get("runner_name") or \
+                    job.get("runner_group_id") != state.get("runner_group_id") or \
+                    job.get("runner_group_name") != ORG_GROUP_NAME:
+                raise AssignmentMismatch("execution role assignment policy mismatch")
+            return self.verify_role_job(state, job, current=False)
         if profile not in POOL_LIMITS or job.get("run_id") != assignment["run_id"] or \
                 job.get("runner_id") != state.get("runner_id") or \
                 job.get("runner_name") != state.get("runner_name") or \
@@ -1163,7 +1561,7 @@ class GitHubClient:
         # The JIT request was tied to a selected trigger job. The scheduler may
         # give this ephemeral runner another trusted job, but neither workflow
         # reference may escape the exact organization allowlist.
-        if state.get("workflow_ref") not in self._org_workflow_refs:
+        if state.get("workflow_ref") not in self._trusted_workflow_refs:
             raise RunnerError("organization runner trigger workflow is not admitted")
         run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
         if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
@@ -1423,6 +1821,13 @@ def record_verified_assignment(store: StateStore, client: GitHubClient | None,
                                org_client: GitHubClient | None = None) -> dict[str, Any]:
     selected_client = org_client if runner_scope(state) == "organization" else client
     if isinstance(state.get("actual_job_id"), int):
+        if state.get("execution_role") is not None:
+            if selected_client is None:
+                raise RunnerError("execution role assignment lookup is unavailable")
+            selected_client.verify_org_assignment(state, {
+                "repo": state["repo"], "job_id": state["actual_job_id"],
+                "run_id": state["actual_run_id"],
+            })
         return state
     if selected_client is None:
         if runner_scope(state) == "organization":
@@ -1724,6 +2129,18 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
                     store, client, state, include_completed=lease not in healthy,
                     org_client=org_client,
                 )
+            except AssignmentMismatch as exc:
+                if state.get("execution_role") is None:
+                    if lease in healthy:
+                        assignment_error = assignment_error or exc
+                    continue
+                LOG.error("rejecting role assignment; stopping affected lease=%s", lease)
+                # Existing state and remote cleanup obligations remain durable
+                # if the helper or GitHub cleanup fails. Never stop other VMs.
+                cleanup_local(lease)
+                healthy.discard(lease)
+                known.discard(lease)
+                domains.pop(lease, None)
             except RunnerError as exc:
                 if lease in healthy:
                     assignment_error = assignment_error or exc
@@ -1779,13 +2196,18 @@ def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
 
 
 def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
-                  profile: str = "heavy", scope: str = "repository") -> bool:
+                  profile: str = "heavy", scope: str = "repository",
+                  execution_role: str | None = None) -> bool:
     if scope == "organization":
         if not org_routing_enabled(cfg) or profile not in POOL_LIMITS:
             raise RunnerError("organization dispatch is disabled or invalid")
         validate_org_config(cfg)
     elif scope != "repository" or profile != "heavy":
         raise RunnerError("repository dispatch accepts only the heavy profile")
+    if execution_role is not None and (scope != "organization" or
+            execution_role not in configured_org_execution_roles(cfg) or
+            EXECUTION_ROLES[execution_role]["profile"] != profile):
+        raise RunnerError("execution role dispatch is disabled or invalid")
     store = StateStore(Path(cfg["state_dir"]))
     states = store.leases()
     if four_pool(cfg):
@@ -1806,6 +2228,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
     )
     label = str(cfg.get("runner_label", "trusted-heavy")) if profile == "heavy" else \
         str(cfg.get("medium_runner_label", "trusted-medium"))
+    if execution_role is not None:
+        label = EXECUTION_ROLES[execution_role]["label"]
     launched = 0
     repos = list(cfg["org_repository_ids"]) if scope == "organization" else \
         validate_repositories(cfg)
@@ -1818,6 +2242,15 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
             if scope == "organization" and \
                     job.get("workflow_ref") not in configured_org_workflow_refs(cfg):
                 raise RunnerError("organization candidate workflow reference is invalid")
+            if execution_role is not None and (job.get("execution_role") != execution_role or
+                    repo not in cfg["org_execution_roles"][execution_role]["repositories"] or
+                    job.get("workflow_ref") != cfg["org_execution_roles"][execution_role]["workflow_ref"]):
+                raise RunnerError("execution role candidate policy is invalid")
+            if scope == "organization" and execution_role is None and \
+                    job.get("workflow_ref") not in configured_trusted_workflow_refs(cfg):
+                raise RunnerError("trusted candidate workflow reference is invalid")
+            if execution_role is None and job.get("execution_role") is not None:
+                raise RunnerError("execution role candidate cannot use trusted labels")
             key = f"{repo}:{job['job_id']}"
             with with_lock(lifecycle_lock):
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
@@ -1870,6 +2303,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
                 registration.update({"scope": scope, "org": ORG_NAME,
                                      "runner_group_id": cfg["org_runner_group_id"],
                                      "workflow_ref": job["workflow_ref"]})
+            if execution_role is not None:
+                registration.update({field: job[field] for field in ROLE_PIN_FIELDS})
             registration["runner_name"] = runner_name
             if not isinstance(encoded, str) or not isinstance(runner_id, int) \
                     or runner_name_conflicts:
@@ -2023,6 +2458,43 @@ class OrganizationDispatchClient:
         self.org_client.delete_org_runner(runner_id)
 
 
+class ExecutionRoleDispatchClient(OrganizationDispatchClient):
+    """Only the selected immutable role job can acquire a role-only JIT runner."""
+
+    def __init__(self, cfg: dict[str, Any], repo_client: GitHubClient,
+                 org_client: GitHubClient, role: str, snapshot: WorkflowListSnapshot) -> None:
+        super().__init__(cfg, repo_client, org_client, EXECUTION_ROLES[role]["profile"], snapshot)
+        self.role = role
+        self.candidates: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
+        if label != EXECUTION_ROLES[self.role]["label"]:
+            raise RunnerError("execution role label differs")
+        candidates = self.org_client.candidate_role_jobs(repo, self.role, snapshot=self.snapshot)
+        self.candidates.update({(repo, job["job_id"]): job for job in candidates})
+        return candidates
+
+    def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
+        candidate = self.candidates.get((repo, job_id))
+        if candidate is None or group_id != self.cfg["org_runner_group_id"] or \
+                label != EXECUTION_ROLES[self.role]["label"]:
+            raise OrgPreflightRejected("execution role JIT policy differs")
+        try:
+            self.org_client.verify_org_group(self.cfg)
+            job = self.org_client.get_job(repo, job_id)
+            if job.get("status") != "queued" or job.get("runner_id") not in (None, 0) or \
+                    job.get("runner_name") not in (None, ""):
+                raise RunnerError("execution role job is already assigned")
+            self.org_client.verify_role_job(candidate, job)
+        except RateLimited:
+            raise
+        except RunnerError as exc:
+            raise OrgPreflightRejected("execution role current identity not verified") from exc
+        return self.org_client.generate_role_jit(job_id, group_id, repo, self.role,
+                                                 candidate["run_id"], candidate["run_attempt"],
+                                                 candidate["pr_head_sha"], candidate["execution_sha"])
+
+
 def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,
                                org_client: GitHubClient) -> bool:
     validate_org_config(cfg)
@@ -2034,6 +2506,97 @@ def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,
                                              profile, snapshot)
         launched = dispatch_once(cfg, adapter, profile=profile,
                                  scope="organization") or launched
+    return launched
+
+
+def queue_timestamp(job: dict[str, Any]) -> dict[str, str]:
+    """Use GitHub's job creation time only for ordering, never for admission."""
+    value = job.get("created_at")
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return {}
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return {}
+    return {"queued_at": value}
+
+
+class SelectedCandidateClient:
+    """Narrow an already discovered candidate; preserve its original JIT boundary."""
+
+    def __init__(self, client: Any, candidate: dict[str, Any], label: str) -> None:
+        self.client, self.candidate, self.label = client, candidate, label
+
+    def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
+        return [self.candidate] if repo == self.candidate["repo"] and label == self.label else []
+
+    def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
+        if repo != self.candidate["repo"] or job_id != self.candidate["job_id"] or label != self.label:
+            raise RunnerError("selected dispatch candidate differs")
+        return self.client.generate_jit(repo, job_id, group_id, label)
+
+    def delete_runner(self, repo: str, runner_id: int) -> None:
+        self.client.delete_runner(repo, runner_id)
+
+
+def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
+                       org_client: GitHubClient | None) -> bool:
+    """Merge eligible queues before allocating slots, instead of preferring a repo.
+
+    Selection grants no rights: dispatch_once still owns durable claims, current
+    capacity, exact workflow pins, JIT registration, launch and failed cleanup.
+    Full heavy capacity must not prevent trying a later medium candidate.
+    """
+    routes: list[tuple[str, str, str | None, Any, list[str]]] = [
+        ("repository", "heavy", None, client, validate_repositories(cfg))]
+    if org_routing_enabled(cfg):
+        if org_client is None:
+            raise RunnerError("organization GitHub client is unavailable")
+        validate_org_config(cfg)
+        org_client.verify_org_group(cfg)
+        snapshot = WorkflowListSnapshot()
+        for profile in ("heavy", "medium"):
+            routes.append(("organization", profile, None,
+                           OrganizationDispatchClient(cfg, client, org_client, profile, snapshot),
+                           list(cfg["org_repository_ids"])))
+        for role, policy in configured_org_execution_roles(cfg).items():
+            routes.append(("organization", EXECUTION_ROLES[role]["profile"], role,
+                           ExecutionRoleDispatchClient(cfg, client, org_client, role, snapshot),
+                           policy["repositories"]))
+    queue = []
+    seen = set()
+    for scope, profile, role, source, repos in routes:
+        label = str(cfg.get("runner_label", "trusted-heavy")) if profile == "heavy" else \
+            str(cfg.get("medium_runner_label", "trusted-medium"))
+        if role is not None:
+            label = EXECUTION_ROLES[role]["label"]
+        for repo in repos:
+            for candidate in source.candidate_jobs(repo, label):
+                if candidate.get("repo") != repo or \
+                        type(candidate.get("job_id")) is not int or candidate["job_id"] <= 0 or \
+                        type(candidate.get("run_id")) is not int or candidate["run_id"] <= 0:
+                    raise RunnerError("dispatch candidate identity is invalid")
+                identity = (repo, candidate["job_id"])
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                stamp = queue_timestamp({"created_at": candidate.get("queued_at")})
+                order = (stamp.get("queued_at", "9999-12-31T23:59:59Z"),
+                         candidate["job_id"], repo)
+                queue.append((order, scope, profile, role,
+                              SelectedCandidateClient(source, candidate, label)))
+    launched = False
+    for _, scope, profile, role, selected in sorted(queue, key=lambda entry: entry[0]):
+        options = {"execution_role": role} if role is not None else {}
+        try:
+            launched = dispatch_once(cfg, selected, profile=profile, scope=scope, **options) or launched
+        except OrgPreflightRejected:
+            # dispatch_once removed the definitive pre-POST claim. A stale
+            # candidate must not starve a later eligible job in either pool.
+            LOG.info("candidate preflight rejected repo=%s job_id=%s",
+                     selected.candidate["repo"], selected.candidate["job_id"])
+            continue
     return launched
 
 
@@ -2055,6 +2618,8 @@ def organization_client(cfg: dict[str, Any]) -> GitHubClient | None:
     return GitHubClient(
         read_token(credential), str(cfg.get("github_api_url", "https://api.github.com")),
         org_workflow_refs=configured_org_workflow_refs(cfg) if org_routing_enabled(cfg) else (),
+        org_execution_roles=configured_org_execution_roles(cfg),
+        org_trusted_workflow_refs=configured_trusted_workflow_refs(cfg) if org_routing_enabled(cfg) else (),
     )
 
 
@@ -2090,11 +2655,7 @@ def main(argv: list[str] | None = None) -> int:
             while True:
                 try:
                     reconcile(cfg, client, org_client)
-                    dispatch_once(cfg, client)
-                    if org_routing_enabled(cfg):
-                        if org_client is None:
-                            raise RunnerError("organization GitHub client is unavailable")
-                        dispatch_organization_once(cfg, client, org_client)
+                    dispatch_fair_once(cfg, client, org_client)
                 except RateLimited as exc:
                     LOG.warning("GitHub rate limited; retrying later")
                     time.sleep(exc.retry_after)

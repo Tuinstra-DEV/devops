@@ -20,6 +20,19 @@ set -euo pipefail
 : "${COMPOSER_SHA384:?COMPOSER_SHA384 is required}"
 : "${PLAYWRIGHT_VERSION:?PLAYWRIGHT_VERSION is required}"
 
+: "${SKOPEO_VERSION:?SKOPEO_VERSION is required}"
+: "${GH_VERSION:?GH_VERSION is required}"
+: "${PHP83_XDEBUG_VERSION:?PHP83_XDEBUG_VERSION is required}"
+: "${QEMU_USER_STATIC_VERSION:?QEMU_USER_STATIC_VERSION is required}"
+
+# Exact signed-repository versions only, before the first image mutation.
+for pin in SKOPEO_VERSION GH_VERSION PHP83_XDEBUG_VERSION QEMU_USER_STATIC_VERSION; do
+  if [[ ! "${!pin}" =~ ^[0-9][0-9A-Za-z.+:~_-]*$ ]]; then
+    printf 'Invalid exact package version: %s\n' "$pin" >&2
+    exit 1
+  fi
+done
+
 if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
   echo "This image contract supports Ubuntu 24.04 amd64 only" >&2
   exit 1
@@ -89,6 +102,10 @@ EOF
 sudo apt-get update
 sudo apt-get install --yes --no-install-recommends \
   unzip \
+  "skopeo=${SKOPEO_VERSION}" \
+  "gh=${GH_VERSION}" \
+  "qemu-user-static=${QEMU_USER_STATIC_VERSION}" \
+  "php8.3-xdebug=${PHP83_XDEBUG_VERSION}" \
   "docker-ce=${DOCKER_CE_VERSION}" \
   "docker-ce-cli=${DOCKER_CLI_VERSION}" \
   "containerd.io=${CONTAINERD_VERSION}" \
@@ -102,6 +119,14 @@ sudo apt-get install --yes --no-install-recommends \
   "php8.4-cli=${PHP84_VERSION}" "php8.4-curl=${PHP84_VERSION}" \
   "php8.4-mbstring=${PHP84_VERSION}" "php8.4-xml=${PHP84_VERSION}" "php8.4-zip=${PHP84_VERSION}" \
   "php8.4-intl=${PHP84_VERSION}" "php8.4-pgsql=${PHP84_VERSION}"
+
+# Image provisioning runs before the unprivileged no-new-privileges service.
+# No workflow may install handlers or run a privileged binfmt container.
+sudo systemctl restart systemd-binfmt.service
+test -r /proc/sys/fs/binfmt_misc/qemu-aarch64
+grep -E '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-aarch64 >/dev/null
+printf '%s\n' 'xdebug.mode=off' | sudo tee /etc/php/8.3/cli/conf.d/99-ci-xdebug.ini >/dev/null
+sudo chmod 0644 /etc/php/8.3/cli/conf.d/99-ci-xdebug.ini
 
 sudo corepack enable
 sudo npm install --global --ignore-scripts "playwright@${PLAYWRIGHT_VERSION}"
@@ -143,6 +168,10 @@ sudo systemctl enable docker.service
 
 sudo tee /etc/ci-runner-image-manifest >/dev/null <<EOF
 runner=${RUNNER_VERSION}
+skopeo=${SKOPEO_VERSION}
+gh=${GH_VERSION}
+php83_xdebug=${PHP83_XDEBUG_VERSION}
+qemu_user_static=${QEMU_USER_STATIC_VERSION}
 docker_ce=${DOCKER_CE_VERSION}
 docker_cli=${DOCKER_CLI_VERSION}
 containerd=${CONTAINERD_VERSION}

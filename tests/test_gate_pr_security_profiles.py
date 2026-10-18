@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -96,7 +97,11 @@ class NativeProfileTests(unittest.TestCase):
         self.assertIn('source.py" prepare', prepare)
         self.assertEqual(1, workflow.count("GATE_TRACKER_SCANNER_BINDING:"))
         self.assertIn("GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}", workflow)
-        self.assertNotIn("inputs:", workflow)
+        # Scheduling may be requested; scanner identity remains server-owned.
+        interface = workflow.split("\njobs:\n", 1)[0]
+        self.assertEqual(re.findall(r"(?m)^      ([a-z][a-z0-9-]*):$", interface),
+                         ["request-isolated-role-runner"])
+        self.assertIn("        default: false\n        type: boolean", interface)
 
     def test_evidence_requires_exact_tracker_binding_state(self):
         tracker = state("Tuinstra-DEV/tracker")

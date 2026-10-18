@@ -93,6 +93,41 @@ build requests `trusted-heavy`. Keep ordinary pull request checks on GitHub
 hosted runners. The release workflow must not expose deployment or package-write
 credentials to pull request code.
 
+### Prepared Gate/Tracker execution roles
+
+`org_execution_roles` stays disabled unless an operator supplies exact local
+policy for private Gate/Tracker and reviewed immutable central workflow refs.
+Only the fixed `marcel-tuinstra` human actor/trigger policy is eligible; PRs
+also require matching sender/author and same-repository, nonfork sources.
+Bot admission remains disabled.
+`metadata-preflight` uses medium capacity; its manager supports PR metadata and
+protected default-branch push admission. The selector is `pull_request` only.
+`pr-security-producer` uses heavy capacity and only `pull_request_target`;
+target-event metadata is unsupported. Capacity is independent of execution role:
+role runners never advertise `trusted-medium` or `trusted-heavy`.
+
+The default-false `request-isolated-role-runner` input requests scheduling only,
+never grants trust or accepts caller-selected labels. Other consumers and
+ineligible events keep these jobs' original hosted route. Role jobs require the
+exact group `sanctuary-trusted-verification`, fixed role/repository labels and
+`ci-run-<run-id>-<attempt>`; PR jobs also require `ci-pr-head-<head-sha>`.
+The producer additionally requires `ci-execution-sha-${{ github.sha }}` and its
+immutable selector requires the default-branch execution ref. API run head/ref
+identify PR source; protected default controller SHA and current protected PR
+base are separate pins (including develop-to-main releases).
+Freshness is checked again before JIT; running jobs retain immutable persisted
+job/run/attempt/source/execution pins without rereading moving branch tips.
+
+This requested producer migration changes the hosted execution boundary: fixed
+scanning code runs on a dedicated isolated role VM, with PR bytes as scan input
+and no PR-provided setup/commands or permissions expansion. Existing host/network
+isolation and generic/untrusted/bot/CD restrictions remain in force.
+Rollout must retain one job per role/run attempt and exact equality of the full
+reviewed group repository/workflow sets, including existing trusted refs.
+Live activation still requires reviewed immutable pins, operator policy, verified
+guest/runtime isolation and toolchain, and actual producer enrollment/OIDC and
+runtime evidence. Source preparation alone enables no live route.
+
 ### Narrow allowlist activation
 
 The checked-in Ansible defaults and template include WODIQ Platform for future
