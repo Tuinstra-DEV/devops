@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime
 import fcntl
 import hashlib
 import json
@@ -866,7 +867,8 @@ class GitHubClient:
                     if job.get("status") == "queued" and required_label in labels and \
                             not any(isinstance(value, str) and value.startswith("sanctuary-")
                                     for value in labels):
-                        candidates.append({"repo": repo, "run_id": int(run["id"]), "job_id": int(job["id"])})
+                        candidates.append({"repo": repo, "run_id": int(run["id"]),
+                                           "job_id": int(job["id"]), **queue_timestamp(job)})
         return candidates
 
     def candidate_trusted_jobs(self, repo: str, profile: str, *,
@@ -897,7 +899,7 @@ class GitHubClient:
                     continue
                 workflow_ref = self._verified_workflow_ref(detail)
                 candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"],
-                                   "workflow_ref": workflow_ref}
+                                   "workflow_ref": workflow_ref, **queue_timestamp(job)}
                                   for job in matching)
         return candidates
 
@@ -2037,6 +2039,83 @@ def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,
     return launched
 
 
+def queue_timestamp(job: dict[str, Any]) -> dict[str, str]:
+    """Use GitHub's job creation time only for ordering, never for admission."""
+    value = job.get("created_at")
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return {}
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return {}
+    return {"queued_at": value}
+
+
+class SelectedCandidateClient:
+    """Narrow an already discovered candidate; preserve its original JIT boundary."""
+
+    def __init__(self, client: Any, candidate: dict[str, Any], label: str) -> None:
+        self.client, self.candidate, self.label = client, candidate, label
+
+    def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
+        return [self.candidate] if repo == self.candidate["repo"] and label == self.label else []
+
+    def generate_jit(self, repo: str, job_id: int, group_id: int, label: str) -> dict[str, Any]:
+        if repo != self.candidate["repo"] or job_id != self.candidate["job_id"] or label != self.label:
+            raise RunnerError("selected dispatch candidate differs")
+        return self.client.generate_jit(repo, job_id, group_id, label)
+
+    def delete_runner(self, repo: str, runner_id: int) -> None:
+        self.client.delete_runner(repo, runner_id)
+
+
+def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
+                       org_client: GitHubClient | None) -> bool:
+    """Merge eligible queues before allocating slots, instead of preferring a repo.
+
+    Selection grants no rights: dispatch_once still owns durable claims, current
+    capacity, exact workflow pins, JIT registration, launch and failed cleanup.
+    Full heavy capacity must not prevent trying a later medium candidate.
+    """
+    routes: list[tuple[str, str, Any, list[str]]] = [
+        ("repository", "heavy", client, validate_repositories(cfg))]
+    if org_routing_enabled(cfg):
+        if org_client is None:
+            raise RunnerError("organization GitHub client is unavailable")
+        validate_org_config(cfg)
+        org_client.verify_org_group(cfg)
+        snapshot = WorkflowListSnapshot()
+        for profile in ("heavy", "medium"):
+            routes.append(("organization", profile,
+                           OrganizationDispatchClient(cfg, client, org_client, profile, snapshot),
+                           list(cfg["org_repository_ids"])))
+    queue = []
+    seen = set()
+    for scope, profile, source, repos in routes:
+        label = str(cfg.get("runner_label", "trusted-heavy")) if profile == "heavy" else \
+            str(cfg.get("medium_runner_label", "trusted-medium"))
+        for repo in repos:
+            for candidate in source.candidate_jobs(repo, label):
+                if candidate.get("repo") != repo or \
+                        type(candidate.get("job_id")) is not int or candidate["job_id"] <= 0 or \
+                        type(candidate.get("run_id")) is not int or candidate["run_id"] <= 0:
+                    raise RunnerError("dispatch candidate identity is invalid")
+                identity = (repo, candidate["job_id"])
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                stamp = queue_timestamp({"created_at": candidate.get("queued_at")})
+                order = (stamp.get("queued_at", "9999-12-31T23:59:59Z"),
+                         candidate["job_id"], repo)
+                queue.append((order, scope, profile,
+                              SelectedCandidateClient(source, candidate, label)))
+    launched = False
+    for _, scope, profile, selected in sorted(queue, key=lambda entry: entry[0]):
+        launched = dispatch_once(cfg, selected, profile=profile, scope=scope) or launched
+    return launched
+
+
 def configure_logging(path: Path) -> None:
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -2090,11 +2169,7 @@ def main(argv: list[str] | None = None) -> int:
             while True:
                 try:
                     reconcile(cfg, client, org_client)
-                    dispatch_once(cfg, client)
-                    if org_routing_enabled(cfg):
-                        if org_client is None:
-                            raise RunnerError("organization GitHub client is unavailable")
-                        dispatch_organization_once(cfg, client, org_client)
+                    dispatch_fair_once(cfg, client, org_client)
                 except RateLimited as exc:
                     LOG.warning("GitHub rate limited; retrying later")
                     time.sleep(exc.retry_after)
