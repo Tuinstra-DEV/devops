@@ -45,6 +45,7 @@ if [[ -n "${DEPENDABOT_FLEET_ROOT:-}" ]]; then
     "openairco=${DEPENDABOT_FLEET_ROOT}/openairco" \
     "openairco-site=${DEPENDABOT_FLEET_ROOT}/openairco-site" \
     "status=${DEPENDABOT_FLEET_ROOT}/status" \
+    "sudoku-tessera=${DEPENDABOT_FLEET_ROOT}/sudoku-tessera" \
     "tracker=${DEPENDABOT_FLEET_ROOT}/tracker" \
     "tuinstra-site=${DEPENDABOT_FLEET_ROOT}/tuinstra-site" \
     "wodiq-app=${DEPENDABOT_FLEET_ROOT}/wodiq-app" \
