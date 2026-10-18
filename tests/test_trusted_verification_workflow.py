@@ -296,7 +296,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                         self.assertIn(f"labels: [self-hosted, trusted-{profile}, sanctuary-", block)
                     self.assertIn("verified: ${{ steps.execute.outputs.verified }}", block)
         self.assertIn("value: ${{ toJSON(jobs) }}", workflow)
-        self.assertIn("runs-on: ubuntu-slim", workflow)
+        self.assertTrue(" ".join(IsolatedRoleRoutingTests.document(WORKFLOW)["jobs"]["preflight"]["runs-on"].split()).endswith("|| 'ubuntu-slim' }}"))
         for route in ("trusted", "hosted"):
             helper = WORKFLOW.parents[2] / f".github/actions/trusted-bundle-{route}/action.yml"
             text = helper.read_text()
@@ -742,6 +742,154 @@ else:
             self.assertIn("subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2", route)
             self.assertIn("flutter-version: 3.47.1", route)
             self.assertIn("pub-cache-key: openairco-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable-pub", route)
+
+class IsolatedRoleRoutingTests(unittest.TestCase):
+    REQUEST = 'request-isolated-role-runner'
+    PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
+    ORIGINAL_HASHES = {
+        WORKFLOW.name: 'dd1c5f4f332a542c7f882e38eb491e255591120332660ca351477d51f42c2388',
+        PRODUCER.name: 'f81578d9db84d2ac1b128094acf57f6de15857915862934c9fa0ab2e23d65dee',
+    }
+
+    @staticmethod
+    def document(path):
+        # Ruby/Psych is already a required repository verification dependency.
+        result = subprocess.run(['ruby', '-rjson', '-ryaml', '-e',
+                                 'print JSON.generate(YAML.safe_load(STDIN.read, aliases: false))'],
+                                input=path.read_text(), text=True, capture_output=True, check=True)
+        return json.loads(result.stdout)
+
+    @staticmethod
+    def request_guards(event):
+        guards = [
+            "inputs['request-isolated-role-runner'] == true",
+            "contains(fromJSON('[\"Tuinstra-DEV/gate\",\"Tuinstra-DEV/tracker\"]'), github.repository)",
+            'github.event.repository.full_name == github.repository',
+            "toJSON(github.event.repository.private) == 'true'",
+            "toJSON(github.event.repository.fork) == 'false'",
+            f"github.event_name == '{event}'",
+            "github.actor == 'marcel-tuinstra'",
+            "github.triggering_actor == 'marcel-tuinstra'",
+            "github.event.sender.login == 'marcel-tuinstra'",
+            "github.event.sender.type == 'User'",
+            "github.event.pull_request.user.login == 'marcel-tuinstra'",
+            "github.event.pull_request.user.type == 'User'",
+            "github.event.pull_request.state == 'open'",
+            "toJSON(github.event.pull_request.merged) == 'false'",
+            'github.event.pull_request.number > 0',
+            "github.event.pull_request.head.sha != ''",
+            "github.event.pull_request.head.ref != ''",
+            "github.event.pull_request.base.ref != ''",
+            'github.event.pull_request.head.repo.full_name == github.repository',
+            "toJSON(github.event.pull_request.head.repo.private) == 'true'",
+            "toJSON(github.event.pull_request.head.repo.fork) == 'false'",
+            'github.event.pull_request.base.repo.full_name == github.repository',
+            "toJSON(github.event.pull_request.base.repo.private) == 'true'",
+            "toJSON(github.event.pull_request.base.repo.fork) == 'false'",
+        ]
+        if event == 'pull_request_target':
+            guards += [
+                "github.event.repository.default_branch != ''",
+                "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
+                "github.sha != ''",
+            ]
+        return guards
+
+    def test_request_is_exactly_default_false_boolean_without_authority_inputs(self):
+        expected = {'description': 'Request isolated scheduling under the fixed role policy; does not grant trust',
+                    'required': False, 'default': False, 'type': 'boolean'}
+        for path in (WORKFLOW, self.PRODUCER):
+            with self.subTest(workflow=path.name):
+                doc = self.document(path)
+                call = doc.get('on', doc.get('true'))['workflow_call']
+                self.assertIsInstance(call, dict)
+                self.assertEqual(call['inputs'][self.REQUEST], expected)
+                self.assertNotIn('secrets', call)
+                if path == self.PRODUCER:
+                    self.assertEqual(set(call), {'inputs'})
+                    self.assertEqual(set(call['inputs']), {self.REQUEST})
+                else:
+                    self.assertEqual(set(call['inputs']), {self.REQUEST, 'profile', 'job-key',
+                                                          'plan-json', 'bundle', 'selection-json'})
+
+    def test_exact_guarded_selector_preserves_group_and_derives_all_labels_from_github(self):
+        for path, job_id, event, role, hosted in (
+                (WORKFLOW, 'preflight', 'pull_request', 'ci-metadata-preflight', 'ubuntu-slim'),
+                (self.PRODUCER, 'producer', 'pull_request_target', 'ci-pr-security-producer', 'ubuntu-24.04')):
+            with self.subTest(workflow=path.name):
+                job = self.document(path)['jobs'][job_id]
+                selector = ' '.join(job['runs-on'].split())
+                prefix, template = selector.rsplit(' && fromJSON(format(', 1)
+                self.assertEqual(prefix, '${{ ' + ' && '.join(self.request_guards(event)))
+                execution_slot = ',{3}' if event == 'pull_request_target' else ''
+                execution_argument = ", toJSON(format('ci-execution-sha-{0}', github.sha))" if event == 'pull_request_target' else ''
+                self.assertEqual(template,
+                    "'{{\"group\":\"sanctuary-trusted-verification\",\"labels\":[\"self-hosted\",\"" + role +
+                    "\",{0},{1},{2}" + execution_slot + "]}}', "
+                    "toJSON(github.repository == 'Tuinstra-DEV/gate' && 'sanctuary-gate' || 'sanctuary-tracker'), "
+                    "toJSON(format('ci-run-{0}-{1}', github.run_id, github.run_attempt)), "
+                    "toJSON(format('ci-pr-head-{0}', github.event.pull_request.head.sha))" + execution_argument + ")) || '" + hosted + "' }}")
+                self.assertNotIn('trusted-heavy', selector)
+                self.assertNotIn('trusted-medium', selector)
+                self.assertNotIn('vars.', selector)
+                self.assertNotIn('needs.', selector)
+                self.assertNotIn('secrets.', selector)
+                self.assertNotIn('strategy', job)
+                self.assertNotIn('if', job)
+                self.assertNotIn('continue-on-error', job)
+
+    def test_all_preexisting_execution_bytes_survive_runner_selection_change(self):
+        import hashlib
+        for path, hosted in ((WORKFLOW, 'ubuntu-slim'), (self.PRODUCER, 'ubuntu-24.04')):
+            source = path.read_text()
+            source = re.sub(r'(?m)^    runs-on: >-\n(?:^      [^\n]*\n)+',
+                            '    runs-on: ' + hosted + '\n', source, count=1)
+            if path == WORKFLOW:
+                source = re.sub(r'(?m)^      request-isolated-role-runner:\n(?:^        [^\n]*\n)+', '', source)
+            else:
+                source = re.sub(r'(?m)^    inputs:\n      request-isolated-role-runner:\n(?:^        [^\n]*\n)+', '', source)
+            self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), self.ORIGINAL_HASHES[path.name])
+
+    def test_exact_role_labels_are_compatible_with_manager_and_not_trusted_labels(self):
+        import importlib.util
+        path = WORKFLOW.parents[2] / 'runner/manager/ci_runner_manager.py'
+        spec = importlib.util.spec_from_file_location('central_routing_manager_contract', path)
+        manager = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(manager)
+        for repo in ('gate', 'tracker'):
+            for role in ('metadata-preflight', 'pr-security-producer'):
+                labels = ['self-hosted', 'ci-' + role, 'sanctuary-' + repo,
+                          'ci-run-123-4', 'ci-pr-head-' + 'a' * 40]
+                execution = 'b' * 40 if role == 'pr-security-producer' else ''
+                if execution:
+                    labels.append('ci-execution-sha-' + execution)
+                name = 'Tuinstra-DEV/' + repo
+                self.assertTrue(manager.role_labels_match(labels, name, role, 123, 4, 'a' * 40, execution))
+                self.assertFalse(manager.role_labels_match(labels, name, role, 124, 4, 'a' * 40, execution))
+                self.assertFalse(manager.role_labels_match(labels, name, role, 123, 5, 'a' * 40, execution))
+                self.assertFalse(manager.role_labels_match(labels, name, role, 123, 4, 'b' * 40, execution))
+                self.assertFalse(manager.organization_labels_match(labels, name, 'heavy'))
+                self.assertFalse(manager.organization_labels_match(labels, name, 'medium'))
+
+    def test_merge_group_still_reaches_visible_producer_unsupported_event_failure(self):
+        producer = self.document(self.PRODUCER)['jobs']['producer']
+        self.assertNotIn('if', producer)
+        self.assertNotIn('continue-on-error', producer)
+        self.assertEqual(producer['steps'][0]['uses'],
+                         'Tuinstra-DEV/devops/.github/actions/gate-pr-security@b2dda8a614e776837baab920c8570848a0062b7b')
+        source = WORKFLOW.parents[2] / '.github/actions/gate-pr-security/source.py'
+        tree = ast.parse(source.read_text())
+        function = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == 'provider_state')
+        calls = []
+        def require(ok, code):
+            calls.append(code)
+            if not ok:
+                raise ValueError(code)
+        namespace = {'require': require}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), namespace)
+        with self.assertRaisesRegex(ValueError, '^unsupported_event$'):
+            namespace['provider_state']({'GATE_EVENT_NAME': 'merge_group'})
+        self.assertEqual(calls, ['unsupported_event'])
 
 
 if __name__ == "__main__":

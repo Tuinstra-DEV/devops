@@ -77,7 +77,7 @@ EXECUTION_ROLES = {
     "metadata-preflight": {
         "profile": "medium", "label": "ci-metadata-preflight",
         "workflow": ORG_WORKFLOW_PREFIX[:-1],
-        "events": {"pull_request", "pull_request_target", "push", "workflow_dispatch", "schedule"},
+        "events": {"pull_request", "push", "workflow_dispatch", "schedule"},
         "actors": {(ORG_ACTOR, "User")},
     },
     "pr-security-producer": {
@@ -90,7 +90,7 @@ EXECUTION_ROLES = {
 ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
 ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
                    "run_attempt", "source_sha", "pr_head_sha", "base_sha", "base_ref",
-                   "default_branch", "default_sha", "pr_number", "event", "head_branch")
+                   "default_branch", "default_sha", "pr_number", "event", "head_branch", "execution_sha")
 
 
 class RunnerError(RuntimeError):
@@ -299,10 +299,22 @@ def role_source_head(labels: Any) -> str | None:
     return heads[0][len("ci-pr-head-"):]
 
 
+def role_execution_sha(labels: Any) -> str | None:
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        return None
+    bindings = [label for label in labels if label.startswith("ci-execution-sha-")]
+    if not bindings:
+        return ""
+    if len(bindings) != 1 or not re.fullmatch(r"ci-execution-sha-[a-f0-9]{40}", bindings[0]):
+        return None
+    return bindings[0][len("ci-execution-sha-"):]
+
+
 def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
-                      run_attempt: int, pr_head_sha: str = "") -> bool:
+                      run_attempt: int, pr_head_sha: str = "", execution_sha: str = "") -> bool:
     if role not in EXECUTION_ROLES or repo not in ROLE_REPOSITORIES or \
-            not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+            not isinstance(labels, list) or any(not isinstance(label, str) for label in labels) or \
+            not isinstance(execution_sha, str):
         return False
     try:
         binding = role_run_label(run_id, run_attempt)
@@ -314,6 +326,14 @@ def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
         if not isinstance(pr_head_sha, str) or re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None:
             return False
         required.add("ci-pr-head-" + pr_head_sha)
+    if role == "pr-security-producer":
+        if not pr_head_sha or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
+            return False
+        required.add("ci-execution-sha-" + execution_sha)
+    elif execution_sha:
+        # Target metadata is deliberately unsupported; ordinary PR/push role
+        # jobs cannot smuggle an execution-controller assertion into labels.
+        return False
     return len(labels) == len(set(labels)) and (set(labels) == required or
                                                set(labels) == required | {"linux", "x64"})
 
@@ -1089,11 +1109,11 @@ class GitHubClient:
                 return None
             number = item["number"]
         else:
-            # A target-event execution SHA is the controller default, not the
-            # PR head. Only a fixed pinned workflow's event-derived head label
-            # can supply this source binding. Never guess from the default ref.
+            # API run head/branch identify PR source for both PR events. The
+            # separate execution-SHA label binds a target controller; never
+            # substitute that controller/default SHA for the PR source.
             query = "?state=open&per_page=100"
-            if run["event"] == "pull_request":
+            if run["event"] in {"pull_request", "pull_request_target"}:
                 query += "&head=" + urllib.parse.quote(f"{ORG_NAME}:{run['head_branch']}", safe="")
             found = self.request("GET", self.repo_path(repo) + "/pulls" + query)
             if not isinstance(found, list) or len(found) >= 100 or any(
@@ -1113,7 +1133,7 @@ class GitHubClient:
         return pr
 
     def _role_evidence(self, run: Any, repo: str, role: str,
-                       source_head: str) -> dict[str, Any] | None:
+                       source_head: str, execution_sha: str) -> dict[str, Any] | None:
         immutable = self._role_run_evidence(run, repo, role)
         if immutable is None:
             return None
@@ -1127,10 +1147,17 @@ class GitHubClient:
         default_sha = self._protected_branch_sha(repo, default)
         if default_sha is None:
             return None
-        # pull_request_target executes the current protected default context;
-        # a release PR may independently target another protected branch.
+        # API run head is PR source on target events as well. The immutable
+        # workflow separately labels github.sha and guards its execution ref;
+        # validate that controller against the current protected default, not
+        # against the PR head or the independently protected PR base.
         base_ref, base_sha = default, default_sha
         event = run["event"]
+        if event == "pull_request_target":
+            if role != "pr-security-producer" or execution_sha != default_sha:
+                return None
+        elif execution_sha != "":
+            return None
         pr_sha = ""
         number = 0
         associations = run.get("pull_requests")
@@ -1165,15 +1192,15 @@ class GitHubClient:
                     associated = association.get(side)
                     if not isinstance(associated, dict) or associated.get("sha") != expected_sha:
                         return None
-            if event == "pull_request" and (sha != pr_sha or
-                    run.get("head_branch") != pr["head"].get("ref")):
+            if sha != pr_sha or run.get("head_branch") != pr["head"].get("ref"):
                 return None
         elif source_head:
             return None
-        if event != "pull_request" and (sha != default_sha or run.get("head_branch") != default):
+        if event not in {"pull_request", "pull_request_target"} and (sha != default_sha or run.get("head_branch") != default):
             return None
         return {**immutable, "pr_head_sha": pr_sha, "base_sha": base_sha, "base_ref": base_ref,
-                "default_branch": default, "default_sha": default_sha, "pr_number": number}
+                "default_branch": default, "default_sha": default_sha, "pr_number": number,
+                "execution_sha": execution_sha}
 
     def candidate_role_jobs(self, repo: str, role: str, *,
                             snapshot: WorkflowListSnapshot | None = None) -> list[dict[str, Any]]:
@@ -1193,17 +1220,18 @@ class GitHubClient:
                             type(job.get("run_attempt")) is not int or job.get("status") != "queued":
                         continue
                     head = role_source_head(job.get("labels"))
-                    if head is not None and role_labels_match(job.get("labels"), repo, role,
-                            run["id"], run.get("run_attempt"), head):
-                        matching.append((job, head))
+                    execution = role_execution_sha(job.get("labels"))
+                    if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
+                            run["id"], run.get("run_attempt"), head, execution):
+                        matching.append((job, head, execution))
                 if not matching:
                     continue
                 detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
                 if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
                         for key in ("id", "run_attempt", "head_sha", "head_branch")):
                     continue
-                for job, head in matching:
-                    evidence = self._role_evidence(detail, repo, role, head)
+                for job, head, execution in matching:
+                    evidence = self._role_evidence(detail, repo, role, head, execution)
                     if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
                             job.get("head_sha") == evidence["source_sha"]:
                         candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
@@ -1221,7 +1249,7 @@ class GitHubClient:
                 job.get("run_id") != candidate.get("run_id") or \
                 job.get("run_attempt") != candidate.get("run_attempt") or \
                 not role_labels_match(job.get("labels"), repo, role, candidate["run_id"],
-                                      candidate["run_attempt"], candidate["pr_head_sha"]):
+                                      candidate["run_attempt"], candidate["pr_head_sha"], candidate["execution_sha"]):
             raise error("execution role job identity changed")
         path = f"{self.repo_path(repo)}/actions/runs/{candidate['run_id']}"
         if not current:
@@ -1230,7 +1258,7 @@ class GitHubClient:
         # Current tips matter before registration. Once assigned, only immutable
         # run/job/attempt/source identity is rechecked; moving branches or a
         # merged PR cannot invalidate a healthy, already admitted execution.
-        evidence = self._role_evidence(run, repo, role, candidate["pr_head_sha"]) if current else \
+        evidence = self._role_evidence(run, repo, role, candidate["pr_head_sha"], candidate["execution_sha"]) if current else \
             self._role_run_evidence(run, repo, role)
         fields = ROLE_PIN_FIELDS if current else (() if evidence is None else tuple(evidence))
         if evidence is None or any(evidence.get(key) != candidate.get(key) for key in fields if key != "job_id"):
@@ -1238,17 +1266,22 @@ class GitHubClient:
         return evidence["workflow_ref"]
 
     def generate_role_jit(self, job_id: int, group_id: int, repo: str, role: str,
-                          run_id: int, run_attempt: int, pr_head_sha: str = "") -> dict[str, Any]:
+                          run_id: int, run_attempt: int, pr_head_sha: str = "",
+                          execution_sha: str = "") -> dict[str, Any]:
         if role not in self._org_execution_roles or \
                 repo not in self._org_execution_roles[role]["repositories"] or \
                 type(group_id) is not int or group_id < 1 or type(job_id) is not int or job_id < 1 or \
-                not isinstance(pr_head_sha, str) or (pr_head_sha and
+                not isinstance(execution_sha, str) or not isinstance(pr_head_sha, str) or (pr_head_sha and
                 re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None):
             raise RunnerError("invalid execution role JIT request")
         labels = ["self-hosted", "linux", "x64", EXECUTION_ROLES[role]["label"],
                   organization_repository_label(repo), role_run_label(run_id, run_attempt)]
         if pr_head_sha:
             labels.append("ci-pr-head-" + pr_head_sha)
+        if execution_sha:
+            labels.append("ci-execution-sha-" + execution_sha)
+        if not role_labels_match(labels, repo, role, run_id, run_attempt, pr_head_sha, execution_sha):
+            raise RunnerError("invalid execution role labels")
         return self.request("POST", f"/orgs/{ORG_NAME}/actions/runners/generate-jitconfig", {
             "name": runner_name_for_trigger(job_id), "runner_group_id": group_id,
             "labels": labels, "work_folder": "_work",
@@ -2459,7 +2492,7 @@ class ExecutionRoleDispatchClient(OrganizationDispatchClient):
             raise OrgPreflightRejected("execution role current identity not verified") from exc
         return self.org_client.generate_role_jit(job_id, group_id, repo, self.role,
                                                  candidate["run_id"], candidate["run_attempt"],
-                                                 candidate["pr_head_sha"])
+                                                 candidate["pr_head_sha"], candidate["execution_sha"])
 
 
 def dispatch_organization_once(cfg: dict[str, Any], repo_client: GitHubClient,

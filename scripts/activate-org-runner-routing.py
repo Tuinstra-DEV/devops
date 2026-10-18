@@ -31,7 +31,7 @@ import urllib.request
 
 
 OLD_MANAGER_SHA = "37061633484a206a027c0079bc47cfb904d8189a97e3bd3a06ff4bfb59be2249"
-NEW_MANAGER_SHA = "a4283a8e9a5fb71ba8661b1bc24e70b53ec6728bd1dd4a8e0999371c314a589a"
+NEW_MANAGER_SHA = "8769623c32891c43f285d2a075689ceafed2fa65f993cbc253e8900ff910d556"
 HELPER_SHA = "fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613"
 UNIT_SHA = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 ORG_REF_PREFIX = "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@"

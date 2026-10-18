@@ -17,10 +17,18 @@ pin = /@[a-f0-9]{40}\z/
 permissions = { "contents" => "read", "pull-requests" => "read", "actions" => "read", "packages" => "read", "id-token" => "write" }
 trigger = workflow["on"] || workflow[true]
 ensure_contract(trigger.keys == ["workflow_call"], "only reusable invocation is supported")
-ensure_contract(trigger["workflow_call"].nil? || trigger["workflow_call"].empty?, "no caller commands, policy inputs or secrets")
+call = trigger.fetch("workflow_call")
+request = { "description" => "Request isolated scheduling under the fixed role policy; does not grant trust", "required" => false, "default" => false, "type" => "boolean" }
+ensure_contract(call.is_a?(Hash) && call.keys == ["inputs"] && call["inputs"] == { "request-isolated-role-runner" => request }, "only one default-disabled scheduling request; no caller policy, commands or secrets")
 ensure_contract(workflow.fetch("jobs").keys == ["producer"], "one authenticated producer")
 producer = workflow.fetch("jobs").fetch("producer")
-ensure_contract(producer["runs-on"] == "ubuntu-24.04", "untrusted PR data stays on the isolated hosted runner")
+selector = producer.fetch("runs-on")
+ensure_contract(selector.is_a?(String) && selector.start_with?("${{ inputs['request-isolated-role-runner'] == true &&") && selector.end_with?("|| 'ubuntu-24.04' }}"), "fixed role scheduling request retains original hosted fallback")
+ensure_contract(selector.include?('"group":"sanctuary-trusted-verification"') && selector.include?('"ci-pr-security-producer"'), "producer role uses the exact reviewed group")
+ensure_contract(selector.include?("github.run_id") && selector.include?("github.run_attempt") && selector.include?("github.event.pull_request.head.sha"), "role is bound to exact run, attempt and event source")
+ensure_contract(selector.include?("toJSON(format('ci-execution-sha-{0}', github.sha))"), "target controller execution SHA is derived only from GitHub context")
+ensure_contract(selector.gsub(/\s+/, " ").split(" && fromJSON(format(", 2).first == "${{ inputs['request-isolated-role-runner'] == true && contains(fromJSON('[\"Tuinstra-DEV/gate\",\"Tuinstra-DEV/tracker\"]'), github.repository) && github.event.repository.full_name == github.repository && toJSON(github.event.repository.private) == 'true' && toJSON(github.event.repository.fork) == 'false' && github.event_name == 'pull_request_target' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.sender.login == 'marcel-tuinstra' && github.event.sender.type == 'User' && github.event.pull_request.user.login == 'marcel-tuinstra' && github.event.pull_request.user.type == 'User' && github.event.pull_request.state == 'open' && toJSON(github.event.pull_request.merged) == 'false' && github.event.pull_request.number > 0 && github.event.pull_request.head.sha != '' && github.event.pull_request.head.ref != '' && github.event.pull_request.base.ref != '' && github.event.pull_request.head.repo.full_name == github.repository && toJSON(github.event.pull_request.head.repo.private) == 'true' && toJSON(github.event.pull_request.head.repo.fork) == 'false' && github.event.pull_request.base.repo.full_name == github.repository && toJSON(github.event.pull_request.base.repo.private) == 'true' && toJSON(github.event.pull_request.base.repo.fork) == 'false' && github.event.repository.default_branch != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.sha != ''", "every fixed human-only event/source predicate is mandatory before runner selection")
+ensure_contract(!selector.include?("trusted-heavy") && !selector.include?("trusted-medium") && !selector.include?("vars.") && !selector.include?("secrets."), "caller cannot choose role labels or assert source trust")
 ensure_contract(producer["timeout-minutes"] == 20, "bounded job duration")
 ensure_contract(producer["permissions"] == permissions, "exact least-privilege job permissions")
 ensure_contract(!producer.key?("if") && !producer.key?("continue-on-error"), "no silently skipped or ignored producer failure")

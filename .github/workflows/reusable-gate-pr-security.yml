@@ -2,11 +2,45 @@ name: Gate PR security producer
 
 on:
   workflow_call:
+    inputs:
+      request-isolated-role-runner:
+        description: Request isolated scheduling under the fixed role policy; does not grant trust
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   producer:
     name: Gate evidence producer
-    runs-on: ubuntu-24.04
+    runs-on: >-
+      ${{ inputs['request-isolated-role-runner'] == true &&
+          contains(fromJSON('["Tuinstra-DEV/gate","Tuinstra-DEV/tracker"]'), github.repository) &&
+          github.event.repository.full_name == github.repository &&
+          toJSON(github.event.repository.private) == 'true' &&
+          toJSON(github.event.repository.fork) == 'false' &&
+          github.event_name == 'pull_request_target' &&
+          github.actor == 'marcel-tuinstra' &&
+          github.triggering_actor == 'marcel-tuinstra' &&
+          github.event.sender.login == 'marcel-tuinstra' &&
+          github.event.sender.type == 'User' &&
+          github.event.pull_request.user.login == 'marcel-tuinstra' &&
+          github.event.pull_request.user.type == 'User' &&
+          github.event.pull_request.state == 'open' &&
+          toJSON(github.event.pull_request.merged) == 'false' &&
+          github.event.pull_request.number > 0 &&
+          github.event.pull_request.head.sha != '' &&
+          github.event.pull_request.head.ref != '' &&
+          github.event.pull_request.base.ref != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          toJSON(github.event.pull_request.head.repo.private) == 'true' &&
+          toJSON(github.event.pull_request.head.repo.fork) == 'false' &&
+          github.event.pull_request.base.repo.full_name == github.repository &&
+          toJSON(github.event.pull_request.base.repo.private) == 'true' &&
+          toJSON(github.event.pull_request.base.repo.fork) == 'false' &&
+          github.event.repository.default_branch != '' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          github.sha != '' &&
+          fromJSON(format('{{"group":"sanctuary-trusted-verification","labels":["self-hosted","ci-pr-security-producer",{0},{1},{2},{3}]}}', toJSON(github.repository == 'Tuinstra-DEV/gate' && 'sanctuary-gate' || 'sanctuary-tracker'), toJSON(format('ci-run-{0}-{1}', github.run_id, github.run_attempt)), toJSON(format('ci-pr-head-{0}', github.event.pull_request.head.sha)), toJSON(format('ci-execution-sha-{0}', github.sha)))) || 'ubuntu-24.04' }}
     timeout-minutes: 20
     permissions:
       contents: read

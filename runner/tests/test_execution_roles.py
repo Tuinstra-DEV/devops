@@ -17,7 +17,7 @@ PRODUCER_REF = ('Tuinstra-DEV/devops/.github/workflows/'
                 'reusable-gate-pr-security.yml@' + 'e' * 40)
 ROLES = {
     METADATA: {'workflow_ref': META_REF, 'repositories': [REPO],
-               'events': ['pull_request', 'pull_request_target', 'push'],
+               'events': ['pull_request', 'push'],
                'actors': [{'login': 'marcel-tuinstra', 'type': 'User'}]},
     PRODUCER: {'workflow_ref': PRODUCER_REF, 'repositories': [REPO],
                'events': ['pull_request_target'],
@@ -70,12 +70,13 @@ class ExecutionRoleTests(unittest.TestCase):
             return client.candidate_role_jobs(REPO, role)
 
     def producer(self):
-        self.run.update({'event': 'pull_request_target', 'head_sha': 'c' * 40,
-                         'head_branch': 'main', 'referenced_workflows':
+        self.run.update({'event': 'pull_request_target', 'head_sha': self.pr['head']['sha'],
+                         'head_branch': self.pr['head']['ref'], 'referenced_workflows':
                          [{'path': PRODUCER_REF, 'sha': PRODUCER_REF[-40:]}]})
         self.job['head_sha'] = self.run['head_sha']
         self.job['labels'] = ['self-hosted', 'ci-pr-security-producer', 'sanctuary-tracker',
-                              'ci-run-11-2', 'ci-pr-head-' + self.pr['head']['sha']]
+                              'ci-run-11-2', 'ci-pr-head-' + self.pr['head']['sha'],
+                              'ci-execution-sha-' + self.branch['commit']['sha']]
 
     def state(self, candidate):
         return {**candidate, 'scope': 'organization', 'org': 'Tuinstra-DEV',
@@ -154,7 +155,8 @@ class ExecutionRoleTests(unittest.TestCase):
         self.producer()
         result = self.candidates(role=PRODUCER)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['source_sha'], 'c' * 40)
+        self.assertEqual(result[0]['source_sha'], self.pr['head']['sha'])
+        self.assertEqual(result[0]['execution_sha'], 'c' * 40)
         self.assertEqual(result[0]['pr_head_sha'], self.pr['head']['sha'])
         self.assertFalse(self.client()._trusted_run(self.run, REPO))
         self.branch['commit']['sha'] = 'f' * 40
@@ -244,10 +246,7 @@ class ExecutionRoleTests(unittest.TestCase):
         self.job['head_sha'] = 'd' * 40
         self.job['labels'] = [label for label in self.job['labels'] if not label.startswith('ci-pr-head-')] + ['ci-pr-head-' + self.pr['head']['sha']]
         if role == PRODUCER:
-            self.run['event'] = 'pull_request_target'
-            self.run['referenced_workflows'] = [{'path': PRODUCER_REF, 'sha': PRODUCER_REF[-40:]}]
-            self.job['labels'] = ['self-hosted', 'ci-pr-security-producer', 'sanctuary-tracker',
-                              'ci-run-11-2', 'ci-pr-head-' + self.pr['head']['sha']]
+            self.producer()
 
     def test_release_pr_keeps_protected_main_base_separate_from_default_develop(self):
         for role in (METADATA, PRODUCER):
@@ -261,6 +260,7 @@ class ExecutionRoleTests(unittest.TestCase):
                 self.assertEqual(result[0]['default_sha'], 'd' * 40)
                 self.assertEqual(result[0]['default_branch'], 'develop')
                 self.assertEqual(result[0]['source_sha'], 'd' * 40)
+                self.assertEqual(result[0]['execution_sha'], 'd' * 40 if role == PRODUCER else '')
 
     def test_release_actual_pr_base_must_independently_be_current_and_protected(self):
         for role in (METADATA, PRODUCER):
@@ -293,7 +293,7 @@ class ExecutionRoleTests(unittest.TestCase):
                     self.branch['protected'] = False
                 self.assertEqual(self.candidates(role=PRODUCER), [])
 
-    def test_producer_rejects_pr_event_fork_stale_pr_base_and_nondefault_source(self):
+    def test_producer_rejects_pr_event_fork_stale_pr_base_and_wrong_source_branch(self):
         for mutation in ('event', 'fork', 'base', 'branch', 'public', 'author'):
             with self.subTest(mutation=mutation):
                 self.setUp()
@@ -335,7 +335,7 @@ class ExecutionRoleTests(unittest.TestCase):
                 mock.patch.object(client, 'generate_role_jit', return_value={}) as jit:
             candidate = adapter.candidate_jobs(REPO, 'ci-metadata-preflight')[0]
             adapter.generate_jit(REPO, candidate['job_id'], 42, 'ci-metadata-preflight')
-            jit.assert_called_once_with(22, 42, REPO, METADATA, 11, 2, self.pr['head']['sha'])
+            jit.assert_called_once_with(22, 42, REPO, METADATA, 11, 2, self.pr['head']['sha'], '')
             jit.reset_mock()
             for mutation in ('attempt', 'source', 'assignment', 'group'):
                 with self.subTest(mutation=mutation):
@@ -642,6 +642,163 @@ class ExecutionRoleTests(unittest.TestCase):
                         with self.assertRaises(manager.OrgPreflightRejected):
                             adapter.generate_jit(REPO, 22, 42, label)
                         jit.assert_not_called()
+
+    def actual_target_fixture(self):
+        # Synthetic API fixture with the distinct source/controller SHAs from
+        # successful Gate producer run 39135363284, not a live admission claim.
+        source = '236bb4dbd7b02fd5a37f7204daa7bc1e5b81257b'
+        execution = 'a1ab634fbabdfb8f00895863b4448624778d379d'
+        self.metadata['default_branch'] = 'develop'
+        self.branch = {'name': 'develop', 'protected': True, 'commit': {'sha': execution}}
+        self.pr['head'].update({'sha': source, 'ref': 'feature/IN-2-heal-provider-deadline'})
+        self.pr['base'].update({'sha': execution, 'ref': 'develop'})
+        self.run['pull_requests'] = [{'number': 7, 'head': {'sha': source}, 'base': {'sha': execution}}]
+        self.producer()
+        return source, execution
+
+    def test_actual_target_source_is_distinct_from_protected_execution_controller(self):
+        source, execution = self.actual_target_fixture()
+        result = self.candidates(role=PRODUCER)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['source_sha'], source)
+        self.assertEqual(result[0]['head_branch'], self.pr['head']['ref'])
+        self.assertEqual(result[0]['pr_head_sha'], source)
+        self.assertEqual(result[0]['execution_sha'], execution)
+        self.assertEqual(result[0]['default_sha'], execution)
+        self.assertNotEqual(result[0]['source_sha'], result[0]['execution_sha'])
+
+    def test_target_execution_label_is_mandatory_exact_and_current(self):
+        for changed in ('missing', 'duplicate', 'wrong', 'malformed', 'source-as-execution'):
+            with self.subTest(changed=changed):
+                self.setUp()
+                source, execution = self.actual_target_fixture()
+                labels = self.job['labels']
+                label = 'ci-execution-sha-' + execution
+                if changed == 'missing':
+                    labels.remove(label)
+                elif changed == 'duplicate':
+                    labels.append(label)
+                else:
+                    labels.remove(label)
+                    labels.append('ci-execution-sha-' + ({'wrong': 'f' * 40, 'malformed': 'develop',
+                                                          'source-as-execution': source}[changed]))
+                self.assertEqual(self.candidates(role=PRODUCER), [])
+
+    def test_target_api_source_sha_and_branch_must_both_match_current_pr(self):
+        for changed in ('sha', 'branch'):
+            with self.subTest(changed=changed):
+                self.setUp()
+                self.actual_target_fixture()
+                if changed == 'sha':
+                    self.run['head_sha'] = self.branch['commit']['sha']
+                    self.job['head_sha'] = self.run['head_sha']
+                else:
+                    self.run['head_branch'] = 'develop'
+                self.assertEqual(self.candidates(role=PRODUCER), [])
+
+    def test_normal_pr_and_push_reject_any_execution_label(self):
+        for event in ('pull_request', 'push'):
+            with self.subTest(event=event):
+                self.setUp()
+                if event == 'push':
+                    self.run.update({'event': event, 'head_sha': 'c' * 40, 'head_branch': 'main'})
+                    self.job['head_sha'] = self.run['head_sha']
+                    self.job['labels'] = [value for value in self.job['labels'] if not value.startswith('ci-pr-head-')]
+                self.assertEqual(self.candidates()[0]['execution_sha'], '')
+                self.job['labels'].append('ci-execution-sha-' + 'c' * 40)
+                self.assertEqual(self.candidates(), [])
+
+    def test_target_metadata_is_explicitly_unsupported(self):
+        cfg = copy.deepcopy(self.cfg)
+        cfg['org_execution_roles'][METADATA]['events'].append('pull_request_target')
+        with self.assertRaises(manager.RunnerError):
+            manager.validate_org_config(cfg)
+        self.run['event'] = 'pull_request_target'
+        self.assertEqual(self.candidates(), [])
+        self.job['labels'].append('ci-execution-sha-' + 'c' * 40)
+        self.assertEqual(self.candidates(), [])
+
+    def test_producer_jit_advertises_exact_execution_pin_and_state_persists_it(self):
+        _, execution = self.actual_target_fixture()
+        candidate = self.candidates(role=PRODUCER)[0]
+        client = self.client()
+        adapter = manager.ExecutionRoleDispatchClient(self.cfg, mock.Mock(), client, PRODUCER,
+                                                     manager.WorkflowListSnapshot())
+        with mock.patch.object(client, 'request', side_effect=self.response), \
+                mock.patch.object(client, 'verify_org_group'), \
+                mock.patch.object(client, 'generate_role_jit', return_value={}) as jit:
+            adapter.candidate_jobs(REPO, 'ci-pr-security-producer')
+            adapter.generate_jit(REPO, 22, 42, 'ci-pr-security-producer')
+        jit.assert_called_once_with(22, 42, REPO, PRODUCER, 11, 2, candidate['pr_head_sha'], execution)
+        with mock.patch.object(client, 'request', return_value={}) as request:
+            client.generate_role_jit(22, 42, REPO, PRODUCER, 11, 2, candidate['pr_head_sha'], execution)
+        labels = request.call_args.args[2]['labels']
+        self.assertEqual(labels.count('ci-execution-sha-' + execution), 1)
+        self.assertFalse({'trusted-heavy', 'trusted-medium'} & set(labels))
+        for role, execution_sha in ((PRODUCER, ''), (PRODUCER, 'main'), (PRODUCER, 123), (PRODUCER, None), (METADATA, execution)):
+            with self.subTest(role=role, execution=execution_sha), mock.patch.object(client, 'request') as request:
+                with self.assertRaises(manager.RunnerError):
+                    client.generate_role_jit(22, 42, REPO, role, 11, 2, candidate['pr_head_sha'], execution_sha)
+                request.assert_not_called()
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {**self.cfg, 'state_dir': str(Path(temporary) / 'state'), 'max_concurrency': 4,
+                   'runner_label': 'trusted-heavy', 'medium_runner_label': 'trusted-medium'}
+            selected = mock.Mock()
+            selected.candidate_jobs.return_value = [candidate]
+            selected.generate_jit.return_value = {'runner': {'id': 30}, 'encoded_jit_config': 'aGVsbG8='}
+            with mock.patch.object(manager, 'pre_jit_capacity_errors', return_value=[]), \
+                    mock.patch.object(manager, 'launch') as launch:
+                self.assertTrue(manager.dispatch_once(cfg, selected, profile='heavy', scope='organization',
+                                                     execution_role=PRODUCER))
+            self.assertEqual(launch.call_args.kwargs['metadata']['execution_sha'], execution)
+            self.assertEqual(launch.call_args.kwargs['metadata']['source_sha'], candidate['source_sha'])
+
+    def test_running_target_keeps_execution_pin_without_reading_moving_tips(self):
+        _, execution = self.actual_target_fixture()
+        candidate = self.candidates(role=PRODUCER)[0]
+        state = self.state(candidate)
+        self.job.update({'runner_id': 30, 'runner_name': 'sanctuary-22', 'runner_group_id': 42,
+                         'runner_group_name': manager.ORG_GROUP_NAME, 'status': 'in_progress'})
+        assignment = {'repo': REPO, 'run_id': 11, 'job_id': 22}
+        self.branch['commit']['sha'] = 'f' * 40
+        self.pr['head']['sha'] = 'e' * 40
+        self.pr['state'] = 'closed'
+        client = self.client()
+
+        def immutable_only(method, path, body=None):
+            self.assertNotIn('/branches/', path)
+            self.assertNotIn('/pulls', path)
+            self.assertNotEqual(path, f'/repos/{REPO}')
+            return self.response(method, path, body)
+
+        with mock.patch.object(client, 'request', side_effect=immutable_only):
+            self.assertEqual(client.verify_org_assignment(state, assignment), PRODUCER_REF)
+            labels = list(self.job['labels'])
+            for changed in ('missing', 'wrong', 'duplicate'):
+                self.job['labels'] = list(labels)
+                if changed == 'duplicate':
+                    self.job['labels'].append('ci-execution-sha-' + execution)
+                else:
+                    self.job['labels'].remove('ci-execution-sha-' + execution)
+                    if changed == 'wrong':
+                        self.job['labels'].append('ci-execution-sha-' + 'f' * 40)
+                with self.subTest(changed=changed), self.assertRaises(manager.AssignmentMismatch):
+                    client.verify_org_assignment(state, assignment)
+
+    def test_pre_jit_rejects_changed_execution_label_without_registering(self):
+        self.actual_target_fixture()
+        client = self.client()
+        adapter = manager.ExecutionRoleDispatchClient(self.cfg, mock.Mock(), client, PRODUCER,
+                                                     manager.WorkflowListSnapshot())
+        with mock.patch.object(client, 'request', side_effect=self.response), \
+                mock.patch.object(client, 'verify_org_group'), \
+                mock.patch.object(client, 'generate_role_jit') as jit:
+            self.assertEqual(len(adapter.candidate_jobs(REPO, 'ci-pr-security-producer')), 1)
+            self.job['labels'] = [value for value in self.job['labels'] if not value.startswith('ci-execution-sha-')]
+            self.job['labels'].append('ci-execution-sha-' + 'f' * 40)
+            with self.assertRaises(manager.OrgPreflightRejected):
+                adapter.generate_jit(REPO, 22, 42, 'ci-pr-security-producer')
+            jit.assert_not_called()
 
 
 if __name__ == '__main__':
