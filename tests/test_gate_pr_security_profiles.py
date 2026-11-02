@@ -82,7 +82,7 @@ class NativeProfileTests(unittest.TestCase):
     def test_tracker_binding_is_required_and_cannot_select_another_repository(self):
         with self.assertRaisesRegex(ValueError, "^tracker_binding_required$"):
             constants.profile_for_binding("Tuinstra-DEV/tracker", None)
-        with self.assertRaisesRegex(ValueError, "^binding_repository_mismatch$"):
+        with self.assertRaisesRegex(ValueError, "^invalid_gate_scanner_binding$"):
             constants.profile_for_binding("Tuinstra-DEV/gate", TRACKER_BINDING)
         profile = constants.profile_for_binding("Tuinstra-DEV/tracker", TRACKER_BINDING)
         self.assertEqual(TRACKER_BINDING["image"], profile["image"])
@@ -97,6 +97,9 @@ class NativeProfileTests(unittest.TestCase):
         self.assertIn('source.py" prepare', prepare)
         self.assertEqual(1, workflow.count("GATE_TRACKER_SCANNER_BINDING:"))
         self.assertIn("GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}", workflow)
+        self.assertEqual(1, workflow.count("GATE_GATE_SCANNER_BINDING:"))
+        self.assertIn("GATE_GATE_SCANNER_BINDING: ${{ vars.GATE_GATE_SCANNER_BINDING }}", workflow)
+        self.assertNotIn("GATE_GATE_SCANNER_BINDING:", action)
         # Scheduling may be requested; scanner identity remains server-owned.
         interface = workflow.split("\njobs:\n", 1)[0]
         self.assertEqual(re.findall(r"(?m)^      ([a-z][a-z0-9-]*):$", interface),
@@ -115,8 +118,44 @@ class NativeProfileTests(unittest.TestCase):
                 evidence._validate_state(invalid)
 
         gate = state("Tuinstra-DEV/gate") | {"scanner_binding": TRACKER_BINDING.copy()}
-        with self.assertRaisesRegex(evidence.EvidenceError, "^invalid_state$"):
+        with self.assertRaisesRegex(evidence.EvidenceError, "^invalid_scanner_binding$"):
             evidence._validate_state(gate)
+
+    def test_gate_binding_keeps_exact_new_policy_and_rejects_cross_profile_or_mutable_images(self):
+        binding = TRACKER_BINDING | {"policy_digest": constants.GATE_IN46_POLICY}
+        self.assertEqual(constants.parse_gate_scanner_binding(json.dumps(binding)), binding)
+        profile = constants.profile_for_binding("Tuinstra-DEV/gate", binding)
+        self.assertEqual(profile["exclusions_file"], "excluded-inputs-gate-in46.json")
+        self.assertEqual(profile["policy_digest"], constants.GATE_IN46_POLICY)
+        self.assertEqual(profile["scope_scanners"], constants.profile_for("Tuinstra-DEV/gate")["scope_scanners"])
+        self.assertIsInstance(evidence._trusted_exclusions(profile), dict)
+        for change in ({"policy_digest": constants.profile_for("Tuinstra-DEV/gate")["policy_digest"]},
+                       {"policy_digest": TRACKER_BINDING["policy_digest"]},
+                       {"image": "ghcr.io/tuinstra-dev/gate/ci-scanner:latest"},
+                       {"image": constants.profile_for("Tuinstra-DEV/gate")["image"]},
+                       {"image": constants.profile_for("Tuinstra-DEV/tracker")["image"]},
+                       {"dataset_digest": "sha256:" + "c" * 64}, {"unexpected": "value"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                constants.validate_gate_scanner_binding(binding | change)
+        raw = json.dumps(binding)
+        for invalid in ("", "{}", " " * 2049, raw[:-1] + ',"image":"duplicate"}'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                constants.parse_gate_scanner_binding(invalid)
+
+    def test_gate_bootstrap_evidence_binds_new_image_policy_and_frozen_state(self):
+        binding = TRACKER_BINDING | {"policy_digest": constants.GATE_IN46_POLICY}
+        candidate = state("Tuinstra-DEV/gate") | {"scanner_binding": binding, "scanner_image": binding["image"]}
+        profile = constants.profile_for_binding("Tuinstra-DEV/gate", binding)
+        self.assertEqual(evidence._validate_state(candidate), profile)
+        for change in ({"scanner_image": constants.IMAGE}, {"scanner_binding": TRACKER_BINDING}):
+            with self.subTest(change=change), self.assertRaises(evidence.EvidenceError):
+                evidence._validate_state(candidate | change)
+        report = json.loads((FIXTURES / "pair-pass.json").read_bytes())
+        report.update(bundle_digest=binding["bundle_digest"], dataset_manifest_digest=binding["dataset_digest"], policy_digest=binding["policy_digest"])
+        for row in report["coverage"]:
+            row["rules_digest"] = profile["bundle_digest"]
+        evidence._validate_report(candidate, report)
+        self.assertEqual(evidence._coverage(report, True, profile)[0]["rules_digest"], binding["bundle_digest"])
 
     def test_only_exact_repository_names_select_profiles(self):
         gate = constants.profile_for("Tuinstra-DEV/gate")

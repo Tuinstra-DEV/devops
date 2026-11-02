@@ -36,7 +36,7 @@ DIGEST_RE = re.compile(r"\Asha256:[a-f0-9]{64}\Z")
 POSITIVE_RE = re.compile(r"\A[1-9][0-9]{0,18}\Z")
 WORKFLOW_REF_MAX = 256
 APPROVED_WORKFLOW_PATH = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml"
-EVENT_NAMES = {"pull_request_target"}
+EVENT_NAMES = {"pull_request_target", "pull_request"}
 OUTCOME_EXIT = {"pass": 0, "blocked": 1, "incomplete": 2}
 OIDC_MAX_ISSUED_AGE_SECONDS = 300
 OIDC_MAX_FUTURE_IAT_SECONDS = 60
@@ -140,7 +140,8 @@ def _load_inputs(work_dir: Path) -> tuple[dict[str, Any], bytes, dict[str, Any]]
     state_raw = _read_regular(work_dir / "state.json", 64 * 1024, "state_unavailable")
     state = _decode_json(state_raw, "invalid_state")
     expected_state = STATE_REQUIRED | ({TRACKER_BINDING_STATE_KEY}
-                                      if state.get("repository") == "Tuinstra-DEV/tracker" else set())
+                                      if state.get("repository") == "Tuinstra-DEV/tracker" or
+                                      (state.get("repository") == "Tuinstra-DEV/gate" and TRACKER_BINDING_STATE_KEY in state) else set())
     if set(state) != expected_state:
         raise EvidenceError("invalid_state")
     report_path = work_dir / "output" / "pair" / "result.json"
@@ -165,7 +166,7 @@ def _profile_for_state(state: dict[str, Any]) -> Any:
         reason = str(error)
         if reason == "unknown_repository":
             raise EvidenceError("unknown_repository") from None
-        if reason in {"tracker_binding_required", "invalid_tracker_scanner_binding", "binding_repository_mismatch"}:
+        if reason in {"tracker_binding_required", "invalid_tracker_scanner_binding", "invalid_gate_scanner_binding", "binding_repository_mismatch"}:
             raise EvidenceError("invalid_scanner_binding") from None
         raise EvidenceError("invalid_state") from None
     if state["scanner_image"] != profile["image"]:
@@ -175,7 +176,8 @@ def _profile_for_state(state: dict[str, Any]) -> Any:
 
 def _validate_state(state: dict[str, Any]) -> Any:
     expected_state = STATE_REQUIRED | ({TRACKER_BINDING_STATE_KEY}
-                                      if state.get("repository") == "Tuinstra-DEV/tracker" else set())
+                                      if state.get("repository") == "Tuinstra-DEV/tracker" or
+                                      (state.get("repository") == "Tuinstra-DEV/gate" and TRACKER_BINDING_STATE_KEY in state) else set())
     if set(state) != expected_state:
         raise EvidenceError("invalid_state")
     profile = _profile_for_state(state)

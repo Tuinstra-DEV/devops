@@ -35,7 +35,7 @@ ensure_contract(!producer.key?("if") && !producer.key?("continue-on-error"), "no
 steps = producer.fetch("steps")
 ensure_contract(steps.length == 1 && steps[0].fetch("uses").match?(pin), "helper action is immutable")
 ensure_contract(steps[0]["with"].nil?, "caller cannot configure helper execution")
-ensure_contract(steps[0]["env"] == { "GATE_TRACKER_SCANNER_BINDING" => '${{ vars.GATE_TRACKER_SCANNER_BINDING }}' }, "only trusted workflow resolves the Tracker scanner binding")
+ensure_contract(steps[0]["env"] == { "GATE_GATE_SCANNER_BINDING" => '${{ vars.GATE_GATE_SCANNER_BINDING }}', "GATE_TRACKER_SCANNER_BINDING" => '${{ vars.GATE_TRACKER_SCANNER_BINDING }}' }, "only trusted workflow resolves the two repository-owned scanner bindings")
 ensure_contract(action["inputs"].nil?, "helper has no free commands or policy overrides")
 action_steps = action.fetch("runs").fetch("steps")
 ensure_contract(action_steps.none? { |step| step.fetch("env", {}).values.any? { |value| value.to_s.include?("${{ vars.") } }, "composite action cannot resolve repository variables")

@@ -161,10 +161,14 @@ def sha(value):
 
 
 def provider_state(environ):
-    require(environ.get("GATE_EVENT_NAME") == "pull_request_target", "unsupported_event")
+    event = environ.get("GATE_EVENT_NAME")
+    require(event in {"pull_request_target", "pull_request"}, "unsupported_event")
     repository = environ.get("GATE_REPOSITORY", "")
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository),
             "invalid_repository")
+    if event == "pull_request":
+        require(repository == "Tuinstra-DEV/gate", "unsupported_event")
+        require(bool(environ.get("GATE_GATE_SCANNER_BINDING")), "gate_scanner_binding_required")
     state = {"repository": repository}
     for field, name in [("repository_id", "REPOSITORY_ID"), ("owner_id", "OWNER_ID"),
                         ("run_id", "RUN_ID"), ("pull_request", "PR_NUMBER"), ("run_attempt", "RUN_ATTEMPT")]:
@@ -179,7 +183,8 @@ def provider_state(environ):
     require(decimal(repo.get("id")) == state["repository_id"]
             and decimal(repo.get("owner", {}).get("id")) == state["owner_id"]
             and repo.get("full_name", "").lower() == repository.lower(), "repository_mismatch")
-    profile_for_state(state, environ.get("GATE_TRACKER_SCANNER_BINDING"))
+    binding_name = "GATE_GATE_SCANNER_BINDING" if repository == "Tuinstra-DEV/gate" else "GATE_TRACKER_SCANNER_BINDING"
+    profile_for_state(state, environ.get(binding_name))
     pr = api(prefix + "/pulls/" + str(state["pull_request"]), token)
     require(pr.get("number") == state["pull_request"] and pr.get("state") == "open"
             and pr.get("merged") is False, "pr_not_current")
@@ -192,7 +197,7 @@ def provider_state(environ):
     for current in [api(run_path, token), api(run_path + "/attempts/" + str(state["run_attempt"]), token)]:
         require(decimal(current.get("id")) == state["run_id"]
                 and current.get("run_attempt") == state["run_attempt"]
-                and current.get("event") == "pull_request_target"
+                and current.get("event") == event
                 and current.get("head_sha") == state["head_sha"]
                 and decimal(current.get("repository", {}).get("id")) == state["repository_id"]
                 and decimal(current.get("head_repository", {}).get("id")) == head_repository, "run_mismatch")
@@ -350,20 +355,25 @@ def profile_for_state(state, binding_json=None):
     require(isinstance(state, dict), "invalid_state")
     repository = state.get("repository")
     binding = None
-    if repository == "Tuinstra-DEV/tracker":
+    if repository == "Tuinstra-DEV/tracker" or (
+            repository == "Tuinstra-DEV/gate" and ("scanner_binding" in state or binding_json not in (None, ""))):
+        gate = repository == "Tuinstra-DEV/gate"
+        validate = constants.validate_gate_scanner_binding if gate else constants.validate_tracker_scanner_binding
+        parse = constants.parse_gate_scanner_binding if gate else constants.parse_tracker_scanner_binding
+        name = "gate" if gate else "tracker"
         if "scanner_binding" in state:
             require(binding_json in (None, ""), "scanner_binding_already_frozen")
             try:
-                binding = constants.validate_tracker_scanner_binding(state["scanner_binding"])
+                binding = validate(state["scanner_binding"])
             except ValueError:
-                raise Failure("invalid_tracker_scanner_binding") from None
+                raise Failure("invalid_" + name + "_scanner_binding") from None
         else:
             try:
-                binding = constants.parse_tracker_scanner_binding(binding_json)
+                binding = parse(binding_json)
             except ValueError as error:
                 reason = str(error)
-                if reason not in {"tracker_scanner_binding_required", "invalid_tracker_scanner_binding"}:
-                    reason = "invalid_tracker_scanner_binding"
+                if reason not in {name + "_scanner_binding_required", "invalid_" + name + "_scanner_binding"}:
+                    reason = "invalid_" + name + "_scanner_binding"
                 raise Failure(reason) from None
             state["scanner_binding"] = binding
     else:
