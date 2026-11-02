@@ -768,12 +768,17 @@ jobs:
         with:
           version: ${{ needs.preflight.outputs.pnpm-version }}
       - name: Set up Node.js for fixed npm consumers
-        if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' || github.repository == 'Tuinstra-DEV/sudoku-tessera' }}
+        if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
         with:
           node-version: ${{ needs.preflight.outputs.node-version }}
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Set up Tessera Node.js without npm cache
+        if: ${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+        with:
+          node-version: '24'
       - name: Set up Gate Node.js with pinned pnpm download cache
         if: ${{ github.repository == 'Tuinstra-DEV/gate' && inputs.job-key == 'gate-frontend-static' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
@@ -1082,12 +1087,17 @@ jobs:
         with:
           version: ${{ needs.preflight.outputs.pnpm-version }}
       - name: Set up Node.js for fixed npm consumers
-        if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' || github.repository == 'Tuinstra-DEV/sudoku-tessera' }}
+        if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
         with:
           node-version: ${{ needs.preflight.outputs.node-version }}
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Set up Tessera Node.js without npm cache
+        if: ${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+        with:
+          node-version: '24'
       - name: Set up Gate Node.js with pinned pnpm download cache
         if: ${{ github.repository == 'Tuinstra-DEV/gate' && inputs.job-key == 'gate-frontend-static' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0

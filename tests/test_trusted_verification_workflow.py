@@ -711,6 +711,16 @@ else:
                     self.assertEqual(subprocess.run([str(shim / "composer"), "--version"], env=env,
                                                     capture_output=True, text=True).returncode, 0)
 
+    def test_tessera_node_setup_does_not_require_an_npm_lockfile(self):
+        jobs = IsolatedRoleRoutingTests.document(WORKFLOW)["jobs"]
+        for route in ("trusted-verification", "hosted-fallback"):
+            steps = jobs[route]["steps"]
+            npm = next(step for step in steps if step.get("name") == "Set up Node.js for fixed npm consumers")
+            self.assertNotIn("Tuinstra-DEV/sudoku-tessera", npm["if"])
+            tessera = next(step for step in steps if step.get("name") == "Set up Tessera Node.js without npm cache")
+            self.assertEqual(tessera["if"], "${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' }}")
+            self.assertEqual(tessera["with"], {"node-version": "24"})
+
     def test_download_caches_use_fixed_lockfile_identities_on_both_routes(self):
         source = legacy_source()
         trusted = source.split("  trusted-verification:", 1)[1].split("  hosted-fallback:", 1)[0]
@@ -799,7 +809,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
     REQUEST = 'request-isolated-role-runner'
     PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
     EXECUTION_HASHES = {
-        WORKFLOW.name: 'b966a31084cdfd31d29d7990844ed8a322915130d2e1700e59acd327e61f3aef',
+        WORKFLOW.name: 'c515060adf3c722c02a872feafb8174bdd2d1bcb33402f0a41acea89d6deb4be',
         PRODUCER.name: 'f81578d9db84d2ac1b128094acf57f6de15857915862934c9fa0ab2e23d65dee',
     }
 
