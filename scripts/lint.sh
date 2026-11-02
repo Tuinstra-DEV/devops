@@ -109,3 +109,7 @@ node --check .github/actions/gate-observability/run.mjs
 ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/gate-observability/action.yml"), aliases: true)'
 
 echo "lint passed"
+
+# The root activation entrypoint is syntax-checked only; never execute it in CI.
+sh -n runner/activation/dev54-activate.sh
+python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-activate.sh"); compile(p.read_text().split("3<<"+chr(39)+"PY"+chr(39)+"\n",1)[1].rsplit("\nPY",1)[0],str(p),"exec")'
