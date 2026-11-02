@@ -701,7 +701,7 @@ class GatePrSecurityEvidenceTests(unittest.TestCase):
                     evidence.package(work, environment())
 
     def test_rejects_wrong_event_and_unpinned_workflow_context(self):
-        for key, value in (("GATE_EVENT_NAME", "pull_request"), ("GATE_WORKFLOW_REF", evidence.APPROVED_WORKFLOW_PATH + "@refs/heads/main")):
+        for key, value in (("GATE_EVENT_NAME", "workflow_dispatch"), ("GATE_WORKFLOW_REF", evidence.APPROVED_WORKFLOW_PATH + "@refs/heads/main")):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory) / "work"
                 setup_work(work, "pair-pass.json")

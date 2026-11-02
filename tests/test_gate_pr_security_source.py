@@ -98,7 +98,7 @@ class SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(source.Failure, "^tracker_scanner_binding_required$"):
             source.profile_for_state(state)
         state["scanner_binding"] = TRACKER_BINDING.copy()
-        with self.assertRaisesRegex(source.Failure, "^scanner_binding_repository_mismatch$"):
+        with self.assertRaisesRegex(source.Failure, "^invalid_gate_scanner_binding$"):
             source.profile_for_state(self.state(), json.dumps(TRACKER_BINDING))
 
     def test_tracker_binding_snapshot_survives_environment_change_after_prepare(self):
@@ -221,7 +221,7 @@ class SourceTests(unittest.TestCase):
                     source.provider_state(context)
 
     def test_only_registered_target_event_is_accepted(self):
-        for event in (None, "pull_request", "workflow_dispatch"):
+        for event in (None, "workflow_dispatch"):
             with self.subTest(event=event), patch.object(source, "api") as api:
                 with self.assertRaisesRegex(source.Failure, "unsupported_event"):
                     source.provider_state(self.context() | {"GATE_EVENT_NAME": event})
@@ -230,6 +230,28 @@ class SourceTests(unittest.TestCase):
         payloads[2]["event"] = "pull_request"
         with patch.object(source, "api", side_effect=payloads), self.assertRaisesRegex(source.Failure, "run_mismatch"):
             source.provider_state(self.context())
+
+    def test_gate_pr_bootstrap_requires_operator_binding_and_exact_provider_run(self):
+        binding = TRACKER_BINDING | {"policy_digest": source.constants.GATE_IN46_POLICY}
+        context = self.context() | {"GATE_EVENT_NAME": "pull_request", "GATE_GATE_SCANNER_BINDING": json.dumps(binding)}
+        payloads = self.provider()
+        for run in payloads[2:]:
+            run["event"] = "pull_request"
+        with patch.object(source, "api", side_effect=payloads):
+            state, _ = source.provider_state(context)
+        self.assertEqual(state["scanner_binding"], binding)
+        changed = binding | {"image": "ghcr.io/tuinstra-dev/gate/ci-scanner@sha256:" + "c" * 64}
+        with patch.dict(os.environ, {"GATE_GATE_SCANNER_BINDING": json.dumps(changed)}):
+            self.assertEqual(source.profile_for_state(state)["image"], binding["image"])
+        with patch.object(source, "api") as api:
+            with self.assertRaisesRegex(source.Failure, "gate_scanner_binding_required"):
+                source.provider_state(self.context() | {"GATE_EVENT_NAME": "pull_request"})
+            api.assert_not_called()
+        with patch.object(source, "api", side_effect=self.provider()):
+            with self.assertRaisesRegex(source.Failure, "run_mismatch"):
+                source.provider_state(context)
+        with self.assertRaisesRegex(source.Failure, "scanner_binding_already_frozen"):
+            source.profile_for_state(state, json.dumps(changed))
 
     def test_provider_rejects_stale_attempt_wrong_source_or_closed_pr(self):
         for kwargs in ({"head": A}, {"attempt": 1}, {"merged": True}):

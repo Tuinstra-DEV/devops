@@ -125,6 +125,51 @@ def parse_tracker_scanner_binding(raw: object) -> dict[str, str]:
     return validate_tracker_scanner_binding(value)
 
 
+GATE_IN46_POLICY = "sha256:e85de80c7d15830dbd6b63a8d950c41dbe95e5c6e575f913304cf17d60e159df"
+GATE_IN46_EXCLUSIONS_DIGEST = "sha256:c0397e8b2c729f3302ed6127aeb72e3ad5ab46206e47849c73b592131c1997c8"
+
+def validate_gate_scanner_binding(value: object) -> dict[str, str]:
+    """Validate the trusted operator binding captured for the Gate repo."""
+    if not isinstance(value, dict) or set(value) != _TRACKER_BINDING_KEYS:
+        raise ValueError("invalid_gate_scanner_binding")
+    if any(not isinstance(value.get(key), str) for key in _TRACKER_BINDING_KEYS):
+        raise ValueError("invalid_gate_scanner_binding")
+    if _TRACKER_IMAGE_RE.fullmatch(value["image"]) is None:
+        raise ValueError("invalid_gate_scanner_binding")
+    if (value["image"] in {PROFILES["Tuinstra-DEV/gate"]["image"], PROFILES["Tuinstra-DEV/tracker"]["image"]}
+            or value["policy_digest"] != GATE_IN46_POLICY
+            or _DIGEST_RE.fullmatch(value["bundle_digest"]) is None
+            or value["bundle_digest"] != value["dataset_digest"]):
+        raise ValueError("invalid_gate_scanner_binding")
+    return {key: value[key] for key in ("image", "policy_digest", "bundle_digest", "dataset_digest")}
+
+
+def parse_gate_scanner_binding(raw: object) -> dict[str, str]:
+    """Decode a bounded repository variable, rejecting duplicate JSON keys."""
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("gate_scanner_binding_required")
+    try:
+        if len(raw.encode("utf-8")) > 2048:
+            raise ValueError("invalid_gate_scanner_binding")
+    except UnicodeEncodeError:
+        raise ValueError("invalid_gate_scanner_binding") from None
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate_binding_key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid_binding_json")))
+    except (ValueError, UnicodeError):
+        raise ValueError("invalid_gate_scanner_binding") from None
+    return validate_gate_scanner_binding(value)
+
+
 def profile_for_binding(repository: object, binding: object = None):
     """Select an immutable profile, requiring a validated Tracker binding."""
     profile = profile_for(repository)
@@ -133,6 +178,11 @@ def profile_for_binding(repository: object, binding: object = None):
             raise ValueError("tracker_binding_required")
         validated = validate_tracker_scanner_binding(binding)
         return MappingProxyType({**profile, **validated})
+    if repository == "Tuinstra-DEV/gate" and binding is not None:
+        validated = validate_gate_scanner_binding(binding)
+        return MappingProxyType({**profile, **validated,
+                                 "excluded_inputs_digest": GATE_IN46_EXCLUSIONS_DIGEST,
+                                 "exclusions_file": "excluded-inputs-gate-in46.json"})
     if binding is not None:
         raise ValueError("binding_repository_mismatch")
     return profile
