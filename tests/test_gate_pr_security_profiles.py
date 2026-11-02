@@ -97,6 +97,9 @@ class NativeProfileTests(unittest.TestCase):
         self.assertIn('source.py" prepare', prepare)
         self.assertEqual(1, workflow.count("GATE_TRACKER_SCANNER_BINDING:"))
         self.assertIn("GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}", workflow)
+        self.assertEqual(1, workflow.count("GATE_GATE_SCANNER_BINDING:"))
+        self.assertIn("GATE_GATE_SCANNER_BINDING: ${{ vars.GATE_GATE_SCANNER_BINDING }}", workflow)
+        self.assertNotIn("GATE_GATE_SCANNER_BINDING:", action)
         # Scheduling may be requested; scanner identity remains server-owned.
         interface = workflow.split("\njobs:\n", 1)[0]
         self.assertEqual(re.findall(r"(?m)^      ([a-z][a-z0-9-]*):$", interface),
