@@ -69,6 +69,8 @@ ORG_GROUP_NAME = "sanctuary-trusted-verification"
 ORG_CREDENTIAL_PATH = "/run/credentials/ci-runner-manager.service/org_github_token"
 ORG_WORKFLOW_PREFIX = (f"{ORG_NAME}/devops/.github/workflows/"
                        "reusable-trusted-verification.yml@")
+LEGACY_METADATA_WORKFLOW_REF = (ORG_WORKFLOW_PREFIX +
+                                "a8ace2f171d7d127bbfb3a6d6b13f158f461ba98")
 
 # Execution identity is independent of the host-helper capacity profile. These
 # immutable workflow entrypoints are the only possible additional admissions;
@@ -228,15 +230,17 @@ def configured_trusted_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     if single == multiple:
         raise RunnerError("organization workflow requires exactly one reference policy")
     refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
-    if not isinstance(refs, list) or not 1 <= len(refs) <= 4 or \
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 5 or \
             any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
                 re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
                 for ref in refs) or len(set(refs)) != len(refs):
         raise RunnerError("organization workflows must be distinct exact commit references")
-    if len(refs) == 4:
+    if len(refs) in (4, 5):
         metadata = configured_org_execution_roles(cfg).get("metadata-preflight")
         if metadata is None or refs[-1] != metadata["workflow_ref"]:
-            raise RunnerError("fourth trusted workflow must explicitly share the enabled metadata role pin")
+            raise RunnerError("last trusted workflow must explicitly share the enabled metadata role pin")
+    if len(refs) == 5 and refs[3] != LEGACY_METADATA_WORKFLOW_REF:
+        raise RunnerError("fifth pin requires the preserved DEV-14 metadata pin in fourth position")
     return tuple(refs)
 
 
@@ -279,8 +283,8 @@ def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def configured_org_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
-    # Preserve three legacy trusted pins and an optional explicitly trusted
-    # shared metadata pin, plus separately reviewed roles. Sharing is deduplicated
+    # Preserve three legacy trusted pins and the exact DEV-14 shared metadata
+    # pin during the bounded fifth-pin transition, plus separately reviewed roles. Sharing is deduplicated
     # for exact group equality; a role-only pin never grants trusted execution.
     refs = list(configured_trusted_workflow_refs(cfg))
     refs.extend(policy["workflow_ref"] for policy in configured_org_execution_roles(cfg).values())

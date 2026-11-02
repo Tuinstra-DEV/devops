@@ -818,6 +818,45 @@ class ExecutionRoleTests(unittest.TestCase):
         with mock.patch.object(manager, 'read_token', return_value='fixture-token'):
             return manager.organization_client(cfg)
 
+    def test_old_explicit_role_request_has_no_automatic_hosted_fallback_after_role_repin(self):
+        roles = copy.deepcopy(ROLES)
+        new_ref = META_REF[:-40] + 'f' * 40
+        roles['metadata-preflight']['workflow_ref'] = new_ref
+        client = manager.GitHubClient('fixture', org_workflow_refs=(REF, META_REF, new_ref, PRODUCER_REF),
+                                     org_execution_roles=roles, org_trusted_workflow_refs=(REF, META_REF, new_ref))
+        self.assertIsNone(client._role_run_evidence(self.run, REPO, 'metadata-preflight'))
+        self.assertFalse(manager.organization_labels_match(self.job['labels'], REPO, 'medium'))
+        # An old job is already queued against its role labels. Rejecting that
+        # identity cannot turn it into a GitHub-hosted job or execute its fallback.
+        self.assertIn('ci-metadata-preflight', self.job['labels'])
+        self.assertNotIn('ubuntu-24.04', self.job['labels'])
+
+    def test_fifth_pin_is_bounded_and_keeps_all_runtime_identity_guards(self):
+        old = [REF, REF[:-40] + '1' * 40, REF[:-40] + '2' * 40,
+               manager.LEGACY_METADATA_WORKFLOW_REF]
+        cfg = {**self.cfg, 'org_workflow_refs': old + [META_REF]}
+        cfg.pop('org_workflow_ref', None)
+        self.assertEqual(manager.configured_trusted_workflow_refs(cfg), tuple(old + [META_REF]))
+        for refs in (old + [META_REF, REF[:-40] + '3' * 40],
+                     old + [REF[:-40] + 'f' * 40],
+                     old[:3] + [REF[:-40] + 'f' * 40, META_REF],
+                     old + [REF[:-40] + 'main']):
+            with self.subTest(refs=refs), self.assertRaises(manager.RunnerError):
+                manager.configured_trusted_workflow_refs({**cfg, 'org_workflow_refs': refs})
+        client = manager.GitHubClient('fixture', org_workflow_refs=manager.configured_org_workflow_refs(cfg),
+                    org_execution_roles=cfg['org_execution_roles'],
+                    org_trusted_workflow_refs=manager.configured_trusted_workflow_refs(cfg))
+        run = copy.deepcopy(self.run)
+        self.assertTrue(client._trusted_run(run, REPO))
+        for mutate in (lambda r: r.update(actor={'login': 'dependabot[bot]', 'type': 'Bot'}),
+                       lambda r: r.update(triggering_actor={'login': 'unknown', 'type': 'User'}),
+                       lambda r: r['head_repository'].update(fork=True),
+                       lambda r: r.update(event='pull_request_target'),
+                       lambda r: r.update(referenced_workflows=[{'path': REF[:-40] + 'f' * 40, 'sha': 'f' * 40}])):
+            candidate = copy.deepcopy(run)
+            mutate(candidate)
+            self.assertFalse(client._trusted_run(candidate, REPO))
+
     def test_explicit_shared_fourth_pin_keeps_real_factory_preflight_and_downstream_live(self):
         cfg = self.shared_workflow_config()
         manager.validate_org_config(cfg)
