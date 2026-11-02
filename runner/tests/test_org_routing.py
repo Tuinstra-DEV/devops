@@ -44,6 +44,57 @@ class OrgRoutingTests(unittest.TestCase):
                "labels": ["self-hosted", "trusted-medium", "sanctuary-tracker"]}
         return run, pr, job
 
+    def test_protected_default_schedule_and_dispatch_admission_and_rejections(self):
+        for event in ("schedule", "workflow_dispatch"):
+            for mutation in ("valid", "bot", "unknown", "fork", "unprotected", "stale", "branch", "unpinned", "pr"):
+                with self.subTest(event=event, mutation=mutation):
+                    run, _, job = self.empty_association_evidence()
+                    run.update(event=event, head_branch="main")
+                    metadata = {"full_name": REPO, "private": True, "fork": False, "default_branch": "main"}
+                    branch = {"name": "main", "protected": True, "commit": {"sha": run["head_sha"]}}
+                    if mutation == "bot": run["actor"] = {"login": "dependabot[bot]", "type": "Bot"}
+                    if mutation == "unknown": run["triggering_actor"] = {"login": "unknown", "type": "User"}
+                    if mutation == "fork": run["head_repository"] = {**metadata, "fork": True}
+                    if mutation == "unprotected": branch["protected"] = False
+                    if mutation == "stale": branch["commit"]["sha"] = "c" * 40
+                    if mutation == "branch": run["head_branch"] = "feature"
+                    if mutation == "unpinned": run["referenced_workflows"][0]["path"] = REF[:-40] + "main"
+                    if mutation == "pr": run["pull_requests"] = [{"number": 7}]
+                    client = manager.GitHubClient("fixture", org_workflow_refs=(REF,))
+                    def response(_method, path):
+                        if "status=queued" in path: return {"workflow_runs": [run]}
+                        if "status=in_progress" in path: return {"workflow_runs": []}
+                        if "/jobs?" in path: return {"jobs": [job]}
+                        if path.endswith("/actions/runs/11"): return run
+                        if path == "/repos/" + REPO: return metadata
+                        if path.endswith("/branches/main"): return branch
+                        raise AssertionError(path)
+                    with mock.patch.object(client, "request", side_effect=response):
+                        result = client.candidate_trusted_jobs(REPO, "medium")
+                    self.assertEqual(bool(result), mutation == "valid")
+
+    def test_schedule_assignment_rechecks_protected_source(self):
+        run, _, job = self.empty_association_evidence()
+        run.update(event="schedule", head_branch="main")
+        assigned = {**job, "runner_id": 30, "runner_name": "sanctuary-22",
+                    "runner_group_id": 42, "runner_group_name": "sanctuary-trusted-verification"}
+        state = {"repo": REPO, "scope": "organization", "org": ORG,
+                 "profile": "medium", "runner_group_id": 42, "runner_id": 30,
+                 "runner_name": "sanctuary-22", "workflow_ref": REF}
+        assignment = {"repo": REPO, "run_id": 11, "job_id": 22}
+        metadata = {"full_name": REPO, "private": True, "fork": False, "default_branch": "main"}
+        branch = {"name": "main", "protected": True, "commit": {"sha": run["head_sha"]}}
+        client = manager.GitHubClient("fixture", org_workflow_refs=(REF,))
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                branch["protected"] = valid
+                with mock.patch.object(client, "request", side_effect=[assigned, run, metadata, branch]):
+                    if valid:
+                        self.assertEqual(client.verify_org_assignment(state, assignment), REF)
+                    else:
+                        with self.assertRaisesRegex(manager.RunnerError, "has no trusted source"):
+                            client.verify_org_assignment(state, assignment)
+
     def test_empty_run_association_resolves_one_current_private_pr_for_admission(self):
         run, pr, job = self.empty_association_evidence()
         client = manager.GitHubClient("repo-token", org_workflow_refs=(REF,))
@@ -274,7 +325,7 @@ class OrgRoutingTests(unittest.TestCase):
             with self.subTest(prs=returned), \
                     mock.patch.object(client, "request", side_effect=[assigned, run,
                                                                        returned, *detail]), \
-                    self.assertRaisesRegex(manager.RunnerError, "not a trusted PR"):
+                    self.assertRaisesRegex(manager.RunnerError, "has no trusted source"):
                 client.verify_org_assignment(state, assignment)
         with mock.patch.object(client, "request", side_effect=[assigned, run,
                                manager.RunnerError("PR lookup unavailable")]), \
@@ -527,7 +578,7 @@ class OrgRoutingTests(unittest.TestCase):
             with self.subTest(actual_refs=actual_refs), \
                     mock.patch.object(client, "request", side_effect=[assigned,
                         {**run, "referenced_workflows": actual_refs}]), \
-                    self.assertRaisesRegex(manager.RunnerError, "not a trusted PR run"):
+                    self.assertRaisesRegex(manager.RunnerError, "not a trusted verification run"):
                 client.verify_org_assignment(state, assignment)
 
     def test_cross_pin_assignment_persists_actual_workflow_reference(self):
@@ -691,7 +742,7 @@ class OrgRoutingTests(unittest.TestCase):
         with mock.patch.object(client, "request", side_effect=[job, run,
                 {**pr, "head": {"sha": "c" * 40,
                                  "repo": {"full_name": REPO}}}]), \
-                self.assertRaisesRegex(manager.RunnerError, "not a trusted PR"):
+                self.assertRaisesRegex(manager.RunnerError, "has no trusted source"):
             client.verify_org_assignment(state, assignment)
 
     def test_org_assignment_is_not_recorded_when_validation_fails(self):

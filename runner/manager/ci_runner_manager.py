@@ -1041,7 +1041,7 @@ class GitHubClient:
                         detail["id"] != run_id or \
                         detail["head_sha"] != run["head_sha"] or \
                         detail["head_branch"] != run["head_branch"] or \
-                        self._resolve_trusted_pull_request(detail, repo) is None:
+                        self._resolve_trusted_source(detail, repo) is None:
                     continue
                 workflow_ref = self._verified_workflow_ref(detail)
                 candidates.extend({"repo": repo, "run_id": run_id, "job_id": job["id"],
@@ -1316,7 +1316,8 @@ class GitHubClient:
         if require_workflow and not self._trusted_workflow_references(run):
             return False
         return isinstance(run.get("id"), int) and \
-            not isinstance(run["id"], bool) and run.get("event") == "pull_request" and \
+            not isinstance(run["id"], bool) and run.get("event") in {"pull_request", "schedule", "workflow_dispatch"} and \
+            (run["event"] == "pull_request" or associations == []) and \
             bool(re.fullmatch(r"[a-f0-9]{40}", str(run.get("head_sha", "")))) and \
             self._trusted_user(run.get("actor")) and \
             self._trusted_user(run.get("triggering_actor")) and \
@@ -1364,8 +1365,22 @@ class GitHubClient:
             base["repo"].get("full_name") == repo and \
             base["repo"].get("private") is True
 
-    def _resolve_trusted_pull_request(self, run: Any, repo: str) -> dict[str, Any] | None:
+    def _resolve_trusted_source(self, run: Any, repo: str) -> dict[str, Any] | None:
         if not self._trusted_run(run, repo):
+            return None
+        if run["event"] == "pull_request":
+            return self._resolve_trusted_pull_request(run, repo)
+        metadata = self.request("GET", self.repo_path(repo))
+        if not isinstance(metadata, dict) or metadata.get("full_name") != repo or \
+                metadata.get("private") is not True or metadata.get("fork") is not False or \
+                metadata.get("default_branch") != run["head_branch"]:
+            return None
+        if self._protected_branch_sha(repo, run["head_branch"]) != run["head_sha"]:
+            return None
+        return metadata
+
+    def _resolve_trusted_pull_request(self, run: Any, repo: str) -> dict[str, Any] | None:
+        if not self._trusted_run(run, repo) or run["event"] != "pull_request":
             return None
         branch = run["head_branch"]
         associations = run["pull_requests"]
@@ -1570,14 +1585,14 @@ class GitHubClient:
             raise RunnerError("organization runner trigger workflow is not admitted")
         run = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{assignment['run_id']}")
         if not self._trusted_run(run, repo) or run["id"] != assignment["run_id"]:
-            raise RunnerError("organization runner assignment is not a trusted PR run")
+            raise RunnerError("organization runner assignment is not a trusted verification run")
         actual_ref = self._verified_workflow_ref(run)
         if actual_ref is None:
             raise RunnerError("organization runner assignment workflow is not admitted")
         if "actual_workflow_ref" in state and state["actual_workflow_ref"] != actual_ref:
             raise RunnerError("organization runner assignment workflow changed")
-        if self._resolve_trusted_pull_request(run, repo) is None:
-            raise RunnerError("organization runner assignment is not a trusted PR")
+        if self._resolve_trusted_source(run, repo) is None:
+            raise RunnerError("organization runner assignment has no trusted source")
         return actual_ref
 
 

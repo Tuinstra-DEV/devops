@@ -31,7 +31,7 @@ import urllib.request
 
 
 OLD_MANAGER_SHA = "37061633484a206a027c0079bc47cfb904d8189a97e3bd3a06ff4bfb59be2249"
-NEW_MANAGER_SHA = "232d37364c0754bd59aefbf44fee9ba5704def038bbda94514975f857dd61e9f"
+NEW_MANAGER_SHA = "20bfd95ed2dca7aa77475fe4087582e7422aba9ef65628a3b64aab99feb9d796"
 HELPER_SHA = "fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613"
 UNIT_SHA = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 ORG_REF_PREFIX = "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@"
@@ -48,7 +48,7 @@ REPOSITORIES = {
     "Tuinstra-DEV/console": 1154259119, "Tuinstra-DEV/gate": 1273386924,
     "Tuinstra-DEV/marcel-site": 960069181, "Tuinstra-DEV/notify": 1304692512,
     "Tuinstra-DEV/openairco": 1355089923, "Tuinstra-DEV/openairco-site": 1331331146,
-    "Tuinstra-DEV/status": 1378644550, "Tuinstra-DEV/tracker": 1301969191,
+    "Tuinstra-DEV/status": 1378644550, "Tuinstra-DEV/sudoku-tessera": 1179209966, "Tuinstra-DEV/tracker": 1301969191,
     "Tuinstra-DEV/tuinstra-site": 960069678, "Tuinstra-DEV/wodiq-app": 1238121712,
     "Tuinstra-DEV/wodiq-platform": 1379333293, "Tuinstra-DEV/wodiq-site": 1264767351,
 }
