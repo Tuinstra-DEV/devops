@@ -55,7 +55,7 @@ capacity decisions are documented in
 
 ## Reusable Workflow Example
 
-An example caller exists at `.github/workflows/example-caller.yml`.
+A Node project caller template exists at `templates/workflows/example-node-ci.yml`.
 A Nuxt-focused reusable CI guide is available at `docs/workflows/reusable-ci-nuxt.md`.
 
 ## Security Governance

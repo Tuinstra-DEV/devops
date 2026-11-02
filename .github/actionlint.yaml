@@ -1,0 +1,7 @@
+self-hosted-runner:
+  labels:
+    - trusted-heavy
+    - trusted-medium
+    - sanctuary-*
+    - ci-metadata-preflight
+    - ci-pr-security-producer

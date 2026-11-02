@@ -18,8 +18,8 @@ permissions = { "contents" => "read", "pull-requests" => "read", "actions" => "r
 trigger = workflow["on"] || workflow[true]
 ensure_contract(trigger.keys == ["workflow_call"], "only reusable invocation is supported")
 call = trigger.fetch("workflow_call")
-request = { "description" => "Request isolated scheduling under the fixed role policy; does not grant trust", "required" => false, "default" => false, "type" => "boolean" }
-ensure_contract(call.is_a?(Hash) && call.keys == ["inputs"] && call["inputs"] == { "request-isolated-role-runner" => request }, "only one default-disabled scheduling request; no caller policy, commands or secrets")
+request = { "description" => "Request isolated scheduling under the fixed role policy; does not grant trust", "required" => false, "default" => true, "type" => "boolean" }
+ensure_contract(call.is_a?(Hash) && call.keys == ["inputs"] && call["inputs"] == { "request-isolated-role-runner" => request }, "only one guarded default-enabled scheduling request; no caller policy, commands or secrets")
 ensure_contract(workflow.fetch("jobs").keys == ["producer"], "one authenticated producer")
 producer = workflow.fetch("jobs").fetch("producer")
 selector = producer.fetch("runs-on")

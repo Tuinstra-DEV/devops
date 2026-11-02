@@ -101,7 +101,7 @@ class NativeProfileTests(unittest.TestCase):
         interface = workflow.split("\njobs:\n", 1)[0]
         self.assertEqual(re.findall(r"(?m)^      ([a-z][a-z0-9-]*):$", interface),
                          ["request-isolated-role-runner"])
-        self.assertIn("        default: false\n        type: boolean", interface)
+        self.assertIn("        default: true\n        type: boolean", interface)
 
     def test_evidence_requires_exact_tracker_binding_state(self):
         tracker = state("Tuinstra-DEV/tracker")

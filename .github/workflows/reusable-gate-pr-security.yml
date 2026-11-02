@@ -6,7 +6,7 @@ on:
       request-isolated-role-runner:
         description: Request isolated scheduling under the fixed role policy; does not grant trust
         required: false
-        default: false
+        default: true
         type: boolean
 
 jobs:

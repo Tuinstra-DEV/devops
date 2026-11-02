@@ -19,7 +19,7 @@ class RunnerHostOrgPolicyTests(unittest.TestCase):
         defaults = (ROLE / "defaults/main.yml").read_text()
         tasks = (ROLE / "tasks/main.yml").read_text()
         manifest = json.loads((ROOT / "runner/policy/org-routing-repositories.json").read_text())
-        self.assertEqual(len(manifest), 12)
+        self.assertEqual(len(manifest), 13)
         self.assertIn("runner_org_routing_enabled: false", defaults)
         self.assertIn("runner_org_runner_group_id: 0", defaults)
         self.assertIn("runner_org_repository_ids: {}", defaults)

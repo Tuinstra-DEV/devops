@@ -79,7 +79,7 @@ class OrgActivationTests(unittest.TestCase):
         self.assertEqual(activation.sha(self.unit.read_bytes()), activation.UNIT_SHA)
         manifest = json.loads((ROOT / "runner/policy/org-routing-repositories.json").read_text())
         self.assertEqual(activation.REPOSITORIES, manifest)
-        self.assertEqual(len(manifest), 12)
+        self.assertEqual(len(manifest), 13)
 
     def test_config_preserves_all_existing_policy_and_appends_only_org_keys(self):
         old = tomllib.loads(self.config.read_text())
@@ -112,7 +112,7 @@ class OrgActivationTests(unittest.TestCase):
                  "visibility": "selected", "default": False, "inherited": False,
                  "allows_public_repositories": False, "restricted_to_workflows": True,
                  "selected_workflows": [cfg["org_workflow_ref"]]}
-        selection = {"total_count": 12, "repositories": [
+        selection = {"total_count": 13, "repositories": [
             {"full_name": name, "id": identifier, "private": True}
             for name, identifier in activation.REPOSITORIES.items()]}
 

@@ -142,6 +142,11 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                 raise OSError("private API failure with a secret that must not escape")
             if "/actions/runs/123" in request.full_url:
                 value = self.run
+            elif request.full_url.endswith("/branches/main"):
+                value = {"name": "main", "protected": getattr(self, "branch_protected", True),
+                         "commit": {"sha": getattr(self, "branch_sha", SHA)}}
+            elif request.full_url.endswith("/repos/" + REPO):
+                value = {**self.event["repository"], "default_branch": "main"}
             elif "/pulls?state=open&head=" in request.full_url:
                 self.assertIn("Tuinstra-DEV%3Afeat%2FDEV-50-job-routing&per_page=100", request.full_url)
                 value = self.open_prs
@@ -160,6 +165,45 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             exec(compile(preflight_script(), str(WORKFLOW), "exec"), {"__name__": "__main__"})
         outputs = dict(line.split("=", 1) for line in self.output_path.read_text().splitlines())
         return outputs, requests
+
+    def test_owner_default_branch_schedule_and_dispatch_use_trusted_route(self):
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.env.update(GITHUB_EVENT_NAME=event, GITHUB_SHA=SHA, GITHUB_REF="refs/heads/main")
+                self.event["repository"]["default_branch"] = "main"
+                self.run.update(event=event, head_branch="main", pull_requests=[])
+                outputs, _ = self.execute()
+                self.assertEqual(outputs["trusted"], "true")
+                self.assertEqual(outputs["source-sha"], SHA)
+
+    def test_default_branch_bundle_identity_has_full_provenance(self):
+        self.env.update(GITHUB_EVENT_NAME="schedule", GITHUB_SHA=SHA, GITHUB_REF="refs/heads/main",
+                        BUNDLE="wodiq-platform", PROFILE="", JOB_KEY="")
+        self.event["repository"]["default_branch"] = "main"
+        self.event.pop("sender")
+        self.run.update(event="schedule", head_branch="main", pull_requests=[])
+        outputs, _ = self.execute()
+        self.assertEqual(outputs["trusted"], "true")
+        self.assertEqual(outputs["workflow-sha"], WORKFLOW_SHA)
+        self.assertEqual(outputs["run-id"], "123")
+        self.branch_protected = False
+        with self.assertRaisesRegex(SystemExit, "identity rejected"):
+            self.execute()
+
+    def test_non_pr_trust_rejects_stale_unprotected_bot_and_non_default_sources(self):
+        for change in ("stale", "unprotected", "bot", "branch", "push"):
+            with self.subTest(change=change):
+                self.env.update(GITHUB_EVENT_NAME="schedule", GITHUB_SHA=SHA, GITHUB_REF="refs/heads/main")
+                self.event["repository"]["default_branch"] = "main"
+                self.run.update(event="schedule", head_branch="main", pull_requests=[])
+                self.branch_sha, self.branch_protected = SHA, True
+                if change == "stale": self.branch_sha = BASE
+                if change == "unprotected": self.branch_protected = False
+                if change == "bot": self.env["GITHUB_TRIGGERING_ACTOR"] = "dependabot[bot]"
+                if change == "branch": self.env["GITHUB_REF"] = "refs/heads/feature"
+                if change == "push": self.env["GITHUB_EVENT_NAME"] = "push"
+                outputs, _ = self.execute()
+                self.assertEqual(outputs["trusted"], "false")
 
     def execute_contract(self, repo, key, profile, plan=""):
         self.output_path.write_text("")
@@ -273,6 +317,13 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.execute_identity()
 
+    def test_notify_bundle_identity_uses_same_private_owner_trust_gate(self):
+        self.env["GITHUB_REPOSITORY"] = "Tuinstra-DEV/notify"
+        self.event["repository"]["full_name"] = "Tuinstra-DEV/notify"
+        self.assertEqual(self.execute_identity()["trusted"], "true")
+        self.env["GITHUB_ACTOR"] = "dependabot[bot]"
+        self.assertEqual(self.execute_identity()["trusted"], "false")
+
     def test_bundle_static_jobs_proof_and_least_privilege(self):
         import subprocess
         workflow = WORKFLOW.read_text()
@@ -330,6 +381,7 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             ("Tuinstra-DEV/openairco-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/wodiq-app", "wodiq-app-checks", "heavy", "", ("24", "", "")),
             ("Tuinstra-DEV/status", "status-quality", "heavy", "", ("", "", "")),
+            ("Tuinstra-DEV/sudoku-tessera", "tessera-flutter", "heavy", "", ("24", "", "")),
             ("Tuinstra-DEV/openairco", "openairco-flutter", "heavy", "", ("", "", "")),
         ]
         for repo, key, profile, plan, expected in cases:
@@ -671,7 +723,7 @@ else:
             self.assertIn("tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}", route)
             self.assertIn("console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}", route)
             self.assertIn("echo \"COMPOSER_CACHE_DIR=$cache_path\" >> \"$GITHUB_ENV\"", route)
-            self.assertEqual(route.count("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"), 4)
+            self.assertEqual(route.count("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"), 5)
             self.assertIn("~/.gradle/caches/modules-2", route)
             self.assertIn("~/.gradle/wrapper/dists", route)
             self.assertIn("flutter/pubspec.lock', 'flutter/android/gradle.properties'", route)
@@ -746,8 +798,8 @@ else:
 class IsolatedRoleRoutingTests(unittest.TestCase):
     REQUEST = 'request-isolated-role-runner'
     PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
-    ORIGINAL_HASHES = {
-        WORKFLOW.name: 'dd1c5f4f332a542c7f882e38eb491e255591120332660ca351477d51f42c2388',
+    EXECUTION_HASHES = {
+        WORKFLOW.name: 'b966a31084cdfd31d29d7990844ed8a322915130d2e1700e59acd327e61f3aef',
         PRODUCER.name: 'f81578d9db84d2ac1b128094acf57f6de15857915862934c9fa0ab2e23d65dee',
     }
 
@@ -795,9 +847,9 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
             ]
         return guards
 
-    def test_request_is_exactly_default_false_boolean_without_authority_inputs(self):
+    def test_role_request_defaults_true_without_authority_inputs(self):
         expected = {'description': 'Request isolated scheduling under the fixed role policy; does not grant trust',
-                    'required': False, 'default': False, 'type': 'boolean'}
+                    'required': False, 'default': True, 'type': 'boolean'}
         for path in (WORKFLOW, self.PRODUCER):
             with self.subTest(workflow=path.name):
                 doc = self.document(path)
@@ -819,6 +871,9 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 job = self.document(path)['jobs'][job_id]
                 selector = ' '.join(job['runs-on'].split())
+                if path == WORKFLOW:
+                    self.assertIn("[\"schedule\",\"workflow_dispatch\"]", selector)
+                    selector = "${{ inputs['request-isolated-role-runner']" + selector.rsplit(" || inputs['request-isolated-role-runner']", 1)[1]
                 prefix, template = selector.rsplit(' && fromJSON(format(', 1)
                 self.assertEqual(prefix, '${{ ' + ' && '.join(self.request_guards(event)))
                 execution_slot = ',{3}' if event == 'pull_request_target' else ''
@@ -838,7 +893,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
                 self.assertNotIn('if', job)
                 self.assertNotIn('continue-on-error', job)
 
-    def test_all_preexisting_execution_bytes_survive_runner_selection_change(self):
+    def test_reviewed_dev54_execution_contract_baseline(self):
         import hashlib
         for path, hosted in ((WORKFLOW, 'ubuntu-slim'), (self.PRODUCER, 'ubuntu-24.04')):
             source = path.read_text()
@@ -848,7 +903,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
                 source = re.sub(r'(?m)^      request-isolated-role-runner:\n(?:^        [^\n]*\n)+', '', source)
             else:
                 source = re.sub(r'(?m)^    inputs:\n      request-isolated-role-runner:\n(?:^        [^\n]*\n)+', '', source)
-            self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), self.ORIGINAL_HASHES[path.name])
+            self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), self.EXECUTION_HASHES[path.name])
 
     def test_exact_role_labels_are_compatible_with_manager_and_not_trusted_labels(self):
         import importlib.util
