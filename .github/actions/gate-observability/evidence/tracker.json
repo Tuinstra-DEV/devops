@@ -8,26 +8,26 @@
     "sdk_initialization": "sha256:51f952c26688730ecad097315bf12ee3da37027dd71df78976df8001195ea640",
     "routing": "sha256:d103976532b3f73113fdb217bdae113b656a92f8c6873e083587abc2e9a8924d",
     "privacy_filters": "sha256:4f2d6deea88c41362a941fbfb954aadbc5f3cef99bb22b47d873862a834d6463",
-    "deployment_symbols": "sha256:df8a44eaa99ce5cb405fe321fb3d4f413bb37f1881d7cd22264569c6c23eed83"
+    "deployment_symbols": "sha256:7a36cda48fe817aa208da41166fd433dfa4ed7df2f87c59ec6df6c850f2e00f4"
   },
   "components": [
     {
       "id": "browser",
-      "verification_source": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:c1905424c8e0f72597ae1772347c721c3db81076ebfaa32aacc41d62c4b044fd",
+      "verification_source": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5",
       "run": {
         "workflow": ".github/workflows/sentry-verification.yml",
-        "id": "41526834896",
+        "id": "41718898118",
         "attempt": 1,
-        "source_sha": "ffba59597ab74f36e82579219daca6f0d0efcf7f"
+        "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d"
       },
       "sentry": {
-        "issue_id": "158201227",
+        "issue_id": "158417546",
         "event_ids": [
-          "af0568ee72a54c769aa0c594dc23bbe2"
+          "1d84f23e248645fa9fa3bf8978a75a13"
         ]
       },
-      "heal_case_id": "e5ffa8eb9bff4911953204e31b6f9c89",
+      "heal_case_id": "f5a6f3d1325442a382b5fdf09c1ccfee",
       "source_frame": {
         "path": "code/web/app/utils/sentry-verification.ts",
         "line": 24
@@ -37,17 +37,17 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
         },
         "deduplication": {
-          "occurrences": 2,
+          "occurrences": 1,
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -55,7 +55,7 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -64,21 +64,21 @@
     },
     {
       "id": "api",
-      "verification_source": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "verification_source": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
       "run": {
         "workflow": ".github/workflows/deploy-production.yml",
-        "id": "41524346966",
+        "id": "41718877570",
         "attempt": 1,
-        "source_sha": "ffba59597ab74f36e82579219daca6f0d0efcf7f"
+        "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d"
       },
       "sentry": {
-        "issue_id": "158147140",
+        "issue_id": "158417286",
         "event_ids": [
-          "f466492203ba4b738bc8d6881339680e"
+          "dd84c86a97d6406ead9af12755b7b216"
         ]
       },
-      "heal_case_id": "a28eb5986f8546759bb4e277344b60b8",
+      "heal_case_id": "cfd56bc39bb6447caf8e6dfb08b79dcf",
       "source_frame": {
         "path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
         "line": 30
@@ -88,7 +88,7 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -98,7 +98,7 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -106,7 +106,7 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -115,21 +115,21 @@
     },
     {
       "id": "worker",
-      "verification_source": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "verification_source": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
       "run": {
         "workflow": ".github/workflows/deploy-production.yml",
-        "id": "41524346966",
+        "id": "41718877570",
         "attempt": 1,
-        "source_sha": "ffba59597ab74f36e82579219daca6f0d0efcf7f"
+        "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d"
       },
       "sentry": {
-        "issue_id": "158147139",
+        "issue_id": "158417518",
         "event_ids": [
-          "d7610163e19040b5935ef3f9a5865803"
+          "0b829ee796d441929907f86cf270cee1"
         ]
       },
-      "heal_case_id": "99bcae2d5e6c4f2790f80496f3d3e1e3",
+      "heal_case_id": "4b8b8d87bea3498d9d3c2a5401fac0cf",
       "source_frame": {
         "path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
         "line": 29
@@ -139,7 +139,7 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -149,7 +149,7 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -157,7 +157,7 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "tracker-TRAC-223-verification.json",
+            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
