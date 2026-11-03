@@ -1,6 +1,22 @@
 # Tracker chain evidence — TRAC-202
 
-## Active TRAC-223 renewal — 2–3 November 2026
+## Active TRAC-223 mc renewal — 3 November 2026
+
+Source `1eb90853447977720035a4d8fbdd52b1316a223d` changes only the deployment-symbol fingerprint through the reviewed MinIO client Compose pin. SDK, routing and privacy fingerprints are unchanged. Only actual evidence and its canonical approved hash are renewed; selectors, required coverage and enforcement remain unchanged. Prior evidence files remain historical.
+
+Protected [production build 41718877570/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/41718877570) successfully built, scanned and published PHP `sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8` and nginx `sha256:1779b6f6d63cc6c6412c3fd19596a0f2f7762057352059b55e670bfe739b2c7d`. The old proof correctly rejected the changed fingerprint before deployment. VPS02 independently inspected the exact image/config/source on amd64 and ran PHP **8.4.27** in an isolated read-only container without network or volumes.
+
+Exactly one [browser verification dispatch 41718898118/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/41718898118) succeeded. Artifact 13270204990, source/run identity, archive checksum `sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5`, safe extraction and zero public source maps were checked. The unchanged automatic localhost fixture produced one event accepted with HTTP 200. Its first attempt emitted no event; a retry succeeded. Unrelated blocked external requests produced console errors, while the actual proof event has zero Sentry processing errors and the expected first-party frame.
+
+Two isolated read-only PHP containers produced one API and one worker event, using only the existing DSN in memory. Actual privacy callbacks removed the synthetic private marker and populated user fields. All three real events were independently read back from Sentry with matching release/environment/component, expected first-party frames and zero processing errors. Operator-only test grouping was applied after the unchanged privacy callback. The API helper stopped after sending on an incorrect boolean flush-result assertion; the installed SDK returns Result. The API event was recovered from Sentry and was not sent again. The second, worker-only container validated ResultStatus SUCCESS. No fresh observed API denial-suppression pass is claimed because that local result was lost.
+
+All three automatic Sentry provider deliveries were already triaged before two signed operator HTTP repeats per event. Both repeats returned the same case; a scoped final SELECT confirmed one case, occurrence and triage per component and zero fix attempts. Only synthetic groups TRACKER-1C/1D/1E were resolved afterward. Ledger registration preserved all 56 prior rows and appended three receipts, retaining its bind-mounted inode and file mode. The private backup is 0600; host/mounted hashes match and graceful refresh was requested. Local helper tests covered success and rollback on checksum or refresh failure.
+
+See `tracker-TRAC-223-mc-verification.json` and `tracker-live-cases.json` for exact event/issue/case identities. This is isolated SDK/source/transport and real Sentry/Heal-chain evidence, not production HTTP/job execution. The subsequent guarded deployment must still generate its own actual runtime receipt. No UI changed; screenshots do not apply.
+
+Local verification for this renewal: `make lint`, all 38 focused observability/guard/symbol tests, exact candidate acceptance and full `make test` pass. The full suite used the existing Python 3.14/Ansible tool environment outside the sandbox because its signing-key HTTP fixture opens localhost. The optional cross-repository fleet root was not configured.
+
+## Historical TRAC-223 PHP renewal — 2–3 November 2026
 
 Source `ffba59597ab74f36e82579219daca6f0d0efcf7f` changes the SDK dependency closure through the reviewed npm security updates and deployment symbols through the PHP 8.4.27 Dockerfile pin. Routing and privacy fingerprints remain unchanged. The active proof and its approved canonical hash now bind freshly observed verification evidence; fingerprint selectors, coverage, guard code and acceptance rules are unchanged.
 

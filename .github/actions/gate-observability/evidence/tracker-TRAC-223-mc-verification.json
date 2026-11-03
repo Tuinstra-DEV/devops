@@ -1,0 +1,133 @@
+{
+  "story": "TRAC-223",
+  "repository": "Tuinstra-DEV/tracker",
+  "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d",
+  "environment": "verification",
+  "trigger": "Reviewed mc client Compose change renews deployment_symbols only; SDK, routing and privacy fingerprints unchanged.",
+  "php": {
+    "image_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+    "inspected_image_config": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+    "php_version": "8.4.27",
+    "platform": "linux/amd64",
+    "workflow_run_id": "41718877570",
+    "workflow_attempt": 1,
+    "build_job_id": "126206168550",
+    "build_job_conclusion": "success",
+    "workflow_conclusion": "failure",
+    "workflow_failure": "Old integration proof rejected api.deployment_symbols before deployment; immutable build independently verified",
+    "runtime": "Two isolated read-only temporary containers; existing ingest DSN via stdin only; no database, application data or S3 access",
+    "synthetic_private_marker_removed": true,
+    "api_local_result_limitation": "API event accepted and independently read back; helper boolean assertion failed because SDK flush returns Result. API was not emitted again. Worker used ResultStatus SUCCESS."
+  },
+  "browser": {
+    "artifact_id": "13270204990",
+    "github_artifact_digest": "sha256:72b4bc3aaa2509463f9112cc355e786e1b72d64003defbf5392b7a9208954253",
+    "archive_digest": "sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5",
+    "workflow_run_id": "41718898118",
+    "workflow_attempt": 1,
+    "workflow_conclusion": "success",
+    "source_and_checksums_verified": true,
+    "public_maps": 0,
+    "event_id": "1d84f23e248645fa9fa3bf8978a75a13",
+    "accepted_http_status": 200,
+    "processing_errors": 0,
+    "user_fields_count": 0,
+    "first_navigation": "No event; retry used the same unchanged artifact and automatic fixture. Blocked unrelated external requests caused browser console errors; primary Sentry event has clean processing and expected source frame.",
+    "grouping": "Operator-only grouping after unchanged real privacy callback; compiled artifact bytes unchanged"
+  },
+  "intake": {
+    "all_components": "Automatic Sentry provider deliveries observed as triaged before operator replays",
+    "signed_operator_replays_per_case": 2,
+    "case_count": 3,
+    "occurrences_per_case": 1,
+    "triage_attempts_per_case": 1,
+    "fix_attempts": 0,
+    "synthetic_sentry_issues_resolved": [
+      "TRACKER-1C",
+      "TRACKER-1D",
+      "TRACKER-1E"
+    ]
+  },
+  "ledger": {
+    "before": 56,
+    "after": 59,
+    "existing_records_preserved": true,
+    "inode_preserved": true,
+    "mode_preserved": true,
+    "private_backup_mode": "0600",
+    "mounted_ledger_matches": true,
+    "graceful_refresh_requested": true,
+    "ledger_sha256": "6d3dff826f450ac8fdff899ae5351d52ef1589775bc40094ec00bb8374b2877c",
+    "helper_local_tests": [
+      "success",
+      "mounted checksum failure rolls back",
+      "worker refresh failure rolls back"
+    ]
+  },
+  "limitations": [
+    "Isolated SDK/source/transport and real Sentry/Heal-chain proof; not production HTTP/job execution.",
+    "Production runtime snapshots remain historical. The following normal release must produce its own exact runtime receipt.",
+    "API denial suppression was exercised by the fixture but its local result was lost at the subsequent incorrect flush assertion; no fresh observed suppression pass is claimed."
+  ],
+  "cases": [
+    {
+      "heal_case_id": "cfd56bc39bb6447caf8e6dfb08b79dcf",
+      "external_issue_id": "158417286",
+      "last_event_id": "dd84c86a97d6406ead9af12755b7b216",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "api",
+      "environment": "verification",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
+      "source_line": "30"
+    },
+    {
+      "heal_case_id": "4b8b8d87bea3498d9d3c2a5401fac0cf",
+      "external_issue_id": "158417518",
+      "last_event_id": "0b829ee796d441929907f86cf270cee1",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "worker",
+      "environment": "verification",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+      "source_line": "29"
+    },
+    {
+      "heal_case_id": "f5a6f3d1325442a382b5fdf09c1ccfee",
+      "external_issue_id": "158417546",
+      "last_event_id": "1d84f23e248645fa9fa3bf8978a75a13",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5",
+      "source_path": "code/web/app/utils/sentry-verification.ts",
+      "source_line": "24"
+    }
+  ],
+  "local_verification": {
+    "make_lint": "pass",
+    "focused_observability_tests": 38,
+    "make_test": "pass",
+    "tooling": "Existing Python 3.14 and Ansible tool environment; executed outside sandbox for localhost signing-key HTTP fixture",
+    "command": "PATH=/tmp/gate-in46-ansible-tools/bin:/opt/homebrew/opt/python@3.14/libexec/bin:$PATH ANSIBLE_LOCAL_TEMP=/tmp/trac223-mc-ansible-local make test",
+    "optional_fleet_check": "Not configured; documented optional cross-repository fleet check skipped"
+  }
+}

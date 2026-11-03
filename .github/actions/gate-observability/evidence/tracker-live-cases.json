@@ -1,10 +1,11 @@
 {
   "environment": "verification",
+  "observed_at": "2026-11-03T21:28:00Z",
   "cases": [
     {
-      "heal_case_id": "a28eb5986f8546759bb4e277344b60b8",
-      "external_issue_id": "158147140",
-      "last_event_id": "f466492203ba4b738bc8d6881339680e",
+      "heal_case_id": "cfd56bc39bb6447caf8e6dfb08b79dcf",
+      "external_issue_id": "158417286",
+      "last_event_id": "dd84c86a97d6406ead9af12755b7b216",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -13,15 +14,15 @@
       "fix_attempts": 0,
       "component": "api",
       "environment": "verification",
-      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
       "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
       "source_line": "30"
     },
     {
-      "heal_case_id": "99bcae2d5e6c4f2790f80496f3d3e1e3",
-      "external_issue_id": "158147139",
-      "last_event_id": "d7610163e19040b5935ef3f9a5865803",
+      "heal_case_id": "4b8b8d87bea3498d9d3c2a5401fac0cf",
+      "external_issue_id": "158417518",
+      "last_event_id": "0b829ee796d441929907f86cf270cee1",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -30,28 +31,27 @@
       "fix_attempts": 0,
       "component": "worker",
       "environment": "verification",
-      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
       "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
       "source_line": "29"
     },
     {
-      "heal_case_id": "e5ffa8eb9bff4911953204e31b6f9c89",
-      "external_issue_id": "158201227",
-      "last_event_id": "6877ecda19ab43cb913c6c7340109075",
+      "heal_case_id": "f5a6f3d1325442a382b5fdf09c1ccfee",
+      "external_issue_id": "158417546",
+      "last_event_id": "1d84f23e248645fa9fa3bf8978a75a13",
       "status": "triaged",
       "reason": null,
-      "occurrences": 2,
+      "occurrences": 1,
       "triage_attempts": 1,
       "fix_status": "not_started",
       "fix_attempts": 0,
       "component": "browser",
       "environment": "verification",
-      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
-      "artifact_digest": "sha256:c1905424c8e0f72597ae1772347c721c3db81076ebfaa32aacc41d62c4b044fd",
+      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
+      "artifact_digest": "sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5",
       "source_path": "code/web/app/utils/sentry-verification.ts",
       "source_line": "24"
     }
-  ],
-  "recorded_at": "2026-11-03T12:36:24.207Z"
+  ]
 }
