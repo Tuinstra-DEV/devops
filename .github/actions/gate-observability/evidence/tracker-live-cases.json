@@ -2,26 +2,9 @@
   "environment": "verification",
   "cases": [
     {
-      "heal_case_id": "4d687bfb3b6c46778cef06e1203bbfc9",
-      "external_issue_id": "153492670",
-      "last_event_id": "3d22ee91a23f4384a22b5ce384ac6df1",
-      "status": "triaged",
-      "reason": null,
-      "occurrences": 2,
-      "triage_attempts": 1,
-      "fix_status": "not_started",
-      "fix_attempts": 0,
-      "component": "browser",
-      "environment": "verification",
-      "source_commit": "52f16c01726e7b40980dceac00e06e037d5fd8d2",
-      "artifact_digest": "sha256:0631deb67cb484db27cff241120498785fd6c1db79e7394d57ceccb1f405f7d0",
-      "source_path": "code/web/app/utils/sentry-verification.ts",
-      "source_line": "24"
-    },
-    {
-      "heal_case_id": "65f91477b22e4e198837be2ef52453ef",
-      "external_issue_id": "153844874",
-      "last_event_id": "a827f7f62f5c4731bb9d302ced8b1392",
+      "heal_case_id": "a28eb5986f8546759bb4e277344b60b8",
+      "external_issue_id": "158147140",
+      "last_event_id": "f466492203ba4b738bc8d6881339680e",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -30,15 +13,15 @@
       "fix_attempts": 0,
       "component": "api",
       "environment": "verification",
-      "source_commit": "eee960198fcaad56994f7ba7cfc368a34918d03b",
-      "artifact_digest": "sha256:3648479b6e8102799206b5e77b8022d09da336d65c00647d58ff97b2c4947ca2",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
       "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
-      "source_line": "49"
+      "source_line": "30"
     },
     {
-      "heal_case_id": "4a925a9b0c0546df82d59fe7478152f5",
-      "external_issue_id": "153844908",
-      "last_event_id": "1a40eeb16aa846829c3dead1297caa2a",
+      "heal_case_id": "99bcae2d5e6c4f2790f80496f3d3e1e3",
+      "external_issue_id": "158147139",
+      "last_event_id": "d7610163e19040b5935ef3f9a5865803",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -47,10 +30,28 @@
       "fix_attempts": 0,
       "component": "worker",
       "environment": "verification",
-      "source_commit": "eee960198fcaad56994f7ba7cfc368a34918d03b",
-      "artifact_digest": "sha256:3648479b6e8102799206b5e77b8022d09da336d65c00647d58ff97b2c4947ca2",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
       "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
       "source_line": "29"
+    },
+    {
+      "heal_case_id": "e5ffa8eb9bff4911953204e31b6f9c89",
+      "external_issue_id": "158201227",
+      "last_event_id": "6877ecda19ab43cb913c6c7340109075",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:c1905424c8e0f72597ae1772347c721c3db81076ebfaa32aacc41d62c4b044fd",
+      "source_path": "code/web/app/utils/sentry-verification.ts",
+      "source_line": "24"
     }
-  ]
+  ],
+  "recorded_at": "2026-11-03T12:36:24.207Z"
 }
