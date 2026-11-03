@@ -1,0 +1,269 @@
+{
+  "story": "IN-46",
+  "related_story": "IN-44",
+  "repository": "Tuinstra-DEV/gate",
+  "source_sha": "317e086b9fa7299f0394c36cdd1df4b229558984",
+  "source_tree": "588f8eeda683a77a8bef31cae7772c28e97e5e40",
+  "environment": "verification",
+  "captured_at": "2026-11-03T21:08:55.837075+00:00",
+  "php": {
+    "php_version": "8.3.36",
+    "node_version": "24.21.0",
+    "workflow_run_id": "41645284648",
+    "workflow_attempt": 1,
+    "workflow_conclusion": "success",
+    "artifact_id": "13235348600",
+    "artifact_digest": "sha256:70ea061384c8ed656bf40c02604ffa4626abd7f68b23d0aa1aabe24f4cbce6ab",
+    "inspected_image_config": "sha256:d94e79d428b0affd00202aa96bc1c0c1ea38fb193502fcbe2b1ce9a82b9206c7",
+    "format_conversion": "OCI archive to private Docker-load archive only; identical image configuration and all 39 uncompressed layer diffIDs verified; no application image published",
+    "synthetic_private_marker_removed": true,
+    "real_privacy_filter": true
+  },
+  "javascript": {
+    "workflow_run_id": "41701648819",
+    "workflow_attempt": 1,
+    "workflow_conclusion": "success",
+    "artifact_id": "13263403056",
+    "github_archive_digest": "sha256:aa991d48415f775329a5423ab920ebcc75d1d88a3c84e638207ad5078944277e",
+    "runtime_digest": "sha256:ea42f4ef9c4c73818429fad92cc16a01d90d95b5ef631bc998136a075a069dfa",
+    "compiled_bytes_unchanged": true,
+    "transport": "operator grouping after unchanged real privacy callback; safe SDK metadata retained; bounded fixed-length and chunked HTTP reader; at most one forwarded event per component",
+    "results": [
+      {
+        "event_id": "a3d2b445f3d84059a64c0ef053545b41",
+        "issue_id": "158413863",
+        "environment": "verification",
+        "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+        "component": "browser",
+        "frames": [
+          {
+            "path": "app/utils/sentry-verification.ts",
+            "line": 3,
+            "inApp": true
+          }
+        ],
+        "user_fields_count": 0,
+        "private_fields_count": 0,
+        "private_marker_found": false,
+        "processing_errors": 0
+      },
+      {
+        "event_id": "09ab8cba32ab43328c683644cc5ff0ea",
+        "issue_id": "158414345",
+        "environment": "verification",
+        "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+        "component": "nitro",
+        "frames": [
+          {
+            "path": "server/utils/sentry-verification.ts",
+            "line": 3,
+            "inApp": true
+          }
+        ],
+        "user_fields_count": 0,
+        "private_fields_count": 0,
+        "private_marker_found": false,
+        "processing_errors": 0
+      }
+    ]
+  },
+  "sentry_readbacks": [
+    {
+      "event_id": "424ab55d82004813bddedcfda52ecb0c",
+      "issue_id": "158414954",
+      "environment": "verification",
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "component": "backend",
+      "frames": [
+        {
+          "path": "/src/Service/Heal/HealRunnerFailureReporter.php",
+          "line": 30,
+          "inApp": true
+        },
+        {
+          "path": "/src/Service/Heal/HealRunnerFailureReporter.php",
+          "line": 42,
+          "inApp": true
+        }
+      ],
+      "user_fields_count": 0,
+      "private_fields_count": 0,
+      "private_marker_found": false,
+      "processing_errors": 0
+    },
+    {
+      "event_id": "a3d2b445f3d84059a64c0ef053545b41",
+      "issue_id": "158413863",
+      "environment": "verification",
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "component": "browser",
+      "frames": [
+        {
+          "path": "app/utils/sentry-verification.ts",
+          "line": 3,
+          "inApp": true
+        }
+      ],
+      "user_fields_count": 0,
+      "private_fields_count": 0,
+      "private_marker_found": false,
+      "processing_errors": 0
+    },
+    {
+      "event_id": "09ab8cba32ab43328c683644cc5ff0ea",
+      "issue_id": "158414345",
+      "environment": "verification",
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "component": "nitro",
+      "frames": [
+        {
+          "path": "server/utils/sentry-verification.ts",
+          "line": 3,
+          "inApp": true
+        }
+      ],
+      "user_fields_count": 0,
+      "private_fields_count": 0,
+      "private_marker_found": false,
+      "processing_errors": 0
+    }
+  ],
+  "intake": {
+    "description": "All three matching cases were already triaged before operator replay. Two explicitly operator-signed deliveries per actual Sentry event then retained the same case and counters.",
+    "signed_deliveries": [
+      {
+        "component": "backend",
+        "attempt": 1,
+        "http_status": 200,
+        "case_id": "61258be6-a902-4ff3-8392-555ae71a51a7",
+        "status": "triaged"
+      },
+      {
+        "component": "backend",
+        "attempt": 2,
+        "http_status": 200,
+        "case_id": "61258be6-a902-4ff3-8392-555ae71a51a7",
+        "status": "triaged"
+      },
+      {
+        "component": "browser",
+        "attempt": 1,
+        "http_status": 200,
+        "case_id": "2263f2f2-06fd-4f6c-ac90-a533f2bbd697",
+        "status": "triaged"
+      },
+      {
+        "component": "browser",
+        "attempt": 2,
+        "http_status": 200,
+        "case_id": "2263f2f2-06fd-4f6c-ac90-a533f2bbd697",
+        "status": "triaged"
+      },
+      {
+        "component": "nitro",
+        "attempt": 1,
+        "http_status": 200,
+        "case_id": "80555315-948a-417f-8430-d383edc860b8",
+        "status": "triaged"
+      },
+      {
+        "component": "nitro",
+        "attempt": 2,
+        "http_status": 200,
+        "case_id": "80555315-948a-417f-8430-d383edc860b8",
+        "status": "triaged"
+      }
+    ],
+    "case_count": 3,
+    "triage_attempts_per_case": 1,
+    "fix_attempts": 0
+  },
+  "ledger": {
+    "before": 53,
+    "after": 56,
+    "original_records_preserved": true,
+    "inode_preserved": true,
+    "worker_hash_matches": true,
+    "backup": "verified-deployments-v7.json.IN46-before-849c5fc932374955a3c911a18ed955be",
+    "backup_sha256": "a4560b96dfa850fdfb3cd50b6c90c3b38775496d96e4972d6b780e09b8fb7d60",
+    "host_sha256": "eb92f9ce4b44e9abc5edf938aa20e1c7830b3189cbbe6270efc2fb100df3b8de"
+  },
+  "cases": [
+    {
+      "heal_case_id": "2263f2f206fd4f6cac90a533f2bbd697",
+      "external_issue_id": "158413863",
+      "last_event_id": "a3d2b445f3d84059a64c0ef053545b41",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "environment": "verification",
+      "component": "browser",
+      "source_commit": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "artifact_digest": "sha256:ea42f4ef9c4c73818429fad92cc16a01d90d95b5ef631bc998136a075a069dfa",
+      "deployment_receipt_digest": "sha256:acb7ccf92f3dc35e34fe0e2faff813d4266653b819fae17a848687f5280b9d28",
+      "source_path": "frontend/app/utils/sentry-verification.ts",
+      "source_line": "3"
+    },
+    {
+      "heal_case_id": "61258be6a9024ff38392555ae71a51a7",
+      "external_issue_id": "158414954",
+      "last_event_id": "424ab55d82004813bddedcfda52ecb0c",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "environment": "verification",
+      "component": "backend",
+      "source_commit": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "artifact_digest": "sha256:70ea061384c8ed656bf40c02604ffa4626abd7f68b23d0aa1aabe24f4cbce6ab",
+      "deployment_receipt_digest": "sha256:892c5ffa9eedce498c2d0e804ae5ead5b8d7bb479fee6ef5faf7fa0bd5f960e7",
+      "source_path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+      "source_line": "42"
+    },
+    {
+      "heal_case_id": "80555315948a417f8430d383edc860b8",
+      "external_issue_id": "158414345",
+      "last_event_id": "09ab8cba32ab43328c683644cc5ff0ea",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "environment": "verification",
+      "component": "nitro",
+      "source_commit": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "artifact_digest": "sha256:ea42f4ef9c4c73818429fad92cc16a01d90d95b5ef631bc998136a075a069dfa",
+      "deployment_receipt_digest": "sha256:113f3308e730b0d2553176f89643544f04a7be7c5daaec3b3541a951709f475f",
+      "source_path": "frontend/server/utils/sentry-verification.ts",
+      "source_line": "3"
+    }
+  ],
+  "excluded_probe": {
+    "issue_id": "158402338",
+    "case_id": "2b4f21ba7d9d4cce934849636bd658b8",
+    "event_ids": [
+      "c5341b89349f47b08dbe03379a8e3d7e",
+      "76447efa67c84e659cc0230e0e1b33a7"
+    ],
+    "reason": "Initial operator incorrectly treated SDK flush Result as boolean; an automatic operator-error event contaminated this synthetic group. Signed-delivery preflight stopped before any replay. A separately approved, locally mock-transport-tested probe produced the clean backend proof. Original case retained and excluded."
+  },
+  "cleanup": {
+    "isolated_javascript_container_stopped": true,
+    "ssh_tunnel_closed": true,
+    "production_containers_unchanged": true
+  },
+  "limitations": [
+    "Isolated SDK/source/transport and real Sentry/Heal-chain proof, not production HTTP/job execution.",
+    "Historical gate-production-runtime.json remains historical; ordinary deployment must generate its own runtime readiness receipt.",
+    "No UI source changed; the browser screenshot is a synthetic technical verification fixture, not a UI delivery."
+  ]
+}
