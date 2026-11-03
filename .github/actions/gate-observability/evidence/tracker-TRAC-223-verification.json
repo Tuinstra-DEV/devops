@@ -1,0 +1,122 @@
+{
+  "story": "TRAC-223",
+  "repository": "Tuinstra-DEV/tracker",
+  "source_sha": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+  "environment": "verification",
+  "php": {
+    "image_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+    "inspected_image_config": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+    "php_version": "8.4.27",
+    "workflow_run_id": "41524346966",
+    "workflow_attempt": 1,
+    "build_job_id": "125548231753",
+    "build_job_conclusion": "success",
+    "workflow_conclusion": "failure",
+    "workflow_failure": "Gate Observability rejected the old integration proof before deployment; successful immutable build independently verified",
+    "runtime": "isolated read-only container with synthetic configuration and only the existing ingest DSN; no production database or application data",
+    "api_expected_access_denial_suppressed_before_transport": true,
+    "synthetic_private_marker_removed": true
+  },
+  "browser": {
+    "artifact_id": "13180324520",
+    "archive_digest": "sha256:c1905424c8e0f72597ae1772347c721c3db81076ebfaa32aacc41d62c4b044fd",
+    "workflow_run_id": "41526834896",
+    "workflow_attempt": 1,
+    "workflow_conclusion": "success",
+    "public_maps": 0,
+    "primary_event_id": "af0568ee72a54c769aa0c594dc23bbe2",
+    "primary_processing_errors": 0,
+    "primary_source_path": "code/web/app/utils/sentry-verification.ts",
+    "primary_source_line": 24,
+    "user_fields_count": 0,
+    "live_private_marker_injected": false,
+    "additional_operator_event": {
+      "event_id": "6877ecda19ab43cb913c6c7340109075",
+      "accepted_http_status": 200,
+      "processing_warning": "js_invalid_sourcemap_location in an additional Playwright-evaluate caller frame; excluded from primary proof"
+    },
+    "grouping": "operator-only fixed synthetic fingerprint after the unchanged real privacy callback; compiled artifact bytes unchanged"
+  },
+  "intake": {
+    "api": "actual Sentry provider delivery followed by two signed operator replays",
+    "worker": "actual SDK event read back from Sentry; operator-signed HTTP intake followed by two replays",
+    "browser": "actual Sentry provider deliveries; signed HTTP operator replays retained the same case",
+    "case_count": 3,
+    "triage_attempts_per_case": 1,
+    "fix_attempts": 0
+  },
+  "ledger": {
+    "original_records": 50,
+    "after_php_records": 52,
+    "after_browser_records": 53,
+    "existing_records_preserved": true,
+    "private_backups_retained": true,
+    "graceful_worker_refresh_verified": true
+  },
+  "limitations": [
+    "Verification is isolated SDK/source/transport and real Sentry/Heal-chain proof, not production HTTP/job execution.",
+    "Historical tracker-production-runtime.json remains historical; the following ordinary release must produce its own exact runtime receipt."
+  ],
+  "cases": [
+    {
+      "heal_case_id": "a28eb5986f8546759bb4e277344b60b8",
+      "external_issue_id": "158147140",
+      "last_event_id": "f466492203ba4b738bc8d6881339680e",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "api",
+      "environment": "verification",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
+      "source_line": "30"
+    },
+    {
+      "heal_case_id": "99bcae2d5e6c4f2790f80496f3d3e1e3",
+      "external_issue_id": "158147139",
+      "last_event_id": "d7610163e19040b5935ef3f9a5865803",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "worker",
+      "environment": "verification",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:768407e665a4ea5a8be348985070c5b9ed21330b3e850457f27b47fda283eac0",
+      "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
+      "source_line": "29"
+    },
+    {
+      "heal_case_id": "e5ffa8eb9bff4911953204e31b6f9c89",
+      "external_issue_id": "158201227",
+      "last_event_id": "6877ecda19ab43cb913c6c7340109075",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 2,
+      "triage_attempts": 1,
+      "fix_status": "not_started",
+      "fix_attempts": 0,
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "ffba59597ab74f36e82579219daca6f0d0efcf7f",
+      "artifact_digest": "sha256:c1905424c8e0f72597ae1772347c721c3db81076ebfaa32aacc41d62c4b044fd",
+      "source_path": "code/web/app/utils/sentry-verification.ts",
+      "source_line": "24"
+    }
+  ],
+  "cleanup": {
+    "synthetic_sentry_issues": [
+      "158147140",
+      "158147139",
+      "158201227"
+    ],
+    "status": "resolved",
+    "existing_production_issues_and_case_bindings_preserved": true
+  }
+}
