@@ -1,0 +1,92 @@
+---
+# Code-only repair of the observed de87802 installation. The regular runner_host
+# role also manages images/network/policy and is intentionally not invoked here.
+- name: Repair the Sanctuary runner manager without changing admission policy
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    runner_manager_source: /private/tmp/ci-runner-manager-sanctuary-fixed.py
+    runner_manager_old_sha256: 232d37364c0754bd59aefbf44fee9ba5704def038bbda94514975f857dd61e9f
+    runner_manager_new_sha256: 54520f176dc5c07adf9493d27f89e549672c27aa6d7fa05f737b6549f0dcb1f3
+    runner_manager_backup: /var/backups/ci-runner-manager-232d37364c0754bd.py
+  tasks:
+    - name: Inspect the prepared controller source
+      ansible.builtin.stat:
+        path: "{{ runner_manager_source }}"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: repair_source
+
+    - name: Inspect the installed manager
+      ansible.builtin.stat:
+        path: /usr/local/bin/ci-runner-manager
+        checksum_algorithm: sha256
+      register: repair_installed
+
+    - name: Refuse source or installed version drift
+      ansible.builtin.assert:
+        that:
+          - repair_source.stat.checksum | default('') == runner_manager_new_sha256
+          - repair_installed.stat.checksum | default('') in [runner_manager_old_sha256, runner_manager_new_sha256]
+
+    - name: Preserve the original manager once
+      ansible.builtin.copy:
+        src: /usr/local/bin/ci-runner-manager
+        dest: "{{ runner_manager_backup }}"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: '0700'
+      when: repair_installed.stat.checksum == runner_manager_old_sha256
+
+    - name: Inspect the rollback copy
+      ansible.builtin.stat:
+        path: "{{ runner_manager_backup }}"
+        checksum_algorithm: sha256
+      register: repair_backup
+
+    - name: Verify rollback remains available
+      ansible.builtin.assert:
+        that:
+          - repair_backup.stat.checksum | default('') == runner_manager_old_sha256
+
+    - name: Install the validated repair using the runner_host copy destination
+      ansible.builtin.copy:
+        src: "{{ runner_manager_source }}"
+        dest: /usr/local/bin/ci-runner-manager
+        owner: root
+        group: root
+        mode: '0755'
+        validate: /usr/bin/python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' %s
+
+    - name: Restart only the manager
+      ansible.builtin.systemd_service:
+        name: ci-runner-manager.service
+        state: restarted
+
+    - name: Allow one reconciliation and dispatch interval
+      ansible.builtin.pause:
+        seconds: 35
+
+    - name: Verify the installed source after restart
+      ansible.builtin.stat:
+        path: /usr/local/bin/ci-runner-manager
+        checksum_algorithm: sha256
+      register: repair_readback
+
+    - name: Read the manager service state
+      ansible.builtin.systemd_service:
+        name: ci-runner-manager.service
+      register: repair_service
+
+    - name: Verify the repair is running
+      ansible.builtin.assert:
+        that:
+          - repair_readback.stat.checksum == runner_manager_new_sha256
+          - repair_service.status.ActiveState == 'active'
+          - repair_service.status.SubState == 'running'
+          - repair_service.status.ExecMainStatus == '0'
+          - repair_service.status.NRestarts == '0'

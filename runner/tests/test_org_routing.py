@@ -821,6 +821,7 @@ class OrgRoutingTests(unittest.TestCase):
             org_client.candidate_trusted_jobs.return_value = [
                 {"repo": REPO, "run_id": 11, "job_id": 22,
                  "workflow_ref": REF}]
+            org_client.get_job.return_value = self.empty_association_evidence()[2]
             org_client.generate_org_jit.side_effect = manager.RunnerError("POST ambiguous")
             adapter = manager.OrganizationDispatchClient(cfg, mock.Mock(),
                                                          org_client, "medium")

@@ -48,6 +48,9 @@ class ActivationTests(unittest.TestCase):
         (self.root / 'runtime').mkdir(mode=0o700)
         self.old = b'old fixture manager'
         self.new = (ROOT / 'runner/manager/ci_runner_manager.py').read_bytes()
+        # Exercise lifecycle with today's manager; the operator entrypoint
+        # remains pinned to its immutable DEV-54 commit and historical hash.
+        self.a.NEW_MANAGER_SHA = self.a.digest(self.new)
         self.a.OLD_MANAGER_SHA = self.a.digest(self.old)
         self.a.HELPER_SHA = self.a.digest(b'fixture helper')
         self.a.UNIT_SHA = self.a.digest(b'fixture unit')
@@ -139,6 +142,9 @@ class ActivationTests(unittest.TestCase):
 
     def test_pins_match_reviewed_sources(self):
         self.assertEqual(self.a.digest(self.new), self.a.NEW_MANAGER_SHA)
+        pinned = load_script()
+        self.assertEqual(pinned.NEW_MANAGER_SHA,
+            '2ca8a6936811049e20b7c5084e10f98cba90486a8fa754e00acd55ea0a3fc863')
         # CI intentionally has a depth-one checkout. Validate checked-in source
         # bytes without requiring a historical git object or fetching the network.
         self.assertEqual(self.a.SOURCE_COMMIT, '112666ba3e1ee0fe1a5e6c33aed95d8fae0fa823')

@@ -1989,6 +1989,25 @@ def unassigned_lease_is_stale(client: GitHubClient | None,
     return False
 
 
+def assigned_job_completed(client: GitHubClient | None, state: dict[str, Any],
+                           org_client: GitHubClient | None = None) -> bool:
+    """Reap a one-job VM even if its guest failed to power off.
+
+    A completed trigger is insufficient: only the actual assignment with the
+    same registration ID and run can release this lease. Missing/API evidence
+    preserves the VM and its hard TTL; names alone never establish identity.
+    """
+    selected = org_client if runner_scope(state) == "organization" else client
+    if selected is None or not isinstance(state.get("actual_job_id"), int):
+        return False
+    job = selected.get_job(state["repo"], state["actual_job_id"])
+    return isinstance(job, dict) and job.get("status") == "completed" and \
+        job.get("id") == state["actual_job_id"] and \
+        job.get("run_id") == state.get("actual_run_id") and \
+        job.get("runner_id") == state.get("runner_id") and \
+        job.get("runner_name") == state.get("runner_name")
+
+
 def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
                            state: dict[str, Any], now: int,
                            org_client: GitHubClient | None = None) -> None:
@@ -2028,7 +2047,7 @@ def retry_dispatch_handoff(store: StateStore, client: GitHubClient | None,
         unassigned_trigger = isinstance(trigger_run_id, int) and \
             not isinstance(trigger_run_id, bool) and \
             job.get("id") == job_id and job.get("run_id") == trigger_run_id and \
-            job.get("runner_id") is None and job.get("runner_name") in (None, "")
+            job.get("runner_id") in (None, 0) and job.get("runner_name") in (None, "")
         clean_handoff = state.get("local_cleanup_verified") is True and \
             verified_other_job and unassigned_trigger and \
             not any(item.get("lease") == state.get("lease") for item in store.leases())
@@ -2150,9 +2169,11 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
                 continue
             try:
                 states[lease] = record_verified_assignment(
-                    store, client, state, include_completed=lease not in healthy,
+                    store, client, state, include_completed=True,
                     org_client=org_client,
                 )
+                if lease in healthy and assigned_job_completed(client, states[lease], org_client):
+                    healthy.discard(lease)
             except AssignmentMismatch as exc:
                 if state.get("execution_role") is None:
                     if lease in healthy:
@@ -2453,14 +2474,15 @@ class OrganizationDispatchClient:
         self.org_client = org_client
         self.profile = profile
         self.snapshot = snapshot
+        self.candidates: dict[tuple[str, int], dict[str, Any]] = {}
 
     def candidate_jobs(self, repo: str, label: str) -> list[dict[str, Any]]:
         if repo not in self.cfg["org_repository_ids"] or label != f"trusted-{self.profile}":
             raise RunnerError("organization dispatch candidate policy is invalid")
-        if self.snapshot is None:
-            return self.org_client.candidate_trusted_jobs(repo, self.profile)
-        return self.org_client.candidate_trusted_jobs(repo, self.profile,
-                                                      snapshot=self.snapshot)
+        options = {} if self.snapshot is None else {"snapshot": self.snapshot}
+        candidates = self.org_client.candidate_trusted_jobs(repo, self.profile, **options)
+        self.candidates.update({(repo, job["job_id"]): job for job in candidates})
+        return candidates
 
     def generate_jit(self, repo: str, job_id: int, group_id: int,
                      label: str) -> dict[str, Any]:
@@ -2474,6 +2496,25 @@ class OrganizationDispatchClient:
             raise
         except RunnerError as exc:
             raise OrgPreflightRejected("organization group preflight failed") from exc
+        candidate = self.candidates.get((repo, job_id))
+        try:
+            job = self.org_client.get_job(repo, job_id)
+            if candidate is None or job.get("id") != job_id or \
+                    job.get("run_id") != candidate["run_id"] or \
+                    job.get("status") != "queued" or job.get("runner_id") not in (None, 0) or \
+                    job.get("runner_name") not in (None, "") or \
+                    not organization_labels_match(job.get("labels"), repo, self.profile):
+                raise RunnerError("trusted job is stale or assigned")
+            # No discovery snapshot here: reapply the existing source, label
+            # and exact workflow admission policy to the current GitHub state.
+            current = self.org_client.candidate_trusted_jobs(repo, self.profile)
+            if not any(item["job_id"] == job_id and item["run_id"] == candidate["run_id"]
+                       and item["workflow_ref"] == candidate["workflow_ref"] for item in current):
+                raise RunnerError("trusted source changed since discovery")
+        except RateLimited:
+            raise
+        except RunnerError as exc:
+            raise OrgPreflightRejected("trusted current identity not verified") from exc
         return self.org_client.generate_org_jit(job_id, group_id, repo, self.profile)
 
     def delete_runner(self, repo: str, runner_id: int) -> None:
