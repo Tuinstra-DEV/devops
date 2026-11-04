@@ -810,7 +810,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
     PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
     EXECUTION_HASHES = {
         WORKFLOW.name: 'c515060adf3c722c02a872feafb8174bdd2d1bcb33402f0a41acea89d6deb4be',
-        PRODUCER.name: 'd84427771a15748843f49c805c1e66b668f4a9b3c8f524d118c41bc9a903a788',
+        PRODUCER.name: '726109e5e54101f6286b9982d5b5bd3d2ea2c81e1377847fe24b9217dbcd8db7',
     }
 
     @staticmethod
@@ -941,7 +941,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
         self.assertNotIn('if', producer)
         self.assertNotIn('continue-on-error', producer)
         self.assertEqual(producer['steps'][0]['uses'],
-                         'Tuinstra-DEV/devops/.github/actions/gate-pr-security@4c8e3a44574451dbace09ce1587452bd190dae54')
+                         'Tuinstra-DEV/devops/.github/actions/gate-pr-security@072e0badc05b9dbe5338a6bba4d686705bc3dfc0')
         source = WORKFLOW.parents[2] / '.github/actions/gate-pr-security/source.py'
         tree = ast.parse(source.read_text())
         function = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == 'provider_state')

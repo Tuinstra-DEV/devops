@@ -50,7 +50,7 @@ jobs:
       id-token: write
     steps:
       - name: Produce immutable PR security evidence
-        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@4c8e3a44574451dbace09ce1587452bd190dae54
+        uses: Tuinstra-DEV/devops/.github/actions/gate-pr-security@072e0badc05b9dbe5338a6bba4d686705bc3dfc0
         env:
           GATE_GATE_SCANNER_BINDING: ${{ vars.GATE_GATE_SCANNER_BINDING }}
           GATE_TRACKER_SCANNER_BINDING: ${{ vars.GATE_TRACKER_SCANNER_BINDING }}
