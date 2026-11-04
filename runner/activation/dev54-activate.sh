@@ -1,7 +1,7 @@
 #!/bin/sh
-# Fixed-purpose, temporary NOPASSWD entrypoint. No paths, refs or commands from argv/env.
+# Fixed-purpose interactive sudo entrypoint. No paths, refs or commands from argv/env.
 # The old DEV-14 role requests DO NOT automatically fall back after a role repin.
-# Activate only after the CVE merges and while all four affected repos are quiet.
+# Activate only without open PHP/CVE hotfixes and while all five affected repos are quiet.
 exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C /usr/bin/python3 -I /dev/fd/3 "$@" 3<<'PY'
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ import tomllib
 import types
 import urllib.request
 
-SOURCE_COMMIT = "112666ba3e1ee0fe1a5e6c33aed95d8fae0fa823"
-NEW_MANAGER_SHA = "2ca8a6936811049e20b7c5084e10f98cba90486a8fa754e00acd55ea0a3fc863"
-OLD_MANAGER_SHA = "232d37364c0754bd59aefbf44fee9ba5704def038bbda94514975f857dd61e9f"
+SOURCE_COMMIT = "ea86c62eeac615cb292a78bf50995fed81c051ee"
+NEW_MANAGER_SHA = "5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3"
+OLD_MANAGER_SHA = "54520f176dc5c07adf9493d27f89e549672c27aa6d7fa05f737b6549f0dcb1f3"
 UNIT_SHA = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 HELPER_SHA = "fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613"
 PREFIX = "Tuinstra-DEV/devops/.github/workflows/"
@@ -36,9 +36,8 @@ PRODUCER_REF = PREFIX + "reusable-gate-pr-security.yml@" + SOURCE_COMMIT
 LEGACY_METADATA_REF = PREFIX + "reusable-trusted-verification.yml@a8ace2f171d7d127bbfb3a6d6b13f158f461ba98"
 TESSERA = "Tuinstra-DEV/sudoku-tessera"
 TESSERA_ID = 1179209966
-AFFECTED = ("Tuinstra-DEV/gate", "Tuinstra-DEV/tracker", "Tuinstra-DEV/notify", "Tuinstra-DEV/status")
-CVE_PRS = (("Tuinstra-DEV/tracker", 375), ("Tuinstra-DEV/notify", 33), ("Tuinstra-DEV/status", 21))
-CVE_PATTERN = re.compile(r"CVE-|TRAC[-/]223|NTF[-/]19|IN[-/](?:43|44|45)\b|php.{0,60}(?:security|hotfix)|(?:security|hotfix).{0,60}php", re.I)
+AFFECTED = ("Tuinstra-DEV/gate", "Tuinstra-DEV/tracker", "Tuinstra-DEV/notify", "Tuinstra-DEV/status", TESSERA)
+CVE_PATTERN = re.compile(r"CVE-|TRAC[-/]223|NTF[-/](?:19|20)\b|IN[-/](?:43|44|45|46)\b|php.{0,60}(?:security|hotfix)|(?:security|hotfix).{0,60}php", re.I)
 SERVICE = "ci-runner-manager.service"
 SOCKET = "ci-runner-host-helper.socket"
 UID = 0
@@ -283,12 +282,8 @@ class GitHub:
                 require(type(value) is dict and type(value.get("total_count")) is int and value["total_count"] == 0 and value.get("workflow_runs") == [],
                         "affected repository has queued/active runs; activation postponed")
 
-    def cve_merged(self):
-        for repo, number in CVE_PRS:
-            pr = self.get(f"/repos/{repo}/pulls/{number}")
-            require(pr.get("number") == number and pr.get("state") == "closed" and pr.get("merged") is True,
-                    f"CVE PR {repo}#{number} is not merged; activation postponed")
-        # Also catch Gate's current/future CVE PR without guessing a nonexistent PR number.
+    def no_open_cve_hotfixes(self):
+        # Historical CVE PRs are merged; gate on today's open inventory instead.
         for repo in AFFECTED:
             prs = self.get(f"/repos/{repo}/pulls?state=open&per_page=100&page=1")
             require(type(prs) is list and len(prs) < 100 and all(type(pr) is dict for pr in prs),
@@ -465,7 +460,7 @@ def apply(layout=Layout(), command=run, loader=source_module, api_factory=GitHub
     updated, transitions = candidate(cfg, module)
     replacement = {"manager": source, "config": serialize(updated)}
     api = api_factory(layout, cfg, module)
-    api.cve_merged()
+    api.no_open_cve_hotfixes()
     api.quiet()
     check_unit(layout, command)
     require(command(["systemctl", "is-active", SERVICE]) == "active", "manager is not active")
@@ -477,13 +472,13 @@ def apply(layout=Layout(), command=run, loader=source_module, api_factory=GitHub
     try:
         pause_manager(layout, command)
         drain(layout, command, pause)
-        api.cve_merged()
+        api.no_open_cve_hotfixes()
         api.quiet()
         manifest["phase"] = "drained"
         checkpoint(folder, manifest)
         manual_group(manifest["after_policy"], confirm)
         api.group(updated)
-        api.cve_merged()
+        api.no_open_cve_hotfixes()
         api.quiet()
         fd = lock(layout.helper_lock, helper=True)
         try:
