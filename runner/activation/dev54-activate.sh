@@ -23,6 +23,7 @@ import sys
 import time
 import tomllib
 import types
+import urllib.error
 import urllib.request
 
 SOURCE_COMMIT = "ea86c62eeac615cb292a78bf50995fed81c051ee"
@@ -42,6 +43,7 @@ SERVICE = "ci-runner-manager.service"
 SOCKET = "ci-runner-host-helper.socket"
 UID = 0
 ANCHOR = Path("/")
+STEP = "startup"
 DRAIN_BYTES = ("[Service]\nType=oneshot\nExecStart=\nExecStart=/usr/local/bin/ci-runner-manager "
                "--config /etc/ci-runner/manager.toml reconcile\nRestart=no\n").encode()
 ORG_DROPIN = b"[Service]\nLoadCredential=org_github_token:/etc/ci-runner/org-github.token\n"
@@ -49,6 +51,26 @@ ORG_DROPIN = b"[Service]\nLoadCredential=org_github_token:/etc/ci-runner/org-git
 
 class Refused(RuntimeError):
     pass
+
+
+class HTTPRefused(Refused):
+    def __init__(self, endpoint, repository, status, permission_denial=False):
+        self.permission_denial = permission_denial
+        # Only reviewed endpoint categories, public repository identifiers and
+        # an integer status may enter an operator-facing exception value.
+        label = endpoint + (" " + repository if repository in (*AFFECTED, "Tuinstra-DEV/devops") else "")
+        super().__init__(label + " HTTP " + str(status if type(status) is int else "unknown"))
+
+
+def step(name):
+    global STEP
+    STEP = name
+
+
+def report_failure(failure):
+    # Never render an unexpected exception value, chain, source line or locals:
+    # parsing/network exceptions can contain config, URLs or response content.
+    print("DEV-54 failed: " + type(failure).__name__ + " at step " + STEP + ".", file=sys.stderr)
 
 
 def require(ok, reason):
@@ -180,15 +202,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch(url, token=None):
+def fetch(url, token=None, *, endpoint="manager-source", repository=""):
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     if token:
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, headers=headers, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=20) as response:
-        require(response.status == 200, "read-only source/API request failed")
-        data = response.read(1024 * 1024 + 1)
+    try:
+        with opener.open(request, timeout=20) as response:
+            require(response.status == 200, endpoint + " unexpected HTTP status")
+            data = response.read(1024 * 1024 + 1)
+    except urllib.error.HTTPError as failure:
+        status = failure.code
+        headers = failure.headers or {}
+        permission_denial = status in (403, 404) and not (
+            headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None)
+        failure.close()
+        raise HTTPRefused(endpoint, repository, status, permission_denial) from None
+    except (urllib.error.URLError, TimeoutError) as failure:
+        raise Refused(endpoint + " transport failure (" + type(failure).__name__ + ")") from None
     require(len(data) <= 1024 * 1024, "read-only source/API result too large")
     return data
 
@@ -269,13 +301,40 @@ class GitHub:
         require(all(t and "\n" not in t for t in (self.repo_token, self.org_token)), "invalid credential binding")
 
     def get(self, path):
-        return json.loads(fetch("https://api.github.com" + path, self.repo_token))
+        endpoint = "open-pr-inventory" if "/pulls?" in path else "run-inventory"
+        repository = "/".join(path.split("/")[2:4])
+        require(repository in AFFECTED, "unexpected preflight repository")
+        options = {"endpoint": endpoint, "repository": repository}
+        url = "https://api.github.com" + path
+        try:
+            data = fetch(url, self.repo_token, **options)
+        except HTTPRefused as failure:
+            # Both credentials are already provisioned. A successful identical
+            # GET proves the org credential's read access; no repository/check
+            # is skipped and no scopes, credentials or host policy are changed.
+            # Rate limits, server and transport failures never switch tokens.
+            if not failure.permission_denial or self.repo_token == self.org_token:
+                raise
+            data = fetch(url, self.org_token, **options)
+        return json.loads(data)
 
     def group(self, cfg):
+        step("runner-group")
         client = self.module.GitHubClient(self.org_token)
-        client.verify_org_group(cfg)  # GET-only exact group/ref/private repository equality.
+        try:
+            client.verify_org_group(cfg)  # GET-only exact group/ref/private repository equality.
+        except self.module.RunnerError as failure:
+            # The manager wraps HTTP/transport errors; inspect only their types
+            # and numeric status, never its exception message or response body.
+            cause = failure.__cause__
+            if isinstance(cause, urllib.error.HTTPError):
+                raise Refused("runner-group HTTP " + str(cause.code)) from None
+            if isinstance(cause, (urllib.error.URLError, TimeoutError)):
+                raise Refused("runner-group transport failure (" + type(cause).__name__ + ")") from None
+            raise Refused("runner-group policy/API validation failed") from None
 
     def quiet(self):
+        step("run-inventory")
         for repo in AFFECTED:
             for status in ("queued", "in_progress"):
                 value = self.get(f"/repos/{repo}/actions/runs?status={status}&per_page=1")
@@ -283,6 +342,7 @@ class GitHub:
                         "affected repository has queued/active runs; activation postponed")
 
     def no_open_cve_hotfixes(self):
+        step("open-pr-inventory")
         # Historical CVE PRs are merged; gate on today's open inventory instead.
         for repo in AFFECTED:
             prs = self.get(f"/repos/{repo}/pulls?state=open&per_page=100&page=1")
@@ -448,38 +508,49 @@ def validate_config(data, module, folder):
 
 
 def apply(layout=Layout(), command=run, loader=source_module, api_factory=GitHub, confirm=None, pause=time.sleep):
+    step("manager-source")
     source, module = loader()
+    step("host-files")
     original = {name: read_file(path, mode) for name, path, mode in (
         ("manager", layout.manager, 0o755), ("config", layout.config, 0o640),
         ("unit", layout.unit, 0o644), ("org-dropin", layout.org_dropin, 0o644))}
     require(digest(original["manager"][0]) == OLD_MANAGER_SHA, "unexpected installed manager SHA-256")
+    step("configuration")
     cfg = tomllib.loads(original["config"][0].decode())
     require(cfg.get("state_dir") == str(layout.state) and cfg.get("overlay_root") == str(layout.overlay) and
             original["config"][1].st_gid == grp.getgrnam("ci-runner-manager").gr_gid,
             "configured state/storage or config owner differs")
+    step("policy-candidate")
     updated, transitions = candidate(cfg, module)
     replacement = {"manager": source, "config": serialize(updated)}
+    step("credentials")
     api = api_factory(layout, cfg, module)
     api.no_open_cve_hotfixes()
     api.quiet()
+    step("systemd-preflight")
     check_unit(layout, command)
     require(command(["systemctl", "is-active", SERVICE]) == "active", "manager is not active")
     api.group(cfg)
     # Backup before the first service mutation also makes interrupted drain recoverable.
+    step("backup")
     folder, manifest = make_backup(layout, original, replacement,
                                     (policy(cfg, module), policy(updated, module)), transitions)
+    step("candidate-config-validation")
     validate_config(replacement["config"], module, folder)
     try:
+        step("drain")
         pause_manager(layout, command)
         drain(layout, command, pause)
         api.no_open_cve_hotfixes()
         api.quiet()
         manifest["phase"] = "drained"
         checkpoint(folder, manifest)
+        step("operator-confirmation")
         manual_group(manifest["after_policy"], confirm)
         api.group(updated)
         api.no_open_cve_hotfixes()
         api.quiet()
+        step("install")
         fd = lock(layout.helper_lock, helper=True)
         try:
             idle(layout, command)
@@ -492,6 +563,7 @@ def apply(layout=Layout(), command=run, loader=source_module, api_factory=GitHub
             checkpoint(folder, manifest)
         finally:
             os.close(fd)
+        step("restart")
         restart(layout, command)
         api.group(updated)
         time.sleep(2)
@@ -508,6 +580,7 @@ def apply(layout=Layout(), command=run, loader=source_module, api_factory=GitHub
 
 
 def rollback(layout=Layout(), command=run, api_factory=GitHub, confirm=None, pause=time.sleep):
+    step("rollback-backup")
     secure_dir(layout.backup)
     name = read_file(layout.backup / "last-backup", 0o600)[0].decode().strip()
     require(re.fullmatch(r"dev54-\d{8}T\d{6}Z-[0-9a-f]{16}", name), "invalid rollback backup name")
@@ -533,8 +606,10 @@ def rollback(layout=Layout(), command=run, api_factory=GitHub, confirm=None, pau
     require(transitions == manifest["role_pin_transitions"] and
             policy(old_cfg, module) == manifest["before_policy"] and policy(new_cfg, module) == manifest["after_policy"],
             "backup policies or role-pin transitions differ")
+    step("rollback-credentials")
     api = api_factory(layout, old_cfg, module)
     try:
+        step("rollback-drain")
         if layout.drain.exists():
             require(read_file(layout.drain, 0o644)[0] == DRAIN_BYTES, "unknown runtime drain")
             check_unit(layout, command, draining=True)
@@ -542,8 +617,10 @@ def rollback(layout=Layout(), command=run, api_factory=GitHub, confirm=None, pau
             check_unit(layout, command)
             pause_manager(layout, command)
         drain(layout, command, pause)
+        step("rollback-confirmation")
         manual_group(manifest["before_policy"], confirm)
         api.group(old_cfg)
+        step("rollback-install")
         fd = lock(layout.helper_lock, helper=True)
         try:
             idle(layout, command)
@@ -555,6 +632,7 @@ def rollback(layout=Layout(), command=run, api_factory=GitHub, confirm=None, pau
                 require(digest(read_file(path)[0]) == manifest["files"][key]["old"], "rollback readback differs")
         finally:
             os.close(fd)
+        step("rollback-restart")
         restart(layout, command)
         api.group(old_cfg)
         manifest["phase"] = "rolled_back"
@@ -569,6 +647,7 @@ def rollback(layout=Layout(), command=run, api_factory=GitHub, confirm=None, pau
 
 
 def main():
+    step("entrypoint")
     require(os.geteuid() == 0 and sys.argv[1:] in ([], ["--rollback"]), "root and exact no-argument/--rollback invocation required")
     require(sys.stdin.isatty(), "operator TTY required for manual GitHub policy confirmation")
     # Only the root-installed entrypoint is allowed. No user-writable repo/staging imports.
@@ -576,6 +655,7 @@ def main():
             "install entrypoint root:root 0755 first")
     os.umask(0o077)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(Refused("interrupted")))
+    step("activation-lock")
     fd = lock(Layout().lock)
     try:
         operation = rollback if sys.argv[1:] else apply
@@ -588,9 +668,9 @@ if __name__ == "__main__":
     try:
         main()
     except Refused as failure:
-        print("DEV-54 refused: " + str(failure), file=sys.stderr)
+        print("DEV-54 refused at step " + STEP + ": " + str(failure), file=sys.stderr)
         sys.exit(1)
-    except BaseException:
-        print("DEV-54 failed. Details suppressed; inspect the protected backup and operator runbook.", file=sys.stderr)
+    except BaseException as failure:
+        report_failure(failure)
         sys.exit(1)
 PY

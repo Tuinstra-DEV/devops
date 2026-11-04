@@ -15,6 +15,22 @@ historische PR-nummers zijn geen runtimevoorwaarde meer. Ook een onvolledige
 API-response of fout blokkeert de activatie. Deze controles worden vóór de drain,
 na de drain en na de handmatige groepswijziging herhaald.
 
+De eerste v2-uitvoering strandde volgens de door Marcel uitgevoerde read-only
+diagnose op `HTTPError` in de open-PR-inventaris, vóór backup/drain. De precieze
+repo/status is niet vastgesteld; ontbrekende Tessera-zichtbaarheid is een
+hypothese. De manager bleef actief op `54520f17…` en er was geen activatiebackup.
+
+De herstelde versie vangt HTTP-/transportfouten af. Een 403/404 door de bestaande
+repo-credential probeert dezelfde GET één keer met de reeds aanwezige
+org-credential, mits dat een andere credential is en de fout geen rate-limit-
+headers bevat. Alleen een geslaagd, geldig antwoord bewijst die read access.
+**Alle vijf controles blijven verplicht**; niets wordt overgeslagen of vervangen
+door een eerdere operatorcheck. Beide credentials geweigerd, rate limits,
+transport-/serverfouten of onvolledige antwoorden blokkeren de activatie.
+Geen credentialscopes of hostpolicy worden gewijzigd. Bij weigering verschijnen
+alleen endpointcategorie, bekende repo en HTTP-status; bij onverwachte fouten
+alleen exceptionklasse en vaste stapnaam, zonder exceptionwaarde of config.
+
 **Oude expliciete rol-jobs hebben geen automatische hosted fallback na een rolpinwissel.**
 Gate's bestaande lint/test/canary-aanroepen op `a8ace2f…` geven de roloptie expliciet
 `true` door. De runnerkeuze is dan al vastgelegd voordat de manager beslist.
@@ -89,12 +105,16 @@ De manager wordt reconcile-only gestart en laat alle VMs natuurlijk uitlopen;
 geen destroy/kill of TTL-overschrijding. Bij leases nabij hun TTL stopt de procedure.
 Na de drain blijft admission gepauzeerd. Het script toont dan alleen de bedoelde rolpinwissels en Tessera-wijziging, geen
 config- of repositorytabellen. De exacte policyselecties staan alleen in de
-beschermde backup. Pas GitHub handmatig aan en typ alleen `GEREED` als dat klaar is.
+beschermde backup. Claude past GitHub tijdens deze pauze via de API aan; Marcel
+typt alleen `GEREED` nadat Claude bevestigt dat dit afgerond is.
 
 ## GitHub: handmatig tijdens de gepauzeerde fase
 
 Organisatie **Tuinstra-DEV → Settings → Actions → Runner groups →
 `sanctuary-trusted-verification`**:
+
+Claude voert deze wijzigingen tijdens de pauze uit met zijn bestaande
+operatorauthenticatie. De activatie zelf doet uitsluitend GET-verificatie.
 
 1. Behoud selected/private repositories, public repositories uit en restrictie
    tot geselecteerde workflows aan. Voeg de private repo `sudoku-tessera`
@@ -116,6 +136,24 @@ Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@ea86c62eeac6
    admission gestopt. Binary/config worden atomair per bestand vervangen, met
    hash-readback en herstelbaar journal. Daarna worden manager/socket/status en
    groep gecontroleerd. Pas na `DEV-54 applied` kunnen consumers omschakelen.
+
+De op 4 november read-only bevestigde groep heeft ID **4**. Vervang tijdens de
+pauze uitsluitend `selected_workflows` atomair door de volgende volledige lijst
+(zes refs: vijf trusted-verification-pins plus één producerrol):
+
+```text
+Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e
+Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@36f32aebe315274df8825674b7bd0ced637ab056
+Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@e1a9f09504b903120e9b5297eff64f58a891c907
+Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@a8ace2f171d7d127bbfb3a6d6b13f158f461ba98
+Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@ea86c62eeac615cb292a78bf50995fed81c051ee
+Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@ea86c62eeac615cb292a78bf50995fed81c051ee
+```
+
+Dit verwijdert alleen de producer-ref op `a8ace2f…`. Voeg repository-ID
+`1179209966` toe aan groep 4; behoud alle andere repositories en beveiligingsvelden.
+Vergelijk vóór uitvoering opnieuw de live uitgangsgroep met de door het script
+gecontroleerde oude policy; wijzig niets voordat admission gepauzeerd is.
 
 Een afwijkende API-permissie geeft een blokkade; geen token in de terminal of chat
 invoeren en geen credentialscopes verruimen om deze voorbereiding af te ronden.
@@ -165,10 +203,30 @@ consumerrollout en echte runner-/kostenverificatie afgerond zijn.
 
 ## Lokale regressiecontrole
 
-De 18 activatie-/rollbacktests werken met tijdelijke nephostbestanden en gemockte
+De 29 activatie-/rollbacktests werken met tijdelijke nephostbestanden en gemockte
 systemd-/GitHub-calls: geen sudo, netwerk of live activatie. Alleen de oude binary
 is synthetisch; de targethash wordt tegen de echte ingecheckte manager getoetst.
 De hashweigering modelleert expliciet de historische `232d…`-host en een onbekende
 host. Alle 47 rolpolicytests blijven verplicht, naast `make lint`, de volledige
 `make test` en actionlint. Behoud van rolvelden, vier oude pins, de vijfde exacte
 metadata-pin, Tessera-ID en exacte rollbackbytes wordt afzonderlijk gecontroleerd.
+
+### Read-only diagnose van de oorspronkelijke v2-fout
+
+`runner/activation/dev54-diagnose-v2.py` is een versiegebonden diagnose voor het
+oorspronkelijke geïnstalleerde script met SHA-256 `a38f5100…`, vóór herinstallatie.
+Het controleert die volledige hash, laadt de echte entrypoint-/apply-code zonder
+runtimeimports uit de checkout en stopt precies vóór `make_backup`. Bestaande
+lockmetadata wordt gelezen; er wordt geen lockbestand/map gemaakt of gelockt.
+Ontbrekende lockpaden en werkelijk lock-acquisitiegedrag zijn dus niet getest.
+Alleen read-only systemd-/busctl-commando's zijn toegestaan. Python moet met
+`-I -B` draaien zodat ook geen import-bytecode wordt geschreven.
+
+De diagnose print alleen exceptionklasse en `bestand:regel:functie`; bij
+`HTTPError` ook de vaste endpointcategorie, bekende repo en numerieke status.
+Geen exceptionmessage, sourcecode, locals, URL/query, headers of body. Een
+`PreflightComplete` betekent dat het read-only voorstuk geslaagd is, geen live
+activatie of geslaagde lockcreatie. Nephosttests controleren zowel deze grens als
+de afwezigheid van writes/drain/backup en de uitsluiting van synthetische secrets.
+Deze extra operatorronde is voor het herstel overgeslagen; de nieuwe activatie
+meldt de repo/status zelf als beide bestaande credentials worden geweigerd.

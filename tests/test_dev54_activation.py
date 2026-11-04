@@ -15,6 +15,8 @@ import tomllib
 import types
 import unittest
 from unittest import mock
+import importlib.util
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'runner/manager'))
@@ -350,6 +352,175 @@ class ActivationTests(unittest.TestCase):
         self.assertNotIn('os.environ', script)
         with mock.patch.object(self.a.os, 'geteuid', return_value=0), mock.patch.object(self.a.sys, 'argv', ['script', '--other']):
             with self.assertRaises(self.a.Refused): self.a.main()
+
+    def diagnostic(self, loader=None):
+        spec = importlib.util.spec_from_file_location('dev54_diagnostic', ROOT / 'runner/activation/dev54-diagnose-v2.py')
+        diagnostic = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(diagnostic)
+        read_file = self.a.read_file
+        def read_entrypoint(path, mode=None):
+            if path == Path('/usr/local/sbin/dev54-activate.sh'):
+                return b'fixture entrypoint', types.SimpleNamespace(st_gid=0)
+            return read_file(path, mode)
+        sink = io.StringIO()
+        with mock.patch.object(self.a, 'read_file', side_effect=read_entrypoint), \
+             mock.patch.object(self.a.os, 'geteuid', return_value=0), \
+             mock.patch.object(self.a.sys, 'argv', ['script']), \
+             mock.patch.object(self.a.sys.stdin, 'isatty', return_value=True), \
+             mock.patch.object(self.a.os, 'umask'), mock.patch.object(self.a.signal, 'signal'), \
+             contextlib.redirect_stdout(sink):
+            status = diagnostic.diagnose(loader=lambda: self.a, inspect=lambda a: diagnostic.inspect_preflight(
+                a, self.layout, command=self.command, loader=loader or (lambda: (self.new, manager)), api_factory=self.API))
+        return status, sink.getvalue()
+
+    def test_readonly_diagnostic_runs_real_preflight_but_never_locks_writes_backs_up_or_drains(self):
+        before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with mock.patch.object(self.a.fcntl, 'flock', side_effect=AssertionError('real lock')), \
+             mock.patch.object(self.a, 'write_new', side_effect=AssertionError('write')), \
+             mock.patch.object(self.a, 'private_dir', side_effect=AssertionError('mkdir')):
+            status, output = self.diagnostic()
+        self.assertEqual(status, 0)
+        self.assertEqual(output.splitlines()[0], 'PreflightComplete')
+        self.assertTrue(self.groups)
+        self.assertEqual({p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, before)
+        self.assertFalse(self.layout.lock.parent.exists())
+        self.assertFalse(self.layout.backup.exists())
+        self.assertTrue(self.active)
+        self.assertFalse(self.layout.drain.exists())
+        self.assertFalse(any(isinstance(c, tuple) and c[:2] == ('systemctl', 'stop') for c in self.calls))
+
+    def test_readonly_diagnostic_reports_class_and_frames_without_secret_exception_or_source(self):
+        def fail():
+            raise KeyError('synthetic-secret-config-value')
+        status, output = self.diagnostic(loader=fail)
+        self.assertEqual(status, 1)
+        self.assertEqual(output.splitlines()[0], 'KeyError')
+        self.assertIn(':fail', output)
+        self.assertNotIn('synthetic-secret', output)
+        self.assertNotIn('raise KeyError', output)
+        self.assertFalse(self.layout.backup.exists())
+
+    def test_http_and_transport_failures_are_safe_refusals_before_backup_or_drain(self):
+        for endpoint in ('manager-source', 'open-pr-inventory', 'run-inventory'):
+            for status in (403, 404, 429, 500):
+                error = urllib.error.HTTPError('https://secret.invalid/sensitive-path', status,
+                    'synthetic-secret-message', {'Authorization': 'synthetic-secret-token'}, io.BytesIO(b'synthetic-secret-body'))
+                with self.subTest(endpoint=endpoint, status=status), mock.patch.object(
+                        self.a.urllib.request.OpenerDirector, 'open', side_effect=error):
+                    with self.assertRaisesRegex(self.a.Refused, f'{endpoint} HTTP {status}') as caught:
+                        self.a.fetch('https://secret.invalid/sensitive-path', 'synthetic-secret-token', endpoint=endpoint)
+                    self.assertNotIn('synthetic-secret', str(caught.exception))
+                    self.assertNotIn('sensitive-path', str(caught.exception))
+            for error in (urllib.error.URLError('synthetic-secret-reason'), TimeoutError('synthetic-secret-reason')):
+                with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=error):
+                    with self.assertRaisesRegex(self.a.Refused, f'{endpoint} transport failure') as caught:
+                        self.a.fetch('https://secret.invalid', endpoint=endpoint)
+                    self.assertNotIn('synthetic-secret', str(caught.exception))
+
+    def test_unexpected_failure_report_has_only_exception_class_and_fixed_step(self):
+        self.a.step('configuration')
+        sink = io.StringIO()
+        with contextlib.redirect_stderr(sink):
+            self.a.report_failure(KeyError('synthetic-secret-config-value'))
+        self.assertEqual(sink.getvalue(), 'DEV-54 failed: KeyError at step configuration.\n')
+
+    def test_repo_visibility_denial_uses_existing_org_credential_for_the_identical_get(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.repo_token, api.org_token = 'synthetic-repo-token', 'synthetic-org-token'
+        for repo in self.a.AFFECTED:
+            for endpoint in ('pulls?state=open&per_page=100&page=1', 'actions/runs?status=queued&per_page=1'):
+                path = f'/repos/{repo}/{endpoint}'
+                requests = []
+                def opened(request, **kwargs):
+                    requests.append(request)
+                    if request.get_header('Authorization') == 'Bearer synthetic-repo-token':
+                        raise urllib.error.HTTPError(request.full_url, 404, 'synthetic-secret', {}, io.BytesIO())
+                    return contextlib.nullcontext(types.SimpleNamespace(status=200, read=lambda _: b'[]'))
+                with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=opened):
+                    self.assertEqual(api.get(path), [])
+                self.assertEqual([r.full_url for r in requests], ['https://api.github.com' + path] * 2)
+                self.assertEqual([r.get_method() for r in requests], ['GET', 'GET'])
+                self.assertEqual([r.get_header('Authorization') for r in requests],
+                    ['Bearer synthetic-repo-token', 'Bearer synthetic-org-token'])
+
+    def test_both_credential_denials_refuse_with_repo_and_status_without_secret_data(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.repo_token, api.org_token = 'synthetic-repo-token', 'synthetic-org-token'
+        path = f'/repos/{self.a.TESSERA}/pulls?state=open&per_page=100&page=1'
+        def denied(request, **kwargs):
+            raise urllib.error.HTTPError(request.full_url, 403, 'synthetic-secret', {}, io.BytesIO())
+        with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=denied) as opened:
+            with self.assertRaisesRegex(self.a.Refused, f'open-pr-inventory {self.a.TESSERA} HTTP 403') as caught:
+                api.get(path)
+            self.assertEqual(opened.call_count, 2)
+            self.assertNotIn('synthetic-', str(caught.exception))
+
+    def test_rate_limits_server_and_transport_failures_never_trigger_credential_retry(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.repo_token, api.org_token = 'synthetic-repo-token', 'synthetic-org-token'
+        for error in (urllib.error.HTTPError('https://secret.invalid', 429, 'synthetic-secret', {}, io.BytesIO()),
+                      urllib.error.HTTPError('https://secret.invalid', 500, 'synthetic-secret', {}, io.BytesIO()),
+                      urllib.error.HTTPError('https://secret.invalid', 403, 'synthetic-secret',
+                          {'X-RateLimit-Remaining': '0'}, io.BytesIO()),
+                      urllib.error.HTTPError('https://secret.invalid', 403, 'synthetic-secret',
+                          {'Retry-After': '30'}, io.BytesIO()),
+                      urllib.error.URLError('synthetic-secret'), TimeoutError('synthetic-secret')):
+            with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=error) as opened:
+                with self.assertRaises(self.a.Refused): api.get(f'/repos/{self.a.TESSERA}/actions/runs?status=queued')
+                self.assertEqual(opened.call_count, 1)
+
+    def test_readonly_http_diagnostic_includes_known_repo_status_but_not_url_body_or_token(self):
+        def fail():
+            raise urllib.error.HTTPError('https://api.github.com/repos/Tuinstra-DEV/sudoku-tessera/pulls?secret=value',
+                404, 'synthetic-secret-message', {'Authorization': 'synthetic-secret-token'}, io.BytesIO(b'synthetic-secret-body'))
+        status, output = self.diagnostic(loader=fail)
+        self.assertEqual(status, 1)
+        self.assertEqual(output.splitlines()[0],
+            f'HTTPError endpoint=open-pr-inventory repository={self.a.TESSERA} status=404')
+        self.assertNotIn('synthetic-secret', output)
+        self.assertNotIn('secret=value', output)
+        self.assertNotIn('https://', output)
+
+    def test_org_group_wrapped_http_errors_are_safe_refusals_and_policy_failures_still_refuse(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.module, api.org_token = manager, 'synthetic-org-token'
+        def denied(*_):
+            try:
+                raise urllib.error.HTTPError('https://secret.invalid', 403, 'synthetic-secret', {}, io.BytesIO())
+            except urllib.error.HTTPError as error:
+                self.addCleanup(error.close)
+                raise manager.RunnerError('synthetic-secret-wrapped-message') from error
+        with mock.patch.object(manager.GitHubClient, 'verify_org_group', side_effect=denied):
+            with self.assertRaisesRegex(self.a.Refused, 'runner-group HTTP 403') as caught:
+                api.group(self.cfg)
+            self.assertNotIn('synthetic-', str(caught.exception))
+        with mock.patch.object(manager.GitHubClient, 'verify_org_group', side_effect=manager.RunnerError('synthetic-secret')):
+            with self.assertRaisesRegex(self.a.Refused, 'runner-group policy/API validation failed'):
+                api.group(self.cfg)
+
+    def test_same_credential_is_not_retried_and_successful_primary_never_uses_org_token(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.repo_token = api.org_token = 'same-synthetic-token'
+        error = urllib.error.HTTPError('https://secret.invalid', 404, 'synthetic-secret', {}, io.BytesIO())
+        with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=error) as opened:
+            with self.assertRaises(self.a.Refused): api.get(f'/repos/{self.a.TESSERA}/pulls?state=open')
+            self.assertEqual(opened.call_count, 1)
+        api.org_token = 'different-synthetic-token'
+        response = contextlib.nullcontext(types.SimpleNamespace(status=200, read=lambda _: b'[]'))
+        with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', return_value=response) as opened:
+            self.assertEqual(api.get(f'/repos/{self.a.TESSERA}/pulls?state=open'), [])
+            self.assertEqual(opened.call_count, 1)
+
+    def test_network_refusal_during_preflight_never_creates_backup_or_stops_manager(self):
+        def fail():
+            with mock.patch.object(self.a.urllib.request.OpenerDirector, 'open', side_effect=urllib.error.URLError('synthetic-secret')):
+                return self.a.source_module()
+        with self.assertRaisesRegex(self.a.Refused, 'manager-source transport failure'):
+            self.a.apply(self.layout, self.command, loader=fail, api_factory=self.API)
+        self.assertFalse(self.layout.backup.exists())
+        self.assertFalse(self.layout.drain.exists())
+        self.assertTrue(self.active)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == '__main__':
