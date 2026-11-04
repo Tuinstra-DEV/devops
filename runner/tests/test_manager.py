@@ -1978,7 +1978,7 @@ class ManagerTests(unittest.TestCase):
                 30,
                 "sanctuary-20",
                 preferred_run_id=10,
-                include_completed=False,
+                include_completed=True,
             )
 
     @mock.patch.object(manager.time, "time", return_value=1001)
