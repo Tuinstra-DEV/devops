@@ -48,9 +48,8 @@ class ActivationTests(unittest.TestCase):
         (self.root / 'runtime').mkdir(mode=0o700)
         self.old = b'old fixture manager'
         self.new = (ROOT / 'runner/manager/ci_runner_manager.py').read_bytes()
-        # Exercise lifecycle with today's manager; the operator entrypoint
-        # remains pinned to its immutable DEV-54 commit and historical hash.
-        self.a.NEW_MANAGER_SHA = self.a.digest(self.new)
+        # Only the pre-install binary is synthetic; the target is the exact
+        # checked-in manager, including DEV-54 and the single-use repair.
         self.a.OLD_MANAGER_SHA = self.a.digest(self.old)
         self.a.HELPER_SHA = self.a.digest(b'fixture helper')
         self.a.UNIT_SHA = self.a.digest(b'fixture unit')
@@ -66,8 +65,8 @@ class ActivationTests(unittest.TestCase):
                         heavy_disk_reservation_gib=24, medium_disk_reservation_gib=4, storage_mode='bounded-loop',
                         org_routing_enabled=True, org_runner_group_id=4,
                         org_github_token_file=manager.ORG_CREDENTIAL_PATH,
-                        org_repository_ids={r: i + 1 for i, r in enumerate(self.a.AFFECTED)},
-                        repositories=list(self.a.AFFECTED), org_execution_roles=roles,
+                        org_repository_ids={r: i + 1 for i, r in enumerate(self.a.AFFECTED) if r != self.a.TESSERA},
+                        repositories=[r for r in self.a.AFFECTED if r != self.a.TESSERA], org_execution_roles=roles,
                         org_workflow_refs=[manager.ORG_WORKFLOW_PREFIX + c * 40 for c in '123'] +
                                           [self.a.LEGACY_METADATA_REF],
                         state_dir=str(self.layout.state), overlay_root=str(self.layout.overlay))
@@ -95,9 +94,9 @@ class ActivationTests(unittest.TestCase):
             blocked = False
             group_failure = False
             def __init__(self, *_): pass
-            def cve_merged(self):
+            def no_open_cve_hotfixes(self):
                 owner.calls.append('cve')
-                owner.a.require(not self.blocked, 'CVE not merged')
+                owner.a.require(not self.blocked, 'open CVE hotfix')
             def quiet(self): owner.calls.append('quiet')
             def group(self, cfg):
                 owner.a.require(not self.group_failure, 'group mismatch')
@@ -144,10 +143,28 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(self.a.digest(self.new), self.a.NEW_MANAGER_SHA)
         pinned = load_script()
         self.assertEqual(pinned.NEW_MANAGER_SHA,
-            '2ca8a6936811049e20b7c5084e10f98cba90486a8fa754e00acd55ea0a3fc863')
+            '5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3')
+        self.assertEqual(pinned.OLD_MANAGER_SHA,
+            '54520f176dc5c07adf9493d27f89e549672c27aa6d7fa05f737b6549f0dcb1f3')
         # CI intentionally has a depth-one checkout. Validate checked-in source
         # bytes without requiring a historical git object or fetching the network.
-        self.assertEqual(self.a.SOURCE_COMMIT, '112666ba3e1ee0fe1a5e6c33aed95d8fae0fa823')
+        self.assertEqual(self.a.SOURCE_COMMIT, 'ea86c62eeac615cb292a78bf50995fed81c051ee')
+
+    def test_original_232d_and_unknown_host_hashes_are_refused_before_mutation(self):
+        self.a.OLD_MANAGER_SHA = load_script().OLD_MANAGER_SHA
+        digest = self.a.digest
+        for installed_hash in ('232d37364c0754bd59aefbf44fee9ba5704def038bbda94514975f857dd61e9f',
+                               digest(b'unknown operator installation')):
+            # Model the historical host hash without shipping executable old
+            # manager bytes or depending on historical Git objects in CI.
+            with self.subTest(installed_hash=installed_hash), mock.patch.object(
+                    self.a, 'digest', side_effect=lambda data: installed_hash if data == self.old else digest(data)):
+                with self.assertRaisesRegex(self.a.Refused, 'unexpected installed manager SHA-256'):
+                    self.apply()
+                self.assertEqual(self.layout.manager.read_bytes(), self.old)
+                self.assertEqual(self.layout.config.read_bytes(), self.initial)
+                self.assertFalse(self.layout.backup.exists())
+                self.assertEqual(self.calls, [])
 
     def test_apply_then_rollback_preserves_controls_and_original_bytes(self):
         self.apply()
@@ -255,24 +272,41 @@ class ActivationTests(unittest.TestCase):
         with self.assertRaises(self.a.Refused): self.a.drain(self.layout, self.command, seconds=0)
         self.assertFalse(any(isinstance(c, tuple) and any('destroy' in v or 'kill' in v for v in c) for c in self.calls))
 
-    def test_read_only_cve_and_quiet_guards_reject_unmerged_open_or_queued_runs(self):
+    def test_read_only_cve_and_quiet_guards_cover_all_five_repos_without_historical_pr_checks(self):
         api = self.a.GitHub.__new__(self.a.GitHub)
         calls = []
         def get(path):
             calls.append(path)
             if '/actions/runs?' in path: return {'total_count': 0, 'workflow_runs': []}
             if '/pulls?' in path: return []
-            return {'number': int(path.rsplit('/', 1)[1]), 'state': 'closed', 'merged': True}
+            self.fail('unexpected historical PR check: ' + path)
         api.get = get
-        api.cve_merged(); api.quiet()
+        api.no_open_cve_hotfixes(); api.quiet()
         self.assertEqual(len(calls), 15)
+        self.assertEqual(set(self.a.AFFECTED), {'Tuinstra-DEV/gate', 'Tuinstra-DEV/tracker',
+            'Tuinstra-DEV/notify', 'Tuinstra-DEV/status', 'Tuinstra-DEV/sudoku-tessera'})
+        for repo in self.a.AFFECTED:
+            self.assertIn(f'/repos/{repo}/pulls?state=open&per_page=100&page=1', calls)
+            for status in ('queued', 'in_progress'):
+                self.assertIn(f'/repos/{repo}/actions/runs?status={status}&per_page=1', calls)
         for value in ({'total_count': 1, 'workflow_runs': [{}]}, {'total_count': None, 'workflow_runs': []}, {'total_count': False, 'workflow_runs': []}):
             api.get = lambda _: value
             with self.assertRaises(self.a.Refused): api.quiet()
         api.get = lambda path: [{'title': 'Gate PHP security hotfix'}] if '/pulls?' in path else get(path)
-        with self.assertRaises(self.a.Refused): api.cve_merged()
-        api.get = lambda path: {'number': int(path.rsplit('/', 1)[1]), 'state': 'open', 'merged': False}
-        with self.assertRaises(self.a.Refused): api.cve_merged()
+        with self.assertRaises(self.a.Refused): api.no_open_cve_hotfixes()
+        for value in ({}, [{}] * 100, [None]):
+            api.get = lambda _: value
+            with self.assertRaises(self.a.Refused): api.no_open_cve_hotfixes()
+
+    def test_tessera_queued_run_or_php_hotfix_also_blocks_activation(self):
+        api = self.a.GitHub.__new__(self.a.GitHub)
+        api.get = lambda path: ({'total_count': 1, 'workflow_runs': [{}]} if self.a.TESSERA in path
+                                else {'total_count': 0, 'workflow_runs': []})
+        with self.assertRaises(self.a.Refused): api.quiet()
+        for pr in ({'title': 'PHP security hotfix'}, {'head': {'ref': 'bug/CVE-2026-45070'}},
+                   {'title': 'IN-46 PHP dependency repair'}):
+            api.get = lambda path: [pr] if self.a.TESSERA in path else []
+            with self.assertRaises(self.a.Refused): api.no_open_cve_hotfixes()
 
     def test_bad_source_or_cached_rollback_source_is_never_executed(self):
         with mock.patch.object(self.a, 'fetch', return_value=b'raise RuntimeError("untrusted")'):
