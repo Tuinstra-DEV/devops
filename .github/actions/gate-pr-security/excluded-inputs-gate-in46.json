@@ -88,7 +88,7 @@
     {
       "path": "backend/ci-scanner/verify-local.sh",
       "scope": "embedded-code",
-      "sha256": "sha256:e795a49b52d6e3dc35c5a19fccc7ce14207097ad439bb18c87a27b9c99e62dbf"
+      "sha256": "sha256:a44b6c752e5ee74bc639f2ad3706e20bc749eded9511611624c0d7f4834e9644"
     },
     {
       "path": "frontend/patches/node-forge@1.4.0.patch",
@@ -101,5 +101,5 @@
       "sha256": "sha256:ef55a5662ef89adeb3665748fcbe04127f72694fdf796c5072b68d023b538e19"
     }
   ],
-  "policy_digest": "sha256:e85de80c7d15830dbd6b63a8d950c41dbe95e5c6e575f913304cf17d60e159df"
+  "policy_digest": "sha256:afcfb15badd44c73a5b9a1eeeaee7ed672a43a0ec0c88e5dd4ec0a1bf42b4916"
 }

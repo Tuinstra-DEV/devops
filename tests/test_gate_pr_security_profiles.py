@@ -62,6 +62,20 @@ def coverage_row(profile: dict, scope: str, scanner: str, version: str) -> dict:
 
 
 class NativeProfileTests(unittest.TestCase):
+    def test_gate_fixture_binding_refresh_is_exact_and_rejects_previous_policy(self):
+        self.assertEqual("sha256:afcfb15badd44c73a5b9a1eeeaee7ed672a43a0ec0c88e5dd4ec0a1bf42b4916", constants.GATE_IN46_POLICY)
+        profile = constants.profile_for_binding("Tuinstra-DEV/gate", TRACKER_BINDING | {"policy_digest": constants.GATE_IN46_POLICY})
+        proof = json.loads((ACTION / profile["exclusions_file"]).read_bytes())
+        refreshed = [row for row in proof["excluded_inputs"] if row["path"] == "backend/ci-scanner/verify-local.sh"
+                     and row["sha256"] == "sha256:a44b6c752e5ee74bc639f2ad3706e20bc749eded9511611624c0d7f4834e9644"]
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual("embedded-code", refreshed[0]["scope"])
+        self.assertFalse(any(row["sha256"] == "sha256:e795a49b52d6e3dc35c5a19fccc7ce14207097ad439bb18c87a27b9c99e62dbf"
+                             for row in proof["excluded_inputs"]))
+        with self.assertRaisesRegex(ValueError, "invalid_gate_scanner_binding"):
+            constants.validate_gate_scanner_binding(TRACKER_BINDING | {
+                "policy_digest": "sha256:e85de80c7d15830dbd6b63a8d950c41dbe95e5c6e575f913304cf17d60e159df"})
+
     def test_tracker_binding_requires_exact_valid_json_and_pinned_values(self):
         raw = json.dumps(TRACKER_BINDING)
         self.assertEqual(constants.parse_tracker_scanner_binding(raw), TRACKER_BINDING)

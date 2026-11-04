@@ -125,8 +125,8 @@ def parse_tracker_scanner_binding(raw: object) -> dict[str, str]:
     return validate_tracker_scanner_binding(value)
 
 
-GATE_IN46_POLICY = "sha256:e85de80c7d15830dbd6b63a8d950c41dbe95e5c6e575f913304cf17d60e159df"
-GATE_IN46_EXCLUSIONS_DIGEST = "sha256:c0397e8b2c729f3302ed6127aeb72e3ad5ab46206e47849c73b592131c1997c8"
+GATE_IN46_POLICY = "sha256:afcfb15badd44c73a5b9a1eeeaee7ed672a43a0ec0c88e5dd4ec0a1bf42b4916"
+GATE_IN46_EXCLUSIONS_DIGEST = "sha256:21c19db74402a3c408be36ced54f58db4ba67ee61e8ef3abd7243ad6ace9990e"
 
 def validate_gate_scanner_binding(value: object) -> dict[str, str]:
     """Validate the trusted operator binding captured for the Gate repo."""
