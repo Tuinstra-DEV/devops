@@ -152,7 +152,7 @@
               - disk_helpers.stdout | trim == ''
               - disk_storage.results[0].matched == 0
               - disk_storage.results[1].files | map(attribute='path') | map('basename') | select('match', '^(lease-|cleanup-)|.*\.tmp$') | list | length == 0
-            fail_msg: Admission remains stopped. Resolve the existing lifecycle obligation without canceling jobs, then rerun.
+            fail_msg: Runner lifecycle work remains; restoring existing admission before refusing this installation.
       rescue:
         - name: Restore existing admission after a pre-install validation failure
           ansible.builtin.systemd_service:
