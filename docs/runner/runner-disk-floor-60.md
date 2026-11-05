@@ -88,15 +88,14 @@ Rollback uses both original files in
   infra/ansible/runner-disk-floor-repair.yml -e runner_disk_action=rollback
 ```
 
-If installation or final drain validation fails after services stop, admission
-stays paused. Inspect the failure and run the rollback playbook to restore both
-pinned originals. If no code was installed and an existing job merely raced the
-initial check, restore the existing services without destroying the job:
+If runner state races the pre-install drain checks, the playbook restarts the
+existing helper socket and manager in `rescue`, then fails with a clear retry
+message. No policy code has been installed at that point. Retry after the
+current CI queue drains naturally and before new heavy work starts.
 
-```sh
-ssh -t mtuinstra@sanctuary.tuinstra.dev \
-  'sudo systemctl start ci-runner-host-helper.socket ci-runner-manager.service'
-```
+If installation or readback fails after the first binary copy, admission stays
+paused. Inspect the failure and run the rollback playbook to restore both pinned
+originals. The pre-install rescue never restarts a partially installed policy.
 
 ## Verification
 

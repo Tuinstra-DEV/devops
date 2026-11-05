@@ -111,46 +111,63 @@
           - disk_preflight_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
         fail_msg: Existing CI guests must finish naturally; this playbook never destroys a guest.
 
-    - name: Pause admission and helper requests
-      ansible.builtin.systemd_service:
-        name: "{{ item }}"
-        state: stopped
-      loop:
-        - ci-runner-manager.service
-        - ci-runner-host-helper.socket
+    - name: Pause and validate before installing any code
+      block:
+        - name: Pause admission and helper requests
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - ci-runner-manager.service
+            - ci-runner-host-helper.socket
 
-    - name: Inspect domains again after stopping admission
-      ansible.builtin.command: virsh --connect qemu:///system list --all --name
-      register: disk_domains
-      changed_when: false
+        - name: Inspect domains again after stopping admission
+          ansible.builtin.command: virsh --connect qemu:///system list --all --name
+          register: disk_domains
+          changed_when: false
 
-    - name: Inspect active helper instances
-      ansible.builtin.command: >-
-        systemctl list-units --all --type=service
-        --state=activating,running,reloading,deactivating --plain --no-legend
-        ci-runner-host-helper@*.service
-      register: disk_helpers
-      changed_when: false
+        - name: Inspect active helper instances
+          ansible.builtin.command: >-
+            systemctl list-units --all --type=service
+            --state=activating,running,reloading,deactivating --plain --no-legend
+            ci-runner-host-helper@*.service
+          register: disk_helpers
+          changed_when: false
 
-    - name: Inspect outstanding runner storage and state
-      ansible.builtin.find:
-        paths: "{{ item }}"
-        hidden: true
-        file_type: any
-        recurse: false
-      loop:
-        - /var/lib/ci-runner/overlay
-        - /var/lib/ci-runner-manager/state
-      register: disk_storage
+        - name: Inspect outstanding runner storage and state
+          ansible.builtin.find:
+            paths: "{{ item }}"
+            hidden: true
+            file_type: any
+            recurse: false
+          loop:
+            - /var/lib/ci-runner/overlay
+            - /var/lib/ci-runner-manager/state
+          register: disk_storage
 
-    - name: Refuse mutation while any guest or lifecycle obligation remains
-      ansible.builtin.assert:
-        that:
-          - disk_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
-          - disk_helpers.stdout | trim == ''
-          - disk_storage.results[0].matched == 0
-          - disk_storage.results[1].files | map(attribute='path') | map('basename') | select('match', '^(lease-|cleanup-)|.*\.tmp$') | list | length == 0
-        fail_msg: Admission remains stopped. Resolve the existing lifecycle obligation without canceling jobs, then rerun.
+        - name: Refuse mutation while any guest or lifecycle obligation remains
+          ansible.builtin.assert:
+            that:
+              - disk_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
+              - disk_helpers.stdout | trim == ''
+              - disk_storage.results[0].matched == 0
+              - disk_storage.results[1].files | map(attribute='path') | map('basename') | select('match', '^(lease-|cleanup-)|.*\.tmp$') | list | length == 0
+            fail_msg: Admission remains stopped. Resolve the existing lifecycle obligation without canceling jobs, then rerun.
+      rescue:
+        - name: Restore existing admission after a pre-install validation failure
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: started
+          loop:
+            - ci-runner-host-helper.socket
+            - ci-runner-manager.service
+
+        - name: Report the safely recovered pre-install refusal
+          ansible.builtin.fail:
+            msg: >-
+              Runner state changed while pausing admission. No policy code was installed;
+              the existing helper socket and manager have been restarted. Let jobs finish
+              naturally and retry in an idle window. No guest was canceled or destroyed.
 
     - name: Install both reviewed policy binaries
       ansible.builtin.copy:
