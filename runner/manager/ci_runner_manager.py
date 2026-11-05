@@ -49,7 +49,6 @@ FOUR_POOL_CONCURRENCY = 4
 POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 POOL_LIMITS = {"heavy": 2, "medium": 2}
 POOL_DISK_GIB = {"heavy": 24, "medium": 4}
-DISK_MARGIN_GIB = 2
 RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
 JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
 REPOSITORY_JIT_ENDPOINT_RE = re.compile(
@@ -484,8 +483,10 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
         if available_mib - requested_memory - unresident_mib < reserve_mib:
             errors.append("host projected free memory is below the configured reserve")
         disk = shutil.disk_usage(str(cfg["overlay_root"]))
-        if disk.free - POOL_DISK_GIB[profile] * 1024**3 < \
-                (int(cfg["min_free_disk_gib"]) + DISK_MARGIN_GIB) * 1024**3:
+        # The configured threshold is free space BEFORE allocating a pool's
+        # fully reserved backing file. The root helper repeats this check and
+        # verifies the corresponding remaining floor after fallocate.
+        if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
             errors.append("bounded overlay reservation would breach NVMe floor")
         return errors
     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)

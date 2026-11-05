@@ -50,8 +50,10 @@ class ActivationTests(unittest.TestCase):
         (self.root / 'runtime').mkdir(mode=0o700)
         self.old = b'old fixture manager'
         self.new = (ROOT / 'runner/manager/ci_runner_manager.py').read_bytes()
-        # Only the pre-install binary is synthetic; the target is the exact
-        # checked-in manager, including DEV-54 and the single-use repair.
+        # Exercise the transaction against today's real manager in this fake
+        # host only. The historical production entrypoint retains its old pin;
+        # test_pins_match_reviewed_sources proves it rejects today's bytes.
+        self.a.NEW_MANAGER_SHA = self.a.digest(self.new)
         self.a.OLD_MANAGER_SHA = self.a.digest(self.old)
         self.a.HELPER_SHA = self.a.digest(b'fixture helper')
         self.a.UNIT_SHA = self.a.digest(b'fixture unit')
@@ -148,8 +150,11 @@ class ActivationTests(unittest.TestCase):
             '5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3')
         self.assertEqual(pinned.OLD_MANAGER_SHA,
             '54520f176dc5c07adf9493d27f89e549672c27aa6d7fa05f737b6549f0dcb1f3')
-        # CI intentionally has a depth-one checkout. Validate checked-in source
-        # bytes without requiring a historical git object or fetching the network.
+        self.assertNotEqual(pinned.NEW_MANAGER_SHA, self.a.digest(self.new))
+        with self.assertRaisesRegex(pinned.Refused, 'manager source SHA-256 differs'):
+            pinned.module_from_source(self.new)
+        # CI intentionally has a depth-one checkout. Keep historical pins without
+        # requiring historical Git objects or repinning the production entrypoint.
         self.assertEqual(self.a.SOURCE_COMMIT, 'ea86c62eeac615cb292a78bf50995fed81c051ee')
 
     def test_original_232d_and_unknown_host_hashes_are_refused_before_mutation(self):

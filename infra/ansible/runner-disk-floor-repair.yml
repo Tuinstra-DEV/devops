@@ -1,0 +1,224 @@
+---
+# The runner_host provisioning role also changes images/network and is excluded.
+# This follows runner-manager-repair.yml's pinned copy/backup route for both binaries.
+- name: Apply or roll back Sanctuary's 60 GiB prelaunch disk policy
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    runner_disk_action: apply
+    runner_2338_smoke_verified: false
+    runner_disk_source_root: "{{ playbook_dir }}/../.."
+    runner_disk_backup_root: /var/backups/ci-runner-disk-floor-60
+    runner_disk_files:
+      - name: manager
+        source: runner/manager/ci_runner_manager.py
+        destination: /usr/local/bin/ci-runner-manager
+        old_sha: 5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3
+        new_sha: 81aa1f6405f71ebf15740079bbde89c8f4e7d44820110172a6ad1565728591ec
+      - name: helper
+        source: runner/host-helper/ci_runner_host_helper.py
+        destination: /usr/local/libexec/ci-runner-host-helper
+        old_sha: fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613
+        new_sha: addf16e83af68ecfd99fcc080dfa93f8f04e2c8e57098f091c5688c100be6954
+  tasks:
+    - name: Require the operator's completed runner activation evidence
+      ansible.builtin.assert:
+        that:
+          - runner_disk_action in ['apply', 'rollback']
+          - runner_disk_action == 'rollback' or runner_2338_smoke_verified | bool
+        fail_msg: Apply only after runner 2.338.2 activation and live job pickup have succeeded.
+
+    - name: Check the reviewed controller binaries
+      ansible.builtin.stat:
+        path: "{{ runner_disk_source_root }}/{{ item.source }}"
+        checksum_algorithm: sha256
+      loop: "{{ runner_disk_files }}"
+      register: disk_sources
+      delegate_to: localhost
+      become: false
+      when: runner_disk_action == 'apply'
+
+    - name: Refuse unreviewed controller binaries
+      ansible.builtin.assert:
+        that:
+          - item.stat.checksum | default('') == item.item.new_sha
+      loop: "{{ disk_sources.results }}"
+      when: runner_disk_action == 'apply'
+
+    - name: Inspect installed binaries
+      ansible.builtin.stat:
+        path: "{{ item.destination }}"
+        checksum_algorithm: sha256
+      loop: "{{ runner_disk_files }}"
+      register: disk_installed
+
+    - name: Refuse installed version drift before any service change
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - item.stat.pw_name | default('') == 'root'
+          - item.stat.checksum | default('') in [item.item.old_sha, item.item.new_sha]
+      loop: "{{ disk_installed.results }}"
+
+    - name: Inspect the protected policy without printing contents
+      ansible.builtin.stat:
+        path: /etc/ci-runner/manager.toml
+        checksum_algorithm: sha256
+      register: disk_policy_before
+
+    - name: Create the private rollback directory
+      ansible.builtin.file:
+        path: "{{ runner_disk_backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Preserve each original binary once
+      ansible.builtin.copy:
+        src: "{{ item.item.destination }}"
+        dest: "{{ runner_disk_backup_root }}/{{ item.item.name }}"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: '0700'
+      loop: "{{ disk_installed.results }}"
+      when: item.stat.checksum == item.item.old_sha
+
+    - name: Inspect rollback copies
+      ansible.builtin.stat:
+        path: "{{ runner_disk_backup_root }}/{{ item.name }}"
+        checksum_algorithm: sha256
+      loop: "{{ runner_disk_files }}"
+      register: disk_backups
+
+    - name: Require both exact rollback copies before pausing admission
+      ansible.builtin.assert:
+        that:
+          - item.stat.checksum | default('') == item.item.old_sha
+      loop: "{{ disk_backups.results }}"
+
+    - name: Inspect domains before pausing admission
+      ansible.builtin.command: virsh --connect qemu:///system list --all --name
+      register: disk_preflight_domains
+      changed_when: false
+
+    - name: Wait for natural completion before applying this code-only change
+      ansible.builtin.assert:
+        that:
+          - disk_preflight_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
+        fail_msg: Existing CI guests must finish naturally; this playbook never destroys a guest.
+
+    - name: Pause admission and helper requests
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - ci-runner-manager.service
+        - ci-runner-host-helper.socket
+
+    - name: Inspect domains again after stopping admission
+      ansible.builtin.command: virsh --connect qemu:///system list --all --name
+      register: disk_domains
+      changed_when: false
+
+    - name: Inspect active helper instances
+      ansible.builtin.command: >-
+        systemctl list-units --all --type=service
+        --state=activating,running,reloading,deactivating --plain --no-legend
+        ci-runner-host-helper@*.service
+      register: disk_helpers
+      changed_when: false
+
+    - name: Inspect outstanding runner storage and state
+      ansible.builtin.find:
+        paths: "{{ item }}"
+        hidden: true
+        file_type: any
+        recurse: false
+      loop:
+        - /var/lib/ci-runner/overlay
+        - /var/lib/ci-runner-manager/state
+      register: disk_storage
+
+    - name: Refuse mutation while any guest or lifecycle obligation remains
+      ansible.builtin.assert:
+        that:
+          - disk_domains.stdout_lines | select('match', '^sanctuary-ci-') | list | length == 0
+          - disk_helpers.stdout | trim == ''
+          - disk_storage.results[0].matched == 0
+          - disk_storage.results[1].files | map(attribute='path') | map('basename') | select('match', '^(lease-|cleanup-)|.*\.tmp$') | list | length == 0
+        fail_msg: Admission remains stopped. Resolve the existing lifecycle obligation without canceling jobs, then rerun.
+
+    - name: Install both reviewed policy binaries
+      ansible.builtin.copy:
+        src: "{{ runner_disk_source_root }}/{{ item.source }}"
+        dest: "{{ item.destination }}"
+        owner: root
+        group: root
+        mode: '0755'
+        validate: /usr/bin/python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' %s
+      loop: "{{ runner_disk_files }}"
+      when: runner_disk_action == 'apply'
+
+    - name: Restore both originals for rollback
+      ansible.builtin.copy:
+        src: "{{ runner_disk_backup_root }}/{{ item.name }}"
+        dest: "{{ item.destination }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+      loop: "{{ runner_disk_files }}"
+      when: runner_disk_action == 'rollback'
+
+    - name: Verify the resulting binaries before restarting admission
+      ansible.builtin.stat:
+        path: "{{ item.destination }}"
+        checksum_algorithm: sha256
+      loop: "{{ runner_disk_files }}"
+      register: disk_readback
+
+    - name: Verify exact installed policy code
+      ansible.builtin.assert:
+        that:
+          - item.stat.checksum == (item.item.new_sha if runner_disk_action == 'apply' else item.item.old_sha)
+      loop: "{{ disk_readback.results }}"
+
+    - name: Inspect protected configuration after code installation
+      ansible.builtin.stat:
+        path: /etc/ci-runner/manager.toml
+        checksum_algorithm: sha256
+      register: disk_policy_after
+
+    - name: Require byte-identical manager configuration
+      ansible.builtin.assert:
+        that:
+          - disk_policy_before.stat.checksum == disk_policy_after.stat.checksum
+
+    - name: Restart existing helper socket and manager
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - ci-runner-host-helper.socket
+        - ci-runner-manager.service
+
+    - name: Allow one normal poll interval
+      ansible.builtin.pause:
+        seconds: 35
+
+    - name: Inspect manager after one poll
+      ansible.builtin.systemd_service:
+        name: ci-runner-manager.service
+      register: disk_service
+
+    - name: Verify service stability
+      ansible.builtin.assert:
+        that:
+          - disk_service.status.ActiveState == 'active'
+          - disk_service.status.SubState == 'running'
+          - disk_service.status.ExecMainStatus == '0'
+          - disk_service.status.NRestarts == '0'
