@@ -1,6 +1,59 @@
 # Tracker chain evidence — TRAC-202
 
-## Active TRAC-223 mc renewal — 3 November 2026
+## Active Symfony 7.4.23 renewal — 5 November 2026
+
+Tracker security [PR #385](https://github.com/Tuinstra-DEV/tracker/pull/385) and release [PR #386](https://github.com/Tuinstra-DEV/tracker/pull/386) produced source `d5280c123f99b7788b73c9cb7b8ce86025fd6f51`, tree `15543ced73687db92686cb9c07f3f3506642c8c6`. This renewal changes only evidence and the policy's approved proof hash. Guard code, selectors, routing, process bindings and required coverage are unchanged.
+
+### Fingerprint attribution
+
+The SDK initialization fingerprint changes from `sha256:51f952c26688730ecad097315bf12ee3da37027dd71df78976df8001195ea640` to `sha256:3f620aef956ef37c48f3e8807e521e0071d638c98e4feb932e00c697203a207e`. The unchanged fingerprint implementation reproduces all four approved fingerprints at pre-security source `7660eb47de5f26321a4ab66d4e84ff4965a224f7`. On the release source, replacing only `code/api/composer.lock` in the in-memory input with that pre-security lock reproduces all four old fingerprints exactly. No source files are changed for this counterfactual check.
+
+The Composer closure rooted at `sentry/sentry-symfony` contains 33 packages; the bundle remains 5.13.0. Only these five locked package records in that closure change:
+
+| Package | Before | After |
+|---|---|---|
+| symfony/config | 7.4.17 | 7.4.23 |
+| symfony/filesystem | 7.4.18 | 7.4.23 |
+| symfony/http-foundation | 7.4.21 | 7.4.23 |
+| symfony/http-kernel | 7.4.18 | 7.4.23 |
+| symfony/yaml | 7.4.18 | 7.4.23 |
+
+The SDK initialization source files are unchanged. Routing, privacy-filter and deployment-symbol fingerprints remain exactly the values in the previous approved proof. The remaining six updated Symfony packages are outside the SDK closure. Thus the changed fingerprint is attributable to the Symfony patch lock update, including the associated locked source/dist/support/time metadata, without an SDK configuration change.
+
+### Artifact and operator verification
+
+Protected [production build 42030562014/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/42030562014) has a successful build/scan/publish job `127255724898`, producing PHP image `ghcr.io/tuinstra-dev/tracker@sha256:1189f3ba6b8df2ffe8e925238418c83ca9b4ff723175c6adcbbb6c8cb34bd0d9`. The overall workflow stopped at the old observability proof, before deployment. This is successful build-job provenance, not a successful production deployment. The release [CI run 42005844922](https://github.com/Tuinstra-DEV/tracker/actions/runs/42005844922) also passed.
+
+Marcel executed the reviewed operator script (SHA256 `559dfe961ad3253023577c8ec559780828e7afbe0e6a11d9f83f14ef1d676a97`). His reported readback independently matched the exact image digest and source label, PHP 8.4.27 and all 11 updated Symfony packages at v7.4.23. Production containers were not changed. The isolated read-only PHP probes used the existing ingest configuration only in memory, environment `verification`, zero tracing and synthetic data. Actual application privacy callbacks ran before the fixed operator-only grouping fingerprint. The API expected access denial was suppressed before transport; both probes returned flush SUCCESS.
+
+The operator appended exactly two verification receipts after image verification, preserved all existing receipts and their order, validated zero duplicates, and gracefully refreshed only the Gate messenger worker with the same image. The backup is `verified-deployments-v7.json.bak-symfony-7423-20261105T164338Z`. The technical receipt digests are retained in `tracker-live-cases.json`.
+
+### Sentry and Heal readbacks
+
+Sentry readbacks were supplied by Claude through Sentry MCP; they are attributed evidence, not an independent Sentry API query by the backend agent. The backend agent independently read the corresponding Heal records using bounded SELECT queries through `dbal:run-sql`, and filtered webhook access logs without reading runtime environment or credentials.
+
+| Component | Successful event | Sentry issue | Heal case | First-party frame |
+|---|---|---|---|---|
+| api | `6f1c248ccff0499c8cd8442e4f1e36c4` | TRACKER-1F / `158906568` | `b74a9532d7534344b7da008ed8a764b4` | `code/api/src/Telemetry/FeedbackSearchPrivacy.php:30` |
+| worker | `f202b76dc6b840e69019fbf9a362d441` | TRACKER-1G / `158906569` | `abca927116c3423ebc3ab9131504615c` | `code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php:29` |
+
+Both Sentry readbacks have release `d5280c123f99b7788b73c9cb7b8ce86025fd6f51`, the expected component, environment `verification`, TypeError, zero users and only trace context: no user, extra, request or synthetic marker data. The first API/worker readback reported no visible processing errors. The retry readback confirms the same worker issue and first-party frame. Heal stores only technical IDs, source/frame and artifact/receipt bindings; both cases are `triaged`, reason null, one occurrence, one triage attempt and zero fix attempts. Both bind exactly to the PHP image above and `Tuinstra-DEV/tracker`; neither has `missing_deployment_binding`.
+
+The initial worker event `086f28467d5644fb9b9ad090c6608da5` reached Sentry at 16:43:57Z but had no Heal record. Concurrent webhook requests returned 202 and 500 around 16:44:09Z; the PHP error was a MySQL deadlock (1213 / SQLSTATE 40001), followed by a missing-savepoint rollback error (1305 / SQLSTATE 42000). Logs do not contain issue IDs, so the individual failing request cannot be conclusively assigned to TRACKER-1G. The missing worker intake was recovered by exactly one authorized worker-only retry, executed by Marcel with reviewed helper SHA256 `1331cdefc096816967be527dc4ca7e2ce7025cfd331ca9a6ebfea2ebce502311`. It preserved the source, image, actual PHP callback and fingerprint `symfony-7423-d5280c12-worker-verification`. The new event is `f202b76dc6b840e69019fbf9a362d441`, observed in Sentry at 16:58:15Z. The only webhook request logged since 16:58:00Z returned HTTP 202 at 16:58:26.389Z; the resulting exact-event Heal record independently confirms intake.
+
+TRACKER-1G has two Sentry occurrences but only the second entered Heal: its case has one occurrence and one triage. No fresh duplicate-delivery test or deduplication of the lost event is claimed. No manual signed intake replay was used in this renewal. No events were sent during readback. Follow-up for Gate, outside this PR: concurrent new-issue intake should recover from database deadlocks, including the failed-savepoint rollback path, through a bounded whole-transaction retry or a delivery mechanism proven to retry. Sentry did not retry the lost intake in this observation; returning a different HTTP status alone needs provider retry verification.
+
+### Explicit reuse of browser evidence
+
+The browser component and its recorded case remain the original proof from source `1eb90853447977720035a4d8fbdd52b1316a223d`, [browser verification run 41718898118/1](https://github.com/Tuinstra-DEV/tracker/actions/runs/41718898118), archive `sha256:5fe9872cdfb4199c8f0c458bb6b8b38d49a70aac99ddee77c429a2fa410f34e5`. No fresh browser execution, event or case readback is claimed. Its source, run, artifact and historical checks are preserved unchanged in both JSON records; the top-level observation date refers to the new PHP case readbacks.
+
+Exact Git source comparisons from that browser proof source to the current release confirm byte-identical browser Sentry initialization/plugin, privacy and browser-evidence helpers, package manifest, pnpm lock and workspace, Nuxt configuration, sourcemap source helper and verification fixture. The entire selected pnpm SDK dependency closure is therefore unchanged. Deployment/symbol selection and routing fingerprints are also unchanged. The shared SDK fingerprint changes solely through the Composer closure identified above, so the browser proof remains attributable to the unchanged browser integration while API/worker evidence is renewed.
+
+Canonical approvedProofSha256 changes from `sha256:74188752aeb7def735d438d178f32be30038f3a5978d441a8de2a9c569aa94de` to `sha256:8a65929cdf11ed4fa2d49834d7afb4fd192d7c942fa0bb67d4abf2fa2d6241e4`. This is isolated SDK/source/transport and observed Sentry/Heal-chain evidence, not production HTTP/job execution or a completed deployment. The subsequent guarded deployment must produce its own exact runtime receipt. No UI changed; screenshots do not apply.
+
+Local verification: all 38 focused tests passed with `node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs`; `make lint` and full `make test` both exited 0 using the existing Python 3.14/Ansible tool environment. Full tests ran outside the sandbox for localhost fixtures. Existing platform/optional skips were the Linux-only findmnt test, unavailable Packer formatting check, and unset DEPENDABOT_FLEET_ROOT. Exact actual candidate artifact 13415999326 was validated locally: the unchanged guard accepts the renewed proof, while the old approved proof rejects the changed api.sdk_initialization fingerprint. Canonical proof hash, unchanged browser proof, unchanged policy selectors, four-file scope and `git diff --check` also passed.
+
+## Historical TRAC-223 mc renewal — 3 November 2026
 
 Source `1eb90853447977720035a4d8fbdd52b1316a223d` changes only the deployment-symbol fingerprint through the reviewed MinIO client Compose pin. SDK, routing and privacy fingerprints are unchanged. Only actual evidence and its canonical approved hash are renewed; selectors, required coverage and enforcement remain unchanged. Prior evidence files remain historical.
 
