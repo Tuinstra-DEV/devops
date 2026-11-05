@@ -2,8 +2,8 @@
 # reviewed image build. Never use "latest", wildcards, or an unpinned key.
 ubuntu_iso_url      = "https://releases.ubuntu.com/24.04/REPLACE.iso"
 ubuntu_iso_checksum = "REPLACE_64_HEX"
-runner_version      = "REPLACE"
-runner_sha256       = "REPLACE_64_HEX"
+runner_version      = "2.338.2"
+runner_sha256       = "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
 
 docker_key_sha256 = "REPLACE_64_HEX"
 docker_ce_version  = "REPLACE_EXACT_APT_VERSION"

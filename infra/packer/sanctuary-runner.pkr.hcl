@@ -21,11 +21,13 @@ variable "ubuntu_iso_checksum" {
 
 variable "runner_version" {
   type        = string
+  default     = "2.338.2"
   description = "Pinned GitHub Actions runner version"
 }
 
 variable "runner_sha256" {
   type        = string
+  default     = "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
   description = "Pinned sha256 for actions-runner-linux-x64 archive"
 }
 
