@@ -235,6 +235,9 @@ The image contains no registration token or SSH key. Packer's temporary account
 is locked, SSH is disabled, machine identity and cloud-init state are removed,
 and the runtime JIT configuration arrives only through the per-lease seed.
 
+The 5 November 2026 runner cutoff and the reviewed immutable image repair
+are documented in [the 2.338.2 repair procedure](runner-2338-repair.md).
+
 ### Guest toolchain contract
 
 Every image contains the x86-64 toolchain required by migrated heavy workflows:

@@ -114,3 +114,5 @@ echo "lint passed"
 sh -n runner/activation/dev54-activate.sh
 python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-activate.sh"); compile(p.read_text().split("3<<"+chr(39)+"PY"+chr(39)+"\n",1)[1].rsplit("\nPY",1)[0],str(p),"exec")'
 python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-diagnose-v2.py"); compile(p.read_text(),str(p),"exec")'
+
+python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.py"); compile(p.read_text(),str(p),"exec")'
