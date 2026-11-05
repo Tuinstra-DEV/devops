@@ -15,7 +15,6 @@ REPOSITORIES = %w[
   Tuinstra-DEV/marcel-site
   Tuinstra-DEV/notify
   Tuinstra-DEV/openairco-site
-  marcel-tuinstra/sudoku-spark-web
   Tuinstra-DEV/tracker
   Tuinstra-DEV/tuinstra-site
   Tuinstra-DEV/wodiq-site
