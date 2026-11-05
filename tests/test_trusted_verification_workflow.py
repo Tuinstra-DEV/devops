@@ -711,6 +711,29 @@ else:
                     self.assertEqual(subprocess.run([str(shim / "composer"), "--version"], env=env,
                                                     capture_output=True, text=True).returncode, 0)
 
+    def test_trusted_tessera_cannot_register_dependency_cache_post_saves(self):
+        jobs = IsolatedRoleRoutingTests.document(WORKFLOW)["jobs"]
+        condition = "${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' && inputs.job-key == 'tessera-flutter' }}"
+        trusted = [step for step in jobs["trusted-verification"]["steps"]
+                   if step.get("if") == condition]
+        flutter = next(step for step in trusted if step.get("uses", "").startswith("subosito/flutter-action@"))
+        self.assertIs(flutter["with"]["cache"], False)
+        self.assertIs(flutter["with"]["pub-cache"], False)
+        gradle = next(step for step in trusted if step.get("name") == "Restore fixed Tessera Gradle dependency downloads")
+        self.assertEqual(gradle["uses"], "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9")
+        self.assertEqual(gradle["with"]["path"], "~/.gradle/caches/modules-2\n~/.gradle/wrapper/dists\n")
+        self.assertIn("hashFiles('app/pubspec.lock', 'app/android/gradle.properties'", gradle["with"]["key"])
+        self.assertFalse(any(step.get("uses", "").startswith(("actions/cache@", "actions/cache/save@"))
+                             for step in trusted))
+
+        hosted = [step for step in jobs["hosted-fallback"]["steps"]
+                  if step.get("if") == condition]
+        flutter = next(step for step in hosted if step.get("uses", "").startswith("subosito/flutter-action@"))
+        self.assertIs(flutter["with"]["cache"], True)
+        self.assertIn("tessera-", flutter["with"]["pub-cache-key"])
+        gradle = next(step for step in hosted if step.get("name") == "Restore fixed Tessera Gradle dependency downloads")
+        self.assertEqual(gradle["uses"], "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9")
+
     def test_tessera_node_setup_does_not_require_an_npm_lockfile(self):
         jobs = IsolatedRoleRoutingTests.document(WORKFLOW)["jobs"]
         for route in ("trusted-verification", "hosted-fallback"):
@@ -733,7 +756,8 @@ else:
             self.assertIn("tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}", route)
             self.assertIn("console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}", route)
             self.assertIn("echo \"COMPOSER_CACHE_DIR=$cache_path\" >> \"$GITHUB_ENV\"", route)
-            self.assertEqual(route.count("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"), 5)
+            self.assertEqual(route.count("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"),
+                             4 if route == trusted else 5)
             self.assertIn("~/.gradle/caches/modules-2", route)
             self.assertIn("~/.gradle/wrapper/dists", route)
             self.assertIn("flutter/pubspec.lock', 'flutter/android/gradle.properties'", route)
@@ -809,7 +833,7 @@ class IsolatedRoleRoutingTests(unittest.TestCase):
     REQUEST = 'request-isolated-role-runner'
     PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
     EXECUTION_HASHES = {
-        WORKFLOW.name: 'c515060adf3c722c02a872feafb8174bdd2d1bcb33402f0a41acea89d6deb4be',
+        WORKFLOW.name: 'aea41d49587b6195de119a345f6a06c1f8668a9a1a3e3d32587193617ff971ff',
         PRODUCER.name: '726109e5e54101f6286b9982d5b5bd3d2ea2c81e1377847fe24b9217dbcd8db7',
     }
 

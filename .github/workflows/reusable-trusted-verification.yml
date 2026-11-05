@@ -986,18 +986,17 @@ jobs:
         if: ${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' && inputs.job-key == 'tessera-flutter' }}
         shell: bash
         run: sdkmanager 'platforms;android-37.0'
-      - name: Set up pinned Tessera Flutter and pub download cache
+      - name: Set up pinned Tessera Flutter without VM cache saves
         if: ${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' && inputs.job-key == 'tessera-flutter' }}
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: 3.47.1
           channel: stable
-          cache: true
-          cache-key: tessera-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable
-          pub-cache-key: tessera-${{ runner.os }}-${{ runner.arch }}-flutter-3.47.1-stable-pub
+          cache: false
+          pub-cache: false
       - name: Restore fixed Tessera Gradle dependency downloads
         if: ${{ github.repository == 'Tuinstra-DEV/sudoku-tessera' && inputs.job-key == 'tessera-flutter' }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.gradle/caches/modules-2
