@@ -44,6 +44,7 @@ PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
 EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
                         "medium": frozenset({4})}
 MIN_FREE_DISK_GIB = 60
+# Included within the prelaunch budget for filesystem metadata/host-writer races.
 DISK_MARGIN_GIB = 2
 MAX_LEASE_SECONDS = "7200"
 HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
@@ -236,8 +237,14 @@ def profile_has_slot(counts: dict[str, int], profile: str) -> bool:
 def reservation_fits(free_bytes: int, profile: str) -> bool:
     if profile not in PROFILE_DISK_GIB:
         return False
-    return free_bytes - PROFILE_DISK_GIB[profile] * 1024**3 >= \
-        (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3
+    return free_bytes >= MIN_FREE_DISK_GIB * 1024**3
+
+
+def post_reservation_floor_gib(profile: str) -> int:
+    # Nominal remainder is 36/56 GiB. Keep a 2-GiB metadata/race allowance
+    # inside that budget, rather than adding it to the 60-GiB launch threshold.
+    # Refuse larger host-writer races before creating any VM.
+    return MIN_FREE_DISK_GIB - PROFILE_DISK_GIB[profile] - DISK_MARGIN_GIB
 
 
 def bounded_paths(lease: str) -> tuple[Path, Path, Path]:
@@ -451,7 +458,7 @@ def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
     if stat.st_size != bytes_reserved or stat.st_blocks * 512 < bytes_reserved:
         raise RuntimeError("runner backing file is not fully allocated")
     if shutil.disk_usage(OVERLAY_ROOT).free < \
-            (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3:
+            post_reservation_floor_gib(profile) * 1024**3:
         raise RuntimeError("NVMe floor was breached during reservation")
     run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", "nodiscard", str(backing)])
     if backing.stat().st_blocks * 512 < bytes_reserved:

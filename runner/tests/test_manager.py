@@ -48,7 +48,7 @@ class ManagerTests(unittest.TestCase):
         disk.return_value = mock.Mock(free=97 * 1024**3)
         self.assertIn("heavy runner slots are occupied",
                       manager.capacity_errors(cfg, profile="heavy", active=active))
-        disk.return_value = mock.Mock(free=65 * 1024**3)
+        disk.return_value = mock.Mock(free=59 * 1024**3)
         self.assertIn("bounded overlay reservation would breach NVMe floor",
                       manager.capacity_errors(cfg, profile="medium", active=active))
 
@@ -56,20 +56,23 @@ class ManagerTests(unittest.TestCase):
     @mock.patch.object(manager, "memory_total_mib", return_value=31744)
     @mock.patch.object(manager, "memory_available_mib", return_value=20000)
     @mock.patch.object(manager.shutil, "disk_usage")
-    def test_four_pool_24g_heavy_reservation_serializes_at_98g_free(
+    def test_four_pool_24g_heavy_reservation_stops_below_60g_free(
             self, disk, _available, _total, _cpu):
         cfg = {"max_concurrency": 4, "pool_mode": "four", "overlay_root": "/x",
                "host_memory_reserve_mib": 4096, "min_free_disk_gib": 60}
         disk.return_value = mock.Mock(free=98 * 1024**3)
         self.assertEqual(manager.capacity_errors(cfg, profile="heavy", active=[]), [])
 
-        # After one 24-GiB allocation, another heavy would breach the 60+2 floor.
-        disk.return_value = mock.Mock(free=74 * 1024**3)
+        # One existing reservation is already reflected in current free space.
+        disk.return_value = mock.Mock(free=60 * 1024**3)
         active = [{"profile": "heavy", "vcpus": 4, "memory_mib": 6144,
                    "rss_mib": 6000}]
-        self.assertIn("bounded overlay reservation would breach NVMe floor",
-                      manager.capacity_errors(cfg, profile="heavy", active=active))
+        self.assertEqual(manager.capacity_errors(cfg, profile="heavy", active=active), [])
         self.assertEqual(manager.capacity_errors(cfg, profile="medium", active=active), [])
+        disk.return_value = mock.Mock(free=36 * 1024**3)
+        for profile in ("heavy", "medium"):
+            self.assertIn("bounded overlay reservation would breach NVMe floor",
+                          manager.capacity_errors(cfg, profile=profile, active=active))
 
     @mock.patch.object(manager.os, "cpu_count", return_value=16)
     @mock.patch.object(manager, "memory_total_mib", return_value=31744)
@@ -95,7 +98,7 @@ class ManagerTests(unittest.TestCase):
                 "runner": {"id": 30}}
             helper.side_effect = lambda _cfg, op, **_kwargs: mock.Mock(
                 stdout=b"{}" if op == "list" else b"[]")
-            disk.return_value = mock.Mock(free=72 * 1024**3)
+            disk.return_value = mock.Mock(free=59 * 1024**3)
 
             self.assertFalse(manager.dispatch_once(cfg, client))
             client.generate_jit.assert_not_called()
@@ -103,7 +106,7 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(helper.call_count, 2)  # one list and one resources probe
             self.assertEqual(manager.DispatchHistory(root / "state").load(), {})
 
-            disk.return_value = mock.Mock(free=96 * 1024**3)
+            disk.return_value = mock.Mock(free=60 * 1024**3)
             client.candidate_jobs.return_value = [
                 {"repo": "Tuinstra-DEV/gate", "run_id": 10, "job_id": 20}]
             self.assertTrue(manager.dispatch_once(cfg, client))

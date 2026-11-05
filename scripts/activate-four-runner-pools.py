@@ -29,8 +29,8 @@ import tomllib
 from typing import Callable
 
 
-MANAGER_SHA256 = "5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3"
-HELPER_SHA256 = "fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613"
+MANAGER_SHA256 = "81aa1f6405f71ebf15740079bbde89c8f4e7d44820110172a6ad1565728591ec"
+HELPER_SHA256 = "addf16e83af68ecfd99fcc080dfa93f8f04e2c8e57098f091c5688c100be6954"
 UNIT_SHA256 = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 SYSTEMD_UNIT_OBJECT = "/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice"
 SOURCE_FILES = {"manager": "ci_runner_manager.py", "helper": "ci_runner_host_helper.py"}

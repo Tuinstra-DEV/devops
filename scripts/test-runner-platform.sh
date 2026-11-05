@@ -17,7 +17,7 @@ bash -n infra/packer/scripts/install-runner.sh infra/packer/scripts/seal-image.s
 
 if command -v ruby >/dev/null 2>&1; then
   ruby -e 'require "yaml"; ARGV.each { |p| YAML.safe_load(File.read(p), aliases: true) }' \
-    infra/ansible/site.yml infra/ansible/inventory/hosts.example.yml \
+    infra/ansible/site.yml infra/ansible/runner-disk-floor-repair.yml infra/ansible/inventory/hosts.example.yml \
     infra/ansible/roles/runner_host/defaults/main.yml \
     infra/ansible/roles/runner_host/handlers/main.yml \
     infra/ansible/roles/runner_host/tasks/main.yml infra/packer/http/user-data
@@ -186,7 +186,7 @@ else
 fi
 
 if command -v ansible-playbook >/dev/null 2>&1; then
-  (cd infra/ansible && ansible-playbook -i 'sanctuary,' --syntax-check site.yml)
+  (cd infra/ansible && ansible-playbook -i 'sanctuary,' --syntax-check site.yml && ansible-playbook -i 'sanctuary,' --syntax-check runner-disk-floor-repair.yml)
 else
   echo "ansible-playbook not installed; skipped Ansible syntax check"
 fi

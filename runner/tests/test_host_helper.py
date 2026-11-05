@@ -79,8 +79,8 @@ class HostHelperTests(unittest.TestCase):
     def test_bounded_launch_requires_positive_reserved_disk_headroom(self):
         self.assertEqual(helper.PROFILE_DISK_GIB["heavy"], 24)
         self.assertTrue(helper.reservation_fits(98 * 1024**3, "heavy"))
-        self.assertFalse(helper.reservation_fits(85 * 1024**3, "heavy"))
-        self.assertFalse(helper.reservation_fits(63 * 1024**3, "medium"))
+        self.assertFalse(helper.reservation_fits(59 * 1024**3, "heavy"))
+        self.assertFalse(helper.reservation_fits(59 * 1024**3, "medium"))
 
     def test_recorded_heavy_accepts_only_full_legacy_12_or_new_24_gib_backing(self):
         with tempfile.TemporaryDirectory() as temporary:

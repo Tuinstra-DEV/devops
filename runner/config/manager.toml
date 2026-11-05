@@ -7,6 +7,7 @@ max_concurrency = 1
 runner_vcpus = 4
 runner_memory_mib = 6144
 host_memory_reserve_mib = 4096
+# Free host space before launch; bounded-pool allocation is included in this budget.
 min_free_disk_gib = 60
 max_lease_seconds = 7200
 runtime_dir = "/run/ci-runner-manager"
