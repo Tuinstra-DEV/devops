@@ -68,7 +68,17 @@ GitHub can return an empty `pull_requests` association for a valid PR workflow r
 
 Do not repurpose the existing Default group or assume repository JIT group ID 1 inherits organization restrictions. Use organization JIT registration and organization runner lookup/deletion for the new group. Per-repository labels retain attribution; labels alone are not an admission boundary. The manager must verify the exact group policy, workflow commit and private repository IDs before registering anything.
 
-The separate organization credential needs organization **Self-hosted runners: write**, plus **Actions: read** and **Pull requests: read** for the selected consumer repositories. A fine-grained token or scoped App is preferable to a classic PAT with broad `admin:org`. Keep it out of chat, source, Tracker, logs and PRs; provision it through a root-only host credential and systemd LoadCredential. It is never sent to the guest, which receives only its single-use JIT configuration. Credential creation/access expansion requires Marcel's explicit approval and interactive handling; no scope was changed by preparing this implementation.
+The separate organization credential needs organization **Self-hosted runners: write**, plus **Actions: read** and **Pull requests: read** for the selected consumer repositories. The isolated metadata/preflight and security-producer roles for Gate and Tracker additionally require repository **Contents: read**: their admission evidence reads the protected default/base branch through [Get a branch](https://docs.github.com/en/rest/branches/branches#get-a-branch). Selecting a repository in the runner group does not select it for a token or App installation, and organization runner administration alone does not grant private repository contents access. A fine-grained token or scoped App is preferable to a classic PAT with broad `admin:org`. Keep it out of chat, source, Tracker, logs and PRs; provision it through a root-only host credential and systemd LoadCredential. It is never sent to the guest, which receives only its single-use JIT configuration. Credential creation/access expansion requires Marcel's explicit approval and interactive handling; no scope was changed by preparing this implementation.
+
+Candidate discovery errors are isolated per repository/route and role run/job.
+Failed evidence never admits that job, while other eligible candidates continue.
+Warnings contain only the configured repository/role/profile, fixed stage,
+numeric run/job IDs, exception class and HTTP status; response bodies, exception
+messages, headers and credentials are omitted. Rate limits still stop dispatch
+for the existing backoff, and global policy/group failures and errors during
+durable allocation or cleanup retain their existing failure handling. See the
+[DEV-54 diagnosis and planned cutover](runner/dev54-cache-cutover-plan.md#role-evidence-403-and-dispatch-isolation)
+before enabling another isolated-role consumer.
 
 The opt-in Ansible variables record the organization group, exact workflow reference and repository-ID map. Enabling them requires the independently provisioned `/etc/ci-runner/org-github.token` to exist as root:root mode 0600; Ansible must never receive or copy its value. A separate persistent unit drop-in adds only the `org_github_token` credential. The existing repository credential and unit stay intact. Do not run the whole runner-host provisioning role merely to activate this route: it also handles images, networks and firewall state. A targeted, recoverable activation must preserve the actual installed four-pool policy and let existing leases drain.
 
