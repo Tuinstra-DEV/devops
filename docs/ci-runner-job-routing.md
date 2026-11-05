@@ -70,6 +70,12 @@ Do not repurpose the existing Default group or assume repository JIT group ID 1 
 
 The separate organization credential needs organization **Self-hosted runners: write**, plus **Actions: read** and **Pull requests: read** for the selected consumer repositories. The isolated metadata/preflight and security-producer roles for Gate and Tracker additionally require repository **Contents: read**: their admission evidence reads the protected default/base branch through [Get a branch](https://docs.github.com/en/rest/branches/branches#get-a-branch). Selecting a repository in the runner group does not select it for a token or App installation, and organization runner administration alone does not grant private repository contents access. A fine-grained token or scoped App is preferable to a classic PAT with broad `admin:org`. Keep it out of chat, source, Tracker, logs and PRs; provision it through a root-only host credential and systemd LoadCredential. It is never sent to the guest, which receives only its single-use JIT configuration. Credential creation/access expansion requires Marcel's explicit approval and interactive handling; no scope was changed by preparing this implementation.
 
+Normal trusted `schedule` and `workflow_dispatch` admission also reads the
+protected default branch and needs **Contents: read** for that consumer. Normal
+trusted PR discovery resolves the PR through Pull requests reads instead; it does
+not use the role's protected-branch lookup. Verify credential coverage for the
+actual event routes, including scheduled Notify/Status work.
+
 Candidate discovery errors are isolated per repository/route and role run/job.
 Failed evidence never admits that job, while other eligible candidates continue.
 Warnings contain only the configured repository/role/profile, fixed stage,

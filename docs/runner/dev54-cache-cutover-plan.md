@@ -62,18 +62,20 @@ or App installation access.
 | --- | --- | --- |
 | Tracker at `ea86c62…` | Metadata role, and security producer when opted in | The observed 403 rejects its job until permission or caller routing is resolved. |
 | Gate quality at `ea86c62…` | Metadata role | Same endpoint and permission requirement; Tracker's denial does not prove Gate is denied. Its frozen `43ead525…` security caller remains hosted. |
-| Notify / Status | Neither is in the fixed Gate/Tracker role allowlist | Their normal trusted preflight does not enter this role branch lookup. Other credential/API failures remain possible and are isolated by the manager. |
+| Notify / Status PRs | Neither is in the fixed Gate/Tracker role allowlist | Normal trusted PR discovery resolves PR evidence without this role branch lookup. Other credential/API failures remain possible and are isolated by the manager. |
+| Any normal trusted `schedule` / `workflow_dispatch`, including Notify / Status | No role is needed, but `_resolve_trusted_source` calls `_protected_branch_sha` | The same Contents permission is required for the protected default-branch GET. Hosted PR metadata alone does not resolve this scheduled-route requirement. |
 
 Before the cutover, Marcel must choose either narrowly scoped repository access
 or temporarily hosted role preflights. For the credential option, confirm the
 fine-grained PAT resource owner/repository selection, or the App installation's
 repository selection and token restrictions, then approve **Contents: read** for
-the role-enabled Gate/Tracker repos if absent. Preserve existing required
+the role-enabled Gate/Tracker repos and any consumers using trusted scheduled or
+manually dispatched verification if absent. Preserve existing required
 Actions/Pull requests/runner permissions; do not grant broader access as a shortcut.
 Review the effective repository set: adding Contents permission to a shared
 credential may grant it across all repositories selected for that credential.
 Do not remove existing consumers from its selection to narrow it. If access must
-be restricted to the two role repos, a separate scoped evidence credential needs
+be restricted to the necessary branch-evidence repos, a separate scoped evidence credential needs
 its own reviewed implementation rather than an implicit permission expansion.
 Check with the **same protected host credential**, privately: default/base branch
 GETs must succeed and return protected branches for each admitted role repo.
