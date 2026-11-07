@@ -98,6 +98,10 @@ access, caller workaround, host file or organization setting is changed here.
 This section supersedes the former request for a naturally idle window. Preparation
 only: no host, runner group, credential, consumer or deployment is changed here.
 The implementation PR is stacked on #206; it must be reviewed together with #206.
+GitHub currently marks #206 `CONFLICTING` / `DIRTY`; its integration with main
+needs a separate reviewed conflict resolution before any merge. Preserve the
+immutable `288dc75d` source identity and WODIQ 604 support; do not silently retarget
+this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
 `5574d262572eb5120a3cf0c416f22961856084abf8e8b961eb6e0d413baa298d`.
