@@ -104,7 +104,7 @@ immutable `288dc75d` source identity and WODIQ 604 support; do not silently reta
 this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`266ca775a2d5f2838b33fd7fba658e9b590f6cf5f48ea3c218921527f7930fdd`. The previously distributed `5574d262…`, `c3acd248…` and `b8bad777…` versions are withdrawn;
+`43baae40366e3c151cbaac3a5a70f31d70a194f19efd6819fb9be8a16379ff8c`. The previously distributed `5574d262…`, `c3acd248…`, `b8bad777…` and `266ca775…` versions are withdrawn;
 do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
@@ -419,15 +419,18 @@ consumer calls to `288dc75d`. No new WODIQ 604 migration is required here.
 All evidence expires **300 seconds after collection START**, including the measured
 191.1 seconds spent collecting (about three minutes). Installation, helper start, override changes, live
 GETs, admission, and stability checks use one shared wall/monotonic deadline. The
-root controller checks it again immediately before publishing admission permission
-and starting the service. The service checks it again after its live GETs and
-before dispatch, reserving 35 seconds for stability. The final `enabled` write
-flushes/fsyncs its temporary file, checks both deadlines immediately before rename,
-and rechecks after directory fsync. Expiry, including after a terminal journal,
-records recovery intent and blocks admission; the command does not report APPLIED.
-The controller postcheck is supporting protection; admission independently enforces
-the durable publication rule below, including when the controller abruptly exits. Aim to stage and start `commit` within 30 seconds after
-collection completes, leaving room for the two GETs, installation and stability.
+root controller checks it again before starting the service. The service checks
+its bootstrap proof after the live GETs; the controller reserves 35 seconds for
+actual-daemon stability. Bootstrap may start the daemon/readiness handshake, but
+the JIT guard denies dispatch until the final nonce-bound confirmation.
+
+After stability, the controller writes durable non-admitting `pending`, checks its
+shared monotonic deadline in that same process, and atomically replaces pending
+with `confirmed`. Confirmation preparation includes permissions and temporary-file
+fsync, followed by another monotonic check immediately before rename. A crash or
+expired budget before confirmation leaves pending, which the service refuses on
+this boot and after reboot. A real-time clock jump cannot renew that monotonic
+budget. Aim to stage and start `commit` within 30 seconds after collection completes.
 Expiry refuses safely; recollect AFTER rather than weakening the deadline.
 
 The staged JSON is a **trusted operator declaration**, not signed GitHub evidence,
@@ -460,43 +463,39 @@ The protected journal and backups remain private. The wrapper uses the existing
 service user, sandbox and credential bindings. It does not broaden access.
 
 Before every risky resume step, the journal becomes `resuming`, with intended
-BEFORE/AFTER files and terminal state. A probation ticket is valid only in that
-boot and within the shared deadline. The service repeats the live policy GETs,
-rechecks the ticket/files and records readiness; the controller then observes 35
-seconds of stability. Only after that does it durably write the terminal journal
-and publish boot-independent `enabled` permission. A crash between those writes
-leaves probation permission, so the next boot still refuses admission. Fully
-completed activation/rollback can restart on later boots without reusing an
-expired activation proof; it still checks all pinned files and performs fresh
-live group GETs. This dependency is temporary: use the explicit finalization below
-after the transaction has succeeded and been observed stable.
+BEFORE/AFTER files and terminal state. A probation record is bootstrap-only, valid
+in its boot and within the proof budget. The service repeats the live policy GETs,
+checks files, signals readiness and runs the actual daemon for the 35-second
+stability observation. Its JIT guard refuses both probation and pending: neither
+permits job admission. The final confirmation sequence is:
 
-An `enabled` record additionally carries `publication.before_ns`, equal to the
-absolute proof deadline in nanoseconds, and `publication.nonce`, equal to the
-admission proof generation nonce shared with the readiness receipt. The service
-checks these bindings itself. An enabled replacement is created root-private at
-0600; rename retains that mode. Only the final `chmod(0644)` makes it readable by
-the service and updates the kernel's `st_ctime_ns`. The reader requires exact mode
-0644 and a positive inode ctime no later than `publication.before_ns`. It reads
-metadata from the same open file descriptor as the JSON. A pre-write timestamp
-inside JSON is not accepted as proof of publication time.
+1. Durably record the terminal intent, then publish `pending` with the proof nonce.
+   An `applied` journal alone grants no permission.
+2. Check the monotonic deadline within the same controller process that holds the
+   evidence budget. Verify the exact pending record, nonce and boot identity.
+3. Prepare a `confirmed` replacement containing `confirmation.nonce` equal to the
+   admission generation. Set mode 0644 and fsync the temporary file, then repeat
+   the monotonic check immediately before the atomic rename over pending.
+4. The service accepts only `confirmed` with a matching nonce, protected ownership,
+   mode, and pinned files. The runtime JIT guard enforces the same condition.
 
-If rename/fsync stalls and chmod happens after expiry, the kernel ctime exceeds
-the deadline. The admission wrapper and runtime JIT guard then reject `enabled`
-independently of the controller, including after a crash/reboot with an `applied`
-journal and readable gate. `finalize` also rejects this invalid permission; use
-`reconcile` and fresh proof/recovery. No controller postcheck is needed to reject it.
+A crash after pending, after the first check, during confirmed-file preparation or
+immediately after the final check leaves pending. No restarted process promotes
+it automatically. Use `reconcile` → fresh BEFORE evidence → `recover`. `finalize`
+refuses pending. A crash after the completed confirmed rename preserves a valid
+confirmation decision and can use normal finalization. Temporary files are not
+admission records; only the fixed gate pathname is read by the service.
 
-The file ctime and absolute publication deadline use **the same Sanctuary host
-CLOCK_REALTIME**, at nanosecond representation. The existing monotonic deadline
-still bounds live operations within that boot; it is not compared with persisted
-filesystem timestamps or reused across boots. A timely published unchanged record
-remains valid after its original proof expires and after reboot until explicit
-finalization. Later chmod/chown/replacement changes ctime and can invalidate it;
-do not restore or touch an old gate to resume admission. Root ownership is still
-the trust boundary: this is not attestation against a malicious root operator.
-Finalization's stable observation and ordinary-daemon restart are unchanged, and
-remove the gate/wrapper, ending this temporary dependency.
+Definitive permission no longer depends on ctime, mtime, a wall-clock publication
+timestamp or a controller postcheck. Real-time proof-age checks remain for initial
+collection/bootstrap; the final decision uses **CLOCK_MONOTONIC in one controller
+process and boot**. Wall-clock corrections do not move this deadline. No extra
+clock-discontinuity detector is introduced. After confirmation the service checks
+the durable nonce-bound decision, not an old monotonic value against a new boot's
+clock. A valid confirmed transaction therefore survives expiry/reboot until explicit
+finalization, which removes the gate and wrapper. Old `enabled`/ctime records are
+not accepted. Root ownership remains the trust boundary; staged proof is still a
+trusted operator declaration.
 
 A runtime guard rejects new JIT POSTs when the root record is blocked/changed,
 while an already-started JIT may finish normally. The existing manager's normal
@@ -520,7 +519,7 @@ including a disk override ahead of daemon-reload. It blocks future admission,
 closes the current manager at the existing lock/JIT boundary, and drains existing
 leases naturally. BEFORE, AFTER and partial installs are supported; no assumption
 that new binaries are installed is used. No guest is killed and no claim is cleared.
-It is safe to repeat after a timeout. An already completed, coherent, enabled
+It is safe to repeat after a timeout. An already completed, coherent, confirmed
 transaction is checked against actual service/files/leases and returns a no-op.
 Unknown file/unit drift fails closed for diagnosis.
 
@@ -613,14 +612,13 @@ credential/HTTP and the daemon boundary, audits file I/O and argv/env/subprocess
 exports, and asserts the exact two authenticated GETs. Finalization tests cover
 stability refusal, running guests, failed restart after pickup, abrupt crash after
 override removal, idempotence and later rollback.
-The third-review fault injection advances the fixture host clock by 301 seconds
-after enabled rename, makes the gate readable, and executes real `os._exit(73)`
-before any controller postcheck/handler. The original b8bad777 version accepted it
-(the regression failed before implementation). The service now refuses on the same
-boot and a simulated next boot, including before loading the manager; recovery
-remains available. The virtual-clock fixture models filesystem ctime in that same
-clock, with a separate test exercising actual kernel ctime, deadline/nonce binding
-and permissions. Timely permission still supports post-expiry/reboot finalization.
+The fourth-review regressions failed against `266ca775` before implementation:
+301 seconds elapsed plus a 600-second backward wall-clock correction could leave
+readable permission after an abrupt exit. The revised suite uses separate virtual
+wall/monotonic clocks and real child `os._exit(73)` at each pending/confirmation
+boundary. It covers backward/forward corrections, expired pending, crash recovery,
+nonce/mode checks, no JIT during probation/pending, valid post-confirmation crash,
+and expiry/reboot/finalization. The obsolete ctime fixture has been removed.
 No production sudo/crash/drain rehearsal is claimed by these offline fixtures.
 
 Fresh consumer and required-check GETs are recorded in
@@ -629,9 +627,9 @@ context or app binding was changed; actual migration PR verification remains req
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 66 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 73 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 841 Python passes / 1 existing Linux-findmnt
+- Full `make test`: pass locally, 848 Python passes / 1 existing Linux-findmnt
   skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
   the instrumented macOS runtime; fresh Python child processes now inject actual
   `os._exit(73)` crashes at the same boundaries, without skipping a scenario.
@@ -644,4 +642,4 @@ context or app binding was changed; actual migration PR verification remains req
   CI checkout without fetching history or reading the protected host configuration.
 - No UI changes; no screenshot applies. No Tracker mutation or new Story.
 
-Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-second-review-red.log`, `runner-cutover-second-review-green.log`, `runner-cutover-second-review-full-test.log`, `runner-cutover-third-review-red.log`, `runner-cutover-third-review-green.log`, `runner-cutover-third-review-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.
+Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-second-review-red.log`, `runner-cutover-second-review-green.log`, `runner-cutover-second-review-full-test.log`, `runner-cutover-third-review-red.log`, `runner-cutover-third-review-green.log`, `runner-cutover-third-review-full-test.log`, `runner-cutover-fourth-review-red.log`, `runner-cutover-fourth-review-green.log`, `runner-cutover-fourth-review-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.

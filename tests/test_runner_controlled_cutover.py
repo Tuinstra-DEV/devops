@@ -10,7 +10,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time as real_time
 import tomllib
 import types
 import unittest
@@ -84,26 +83,9 @@ class TransactionTests(unittest.TestCase):
     def configure_runtime(self):
         a=self.a
         self.active=True; self.socket=True; self.calls=[]; self.inventory={}; self.busy=False
-        self.fail_restart=False; self.fail_after_launch=False; self.time=10000.; self.auto_finish=False
+        self.fail_restart=False; self.fail_after_launch=False; self.time=10000.; self.wall_offset=0.; self.auto_finish=False
         self.cleanup_fails=False; self.claim_clears=False
-        a.time=types.SimpleNamespace(time=lambda:self.time,monotonic=lambda:self.time,sleep=self.sleep)
-        # Model filesystem CLOCK_REALTIME in the same virtual clock as the controller.
-        # Store the publication timestamp in mtime so it survives a fixture child exit;
-        # production uses the kernel's unforgeable-by-utime st_ctime_ns instead.
-        original_chmod=Path.chmod;original_read=a.read
-        def chmod(path,mode,*args,**kwargs):
-            result=original_chmod(path,mode,*args,**kwargs)
-            if path==a.GATE:
-                stamp=int(self.time*1_000_000_000);os.utime(path,ns=(stamp,stamp))
-            return result
-        def read(path):
-            data,info=original_read(path)
-            if path==a.GATE:
-                values={key:getattr(info,key) for key in dir(info) if key.startswith('st_')}
-                values['st_ctime_ns']=info.st_mtime_ns;info=types.SimpleNamespace(**values)
-            return data,info
-        a.read=read;self.real_read=original_read
-        chmod_patch=patch.object(Path,'chmod',chmod);chmod_patch.start();self.addCleanup(chmod_patch.stop)
+        a.time=types.SimpleNamespace(time=lambda:self.time+self.wall_offset,monotonic=lambda:self.time,sleep=self.sleep)
         def cmd(args):
             self.calls.append(args)
             if args[:2]==['systemctl','show']:
@@ -129,7 +111,7 @@ class TransactionTests(unittest.TestCase):
                 if self.fail_restart:raise a.Refused('command-failed')
                 self.active=True
                 if a.PAUSE.exists() and a.PAUSE.read_bytes()==a.RUNBLOCK:
-                    ticket=a.check_admission_ticket(a.STABILITY_SECONDS);a.write_ready(ticket)
+                    ticket=a.check_admission_ticket(a.STABILITY_SECONDS,bootstrap=True);a.write_ready(ticket)
                 if self.fail_after_launch:
                     self.running();self.active=False;raise a.Refused('command-failed')
                 return ''
@@ -158,7 +140,7 @@ class TransactionTests(unittest.TestCase):
     def crash_process(self,action,point='before-start'):
         # Fresh interpreter: direct fork + Python work is unsafe on instrumented macOS.
         # os._exit in that interpreter still skips every handler/finally in the controller.
-        state={key:getattr(self,key) for key in ('time','active','socket','inventory')}
+        state={key:getattr(self,key) for key in ('time','wall_offset','active','socket','inventory')}
         proc=subprocess.run([sys.executable,'-B',str(Path(__file__).resolve()),'--crash-fixture',str(self.root),json.dumps(state),action,point],capture_output=True,text=True,timeout=30)
         self.assertEqual(proc.returncode,73,msg='crash fixture did not reach the requested operation: '+proc.stderr)
 
@@ -363,7 +345,7 @@ class TransactionTests(unittest.TestCase):
         doc=a.backup();self.assertEqual(doc['phase'],'resuming')
         self.active=False
         with patch.object(a,'boot_identity',return_value='another-boot'):
-            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket(bootstrap=True)
         a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
         self.snapshot('before');a.recover();a.recover()
         self.assertTrue(self.active);self.assertEqual(a.CONFIG.read_bytes(),self.original)
@@ -453,14 +435,14 @@ class TransactionTests(unittest.TestCase):
         self.fail_restart=False;self.snapshot('before');self.crash_process('recover')
         self.assertEqual(a.backup()['phase'],'resuming');self.assertEqual(a.backup()['file_set'],'before')
         with patch.object(a,'boot_identity',return_value='new-boot'):
-            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket(bootstrap=True)
         self.active=False;a.reconcile_recovery();self.snapshot('before');a.recover();a.recover()
         self.assertTrue(self.active)
     def test_review_r1_crash_between_terminal_journal_and_enable_is_boot_closed(self):
         a=self.a;self.drain();self.crash_process('commit','before-enabled')
         self.assertEqual(a.backup()['phase'],'applied');self.active=False
         with patch.object(a,'boot_identity',return_value='new-boot'):
-            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket(bootstrap=True)
         a.reconcile_recovery();self.snapshot('before');a.recover();self.assertTrue(self.active)
     def test_review_r1_missing_override_repair_preserves_running_guest(self):
         a=self.a;self.applied();doc=a.backup();doc['phase']='resuming';a.journal(doc)
@@ -494,7 +476,7 @@ class TransactionTests(unittest.TestCase):
             original(doc)
             if doc['phase']=='applied':self.time+=301
         with patch.object(a,'journal',side_effect=slow):
-            with self.assertRaisesRegex(a.Refused,'insufficient-evidence'):a.commit()
+            with self.assertRaisesRegex(a.Refused,'expired'):a.commit()
         self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
         self.assertNotIn('APPLIED;',self.output.getvalue())
         a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
@@ -523,7 +505,7 @@ class TransactionTests(unittest.TestCase):
             a.block_admission()
             with self.assertRaises(mod.OrgPreflightRejected):client.request('POST','/orgs/Tuinstra-DEV/actions/runners/generate-jitconfig',{})
             self.assertEqual(calls,[])
-    def test_enabled_guard_can_reboot_long_after_activation_proof_expired(self):
+    def test_confirmed_guard_can_reboot_long_after_activation_proof_expired(self):
         a=self.a;self.applied();ticket=a.check_admission_ticket();self.time+=1000
         calls=[];mod=types.SimpleNamespace()
         mod.open_url=lambda request,timeout=20:calls.append((request.full_url,timeout))
@@ -533,7 +515,7 @@ class TransactionTests(unittest.TestCase):
         mod.organization_client=lambda cfg:client
         a.verify_live_group(mod,self.cfg,ticket)
         self.assertEqual([call[0] for call in calls],['https://api.github.com'+p for p in a.LIVE_PATHS])
-        self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
+        self.assertEqual(a.check_admission_ticket()['phase'],'confirmed')
     def test_recover_repairs_old_terminal_journal_with_unfinished_gate_publication(self):
         a=self.a;self.applied();self.snapshot('after');a.drain(True);self.snapshot('before');a.recover()
         doc=a.backup();ticket=a.decode(a.read(a.GATE)[0]);ticket['phase']='probation';a.write(a.GATE,a.encoded(ticket));a.GATE.chmod(0o644)
@@ -553,7 +535,7 @@ class TransactionTests(unittest.TestCase):
     def test_admission_worker_cannot_run_as_root(self):
         with patch.object(self.a.os,'geteuid',return_value=0):
             with self.assertRaisesRegex(self.a.Refused,'must-use-existing-service-user'):self.a.admission_worker()
-    def test_enabled_guard_detects_changed_installed_operator_package(self):
+    def test_confirmed_guard_detects_changed_installed_operator_package(self):
         a=self.a;self.applied();a.SELF.write_bytes(b'changed-package')
         with self.assertRaisesRegex(a.Refused,'admission-file-drift'):a.check_admission_ticket()
     def test_admission_preflight_creates_lifecycle_lock_before_live_gets(self):
@@ -566,11 +548,11 @@ class TransactionTests(unittest.TestCase):
     def test_no_config_or_secret_contents_in_success_or_failure_output(self):
         self.applied();out=self.output.getvalue()
         self.assertNotIn('github_token_file',out);self.assertNotIn(self.original.decode(),out)
-    def test_last_enabled_write_checks_deadline_after_temporary_fsync(self):
+    def test_last_confirmed_write_checks_deadline_after_temporary_fsync(self):
         a=self.a;self.drain();original=a.os.fsync;injected=[]
         original_write=a.write
         def write(path,data,*args,**kwargs):
-            if path==a.GATE and a.decode(data)['phase']=='enabled':
+            if path==a.GATE and a.decode(data)['phase']=='confirmed':
                 def delayed(fd):
                     original(fd)
                     if not injected:self.time+=301;injected.append(True)
@@ -587,7 +569,7 @@ class TransactionTests(unittest.TestCase):
         client.verify_org_group=lambda cfg:client.request('GET','/user')
         mod.organization_client=lambda cfg:client
         with self.assertRaisesRegex(a.Refused,'live-readback'):
-            a.verify_live_group(mod,self.cfg,{'phase':'enabled'})
+            a.verify_live_group(mod,self.cfg,{'phase':'confirmed'})
         self.assertEqual(calls,[])
     def test_finalize_returns_to_original_service_and_preserves_running_job(self):
         a=self.a;self.applied();self.running();before=self.time
@@ -678,7 +660,7 @@ class TransactionTests(unittest.TestCase):
         for key,value in [('org_github_token_file','/etc/ci-runner/org-github.token'),
                           ('org_github_token_file','GH_TOKEN'),('github_api_url','https://example.invalid')]:
             cfg=dict(self.cfg);cfg[key]=value
-            with self.assertRaisesRegex(a.Refused,'live-readback'):a.verify_live_group(mod,cfg,{'phase':'enabled'})
+            with self.assertRaisesRegex(a.Refused,'live-readback'):a.verify_live_group(mod,cfg,{'phase':'confirmed'})
     def test_finalize_restart_failure_after_pickup_is_recoverable_without_claim_deletion(self):
         a=self.a;self.applied();self.fail_after_launch=True
         with self.assertRaises(a.Refused):a.finalize()
@@ -695,42 +677,102 @@ class TransactionTests(unittest.TestCase):
         a=self.a;self.applied();a.finalize();self.snapshot('after');a.drain(True)
         self.snapshot('before');a.recover();a.finalize()
         self.assertEqual(a.CONFIG.read_bytes(),self.original);self.assertEqual(a.backup()['phase'],'finalized')
-    def test_late_enabled_chmod_then_abrupt_exit_is_rejected_on_same_and_next_boot(self):
-        a=self.a;self.drain();self.crash_process('commit','after-late-enabled-chmod')
-        self.assertEqual(a.backup()['phase'],'applied')
-        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'enabled')
-        self.assertEqual(a.GATE.stat().st_mode&0o777,0o644)
-        self.time+=400
-        for boot in (a.BOOT_FILE.read_text().strip(),'next-boot'):
-            with patch.object(a,'boot_identity',return_value=boot):
-                with self.assertRaisesRegex(a.Refused,'publication'):a.check_admission_ticket()
-                with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'module_at') as loader:
-                    with self.assertRaisesRegex(a.Refused,'publication'):a.admission_worker()
-                    loader.assert_not_called()
-        with self.assertRaisesRegex(a.Refused,'publication'):a.finalize()
-        self.active=False;a.reconcile_recovery()
-        self.assertEqual(a.backup()['phase'],'recovery-drained')
-    def test_timely_enabled_publication_can_finalize_after_expiry_and_boot_change(self):
+    def test_timely_confirmation_can_finalize_after_expiry_and_boot_change(self):
         a=self.a;self.applied();self.time+=1000
         with patch.object(a,'boot_identity',return_value='next-boot'):
-            self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
+            self.assertEqual(a.check_admission_ticket()['phase'],'confirmed')
             a.finalize();a.finalize()
         self.assertEqual(a.backup()['phase'],'finalized');self.assertFalse(a.WRAPPER.exists())
-    def test_enabled_publication_uses_real_kernel_ctime_and_binds_deadline_nonce_and_mode(self):
+    def test_pending_deadline_uses_monotonic_clock_despite_wall_clock_rollback(self):
+        a=self.a;self.drain();original=a.public_gate
+        def delayed(doc,phase,**fields):
+            result=original(doc,phase,**fields)
+            if phase in ('pending','confirmed'):self.time+=301;self.wall_offset-=600
+            return result
+        with patch.object(a,'public_gate',side_effect=delayed):
+            with self.assertRaisesRegex(a.Refused,'expired'):a.commit()
+        self.assertNotIn('APPLIED;',self.output.getvalue())
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
+    def test_clock_rollback_and_exit_after_pending_cannot_leave_permanent_permission(self):
+        a=self.a;self.drain();self.crash_process('commit','pending-clock-rollback')
+        self.assertEqual(a.backup()['phase'],'applied')
+        for boot in (a.BOOT_FILE.read_text().strip(),'next-boot'):
+            with patch.object(a,'boot_identity',return_value=boot):
+                with self.assertRaises(a.Refused):a.check_admission_ticket()
+    def test_confirmed_nonce_and_mode_without_timestamp_evidence(self):
         a=self.a;self.applied();record=a.decode(a.read(a.GATE)[0])
-        a.read=self.real_read  # Use real filesystem ctime, without virtual-clock metadata.
-        def publish(expires,nonce=None,mode=0o644):
-            record['expires']=expires;record['publication']={'before_ns':int(expires*1_000_000_000),
-                                                           'nonce':nonce or record['nonce']}
-            a.write(a.GATE,a.encoded(record));a.GATE.chmod(mode)
-        publish(real_time.time()-1)
-        with self.assertRaisesRegex(a.Refused,'publication-after-deadline'):a.check_admission_ticket()
-        publish(real_time.time()+300)
-        self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
-        publish(real_time.time()+300,nonce='0'*32)
-        with self.assertRaisesRegex(a.Refused,'publication-proof'):a.check_admission_ticket()
-        publish(real_time.time()+300,mode=0o600)
-        with self.assertRaisesRegex(a.Refused,'publication-after-deadline'):a.check_admission_ticket()
+        os.utime(a.GATE,ns=(0,0))
+        for offset in (-600,600):
+            self.wall_offset=offset
+            self.assertEqual(a.check_admission_ticket()['phase'],'confirmed')
+        record['confirmation']['nonce']='0'*32
+        a.write(a.GATE,a.encoded(record));a.GATE.chmod(0o644)
+        with self.assertRaisesRegex(a.Refused,'confirmation-proof'):a.check_admission_ticket()
+        record['confirmation']['nonce']=record['nonce'];a.write(a.GATE,a.encoded(record))
+        with self.assertRaisesRegex(a.Refused,'confirmation-mode'):a.check_admission_ticket()
+    def test_expired_pending_rejects_forward_wall_clock_jump(self):
+        a=self.a;self.drain();original=a.public_gate
+        def delayed(doc,phase,**fields):
+            result=original(doc,phase,**fields)
+            if phase=='pending':self.time+=301;self.wall_offset+=600
+            return result
+        with patch.object(a,'public_gate',side_effect=delayed):
+            with self.assertRaisesRegex(a.Refused,'expired'):a.commit()
+        self.assertNotIn('APPLIED;',self.output.getvalue())
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
+    def test_forward_clock_jump_does_not_change_in_process_monotonic_confirmation_budget(self):
+        a=self.a;self.drain();original=a.public_gate
+        def shifted(doc,phase,**fields):
+            result=original(doc,phase,**fields)
+            if phase=='pending':self.wall_offset+=600
+            return result
+        with patch.object(a,'public_gate',side_effect=shifted):a.commit()
+        self.assertEqual(a.check_admission_ticket()['phase'],'confirmed')
+    def test_pending_crashes_between_each_confirmation_step_remain_non_admitting(self):
+        a=self.a;self.drain()
+        for point in ('after-pending','before-confirmed-write','confirmed-temp-fsynced','after-confirmation-check'):
+            with self.subTest(point=point):
+                self.crash_process('commit',point)
+                self.assertEqual(a.backup()['phase'],'applied')
+                self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'pending')
+                for boot in (a.BOOT_FILE.read_text().strip(),'next-boot'):
+                    with patch.object(a,'boot_identity',return_value=boot):
+                        with self.assertRaisesRegex(a.Refused,'unconfirmed'):a.check_admission_ticket()
+                        with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'module_at') as loader:
+                            with self.assertRaisesRegex(a.Refused,'unconfirmed'):a.admission_worker()
+                            loader.assert_not_called()
+                with self.assertRaisesRegex(a.Refused,'unconfirmed'):a.finalize()
+                self.active=False;a.reconcile_recovery();self.snapshot('before');a.recover()
+                self.snapshot('before');self.drain()
+    def test_crash_after_confirmed_rename_preserves_valid_decision_and_finalization(self):
+        a=self.a;self.drain();self.crash_process('commit','after-confirmed-rename')
+        self.assertEqual(a.check_admission_ticket()['phase'],'confirmed')
+        self.active=True;self.time+=1000
+        with patch.object(a,'boot_identity',return_value='next-boot'):a.finalize()
+        self.assertEqual(a.backup()['phase'],'finalized')
+    def test_forward_clock_jump_and_exit_leave_pending_recoverable(self):
+        a=self.a;self.drain();self.crash_process('commit','pending-clock-forward')
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'pending')
+        with self.assertRaisesRegex(a.Refused,'unconfirmed'):a.check_admission_ticket()
+        self.active=False;a.reconcile_recovery();self.snapshot('before');a.recover();a.finalize()
+        self.assertEqual(a.backup()['phase'],'finalized')
+    def test_bootstrap_daemon_dispatch_requires_confirmed(self):
+        a=self.a;self.applied();doc=a.backup();record=a.check_admission_ticket()
+        fields={key:value for key,value in record.items() if key not in ('schema','transaction','phase','confirmation')}
+        a.public_gate(doc,'probation',**fields);mod=a.installed(True)
+        path='/orgs/Tuinstra-DEV/actions/runners/generate-jitconfig'
+        with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'module_at',return_value=mod),patch.object(a,'verify_live_group'),patch.object(mod.GitHubClient,'request') as http:
+            def daemon(args):
+                self.assertEqual(args,['--config',str(a.CONFIG),'daemon','--interval','30'])
+                client=object.__new__(mod.GitHubClient)
+                for phase in ('probation','pending'):
+                    a.public_gate(doc,phase,**fields)
+                    with self.assertRaises(mod.OrgPreflightRejected):client.request('POST',path,{})
+                    http.assert_not_called()
+                with a.bounded_commands(fields['monotonic_expires']-self.time):a.public_gate(doc,'confirmed',**fields)
+                client.request('POST',path,{});http.assert_called_once()
+                return 0
+            with patch.object(mod,'main',side_effect=daemon):a.admission_worker()
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='--crash-fixture':
@@ -740,18 +782,37 @@ if __name__=='__main__':
             if point=='before-start' and args==['systemctl','start',a.SERVICE] and (not a.PAUSE.exists() or a.PAUSE.read_bytes()!=a.BLOCK):os._exit(73)
             return original(args)
         def gate(doc,phase,**fields):
-            if point=='before-enabled' and phase=='enabled':os._exit(73)
-            return original_gate(doc,phase,**fields)
+            if point=='before-enabled' and phase=='pending':os._exit(73)
+            result=original_gate(doc,phase,**fields)
+            if point=='after-pending' and phase=='pending':os._exit(73)
+            return result
         original_reload=a.reload
         original_fsync_dir=a.fsync_dir
+        original_write=a.write;original_replace=a.os.replace
+        def write(path,data,*args,**kwargs):
+            if path==a.GATE and a.decode(data).get('phase')=='confirmed':
+                if point=='before-confirmed-write':os._exit(73)
+                callback=kwargs['before_replace']
+                def checked():
+                    if point=='confirmed-temp-fsynced':os._exit(73)
+                    callback()
+                    if point=='after-confirmation-check':os._exit(73)
+                kwargs['before_replace']=checked
+            return original_write(path,data,*args,**kwargs)
+        def replace(source,target):
+            original_replace(source,target)
+            if point=='after-confirmed-rename' and target==a.GATE and a.decode(a.GATE.read_bytes()).get('phase')=='confirmed':os._exit(73)
         def fsync_dir(path):
-            if point=='after-late-enabled-chmod' and path==a.GATE.parent and a.GATE.exists() and a.decode(a.GATE.read_bytes()).get('phase')=='enabled':
-                if a.GATE.stat().st_mode&0o777==0o600:fixture.time+=301
+            if point in ('pending-clock-rollback','pending-clock-forward') and path==a.GATE.parent and a.GATE.exists() and a.decode(a.GATE.read_bytes()).get('phase')=='pending':
+                if a.GATE.stat().st_mode&0o777==0o600:
+                    fixture.time+=301
+                    if point=='pending-clock-rollback':fixture.wall_offset-=600
+                    else:fixture.wall_offset+=600
                 else:os._exit(73)  # No controller deadline postcheck or exception/finally runs.
             return original_fsync_dir(path)
         def reload():
             if point=='after-remove' and not a.PAUSE.exists():os._exit(73)
             return original_reload()
-        a.command=command;a.public_gate=gate;a.reload=reload;a.fsync_dir=fsync_dir
+        a.command=command;a.public_gate=gate;a.reload=reload;a.fsync_dir=fsync_dir;a.write=write;a.os.replace=replace
         {'commit':a.commit,'recover':a.recover,'finalize':a.finalize}[action]();os._exit(74)
     unittest.main()

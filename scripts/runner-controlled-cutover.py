@@ -112,13 +112,14 @@ def fsync_dir(path):
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try: os.fsync(fd)
     finally: os.close(fd)
-def write(path,data,info=None,*,before_replace=None):
+def write(path,data,info=None,*,before_replace=None,public=False):
     secure_parent(path.parent)
     tmp=path.with_name('.runner-cutover-'+str(os.getpid())+'-'+path.name)
     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     try:
         with os.fdopen(fd,'wb') as f:
             if info: os.fchown(f.fileno(),info.st_uid,info.st_gid); os.fchmod(f.fileno(),stat.S_IMODE(info.st_mode))
+            if public: os.fchmod(f.fileno(),0o644)
             f.write(data); f.flush(); os.fsync(f.fileno())
         if before_replace is not None: before_replace()
         os.replace(tmp,path); fsync_dir(path.parent)
@@ -474,14 +475,19 @@ def boot_identity():
 
 def public_gate(doc,phase,**fields):
     record={'schema':1,'transaction':doc['transaction'],'phase':phase,**fields}
-    if phase=='enabled':
-        record['publication']={'nonce':record['nonce'],'before_ns':int(record['expires']*1_000_000_000)}
-    def deadline():
-        require(time.time()<record['expires'] and time.monotonic()<record['monotonic_expires'],'admission-proof-expired-before-publication')
-    # The callback runs AFTER temporary-file flush/fsync, immediately before rename.
-    write(GATE,encoded(record),before_replace=deadline if phase=='enabled' else None)
-    GATE.chmod(0o644); fsync_dir(GATE.parent)
-    if phase=='enabled': deadline()  # Also catch delayed directory fsync; callers revoke even a terminal journal.
+    if phase=='confirmed':
+        record['confirmation']={'nonce':record['nonce']}
+        def confirm():
+            pending={k:v for k,v in record.items() if k!='confirmation'}; pending['phase']='pending'
+            require(decode(read(GATE)[0])==pending,'confirmation-pending-differs')
+            require(record['boot']==boot_identity(),'confirmation-boot-changed')
+            require(COMMAND_DEADLINE is not None and
+                    time.monotonic()<min(COMMAND_DEADLINE,record['monotonic_expires']),'confirmation-deadline-expired')
+        confirm()  # The durable pending publication precedes the decision in this process.
+        # Prepare permissions and fsync BEFORE rechecking monotonic time and rename.
+        write(GATE,encoded(record),before_replace=confirm,public=True)
+    else:
+        write(GATE,encoded(record)); GATE.chmod(0o644); fsync_dir(GATE.parent)
     return record
 
 def wrapper_bytes():
@@ -504,9 +510,10 @@ def observed_files(doc):
     require((info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))==(doc['config_uid'],doc['config_gid'],doc['config_mode']),'protected-policy-permission-drift')
     return 'before' if values==before else ('after' if values==after else 'mixed')
 
-def check_admission_ticket(reserve=0,expected=None):
+def check_admission_ticket(reserve=0,expected=None,bootstrap=False):
     raw,info=read(GATE); record=decode(raw)
-    require(record.get('schema')==1 and record.get('phase') in ('probation','enabled'),'admission-blocked')
+    require(record.get('schema')==1 and record.get('phase') in
+            (('probation','confirmed') if bootstrap else ('confirmed',)),'admission-blocked-unconfirmed')
     require(re.fullmatch('tx-[a-f0-9]{32}',record.get('transaction','')) is not None,'admission-transaction-invalid')
     if expected is not None: require(record==expected,'admission-ticket-changed')
     if record['phase']=='probation':
@@ -514,18 +521,11 @@ def check_admission_ticket(reserve=0,expected=None):
         require(time.time()+reserve<record['expires'] and time.monotonic()+reserve<record['monotonic_expires'],'admission-proof-expired')
     else:
         require(record.get('terminal') in ('applied','rolled-back','aborted'),'admission-terminal-invalid')
-        publication=record.get('publication')
-        require(type(publication) is dict and set(publication)=={'nonce','before_ns'}
+        confirmation=record.get('confirmation')
+        require(type(confirmation) is dict and set(confirmation)=={'nonce'}
                 and re.fullmatch('[a-f0-9]{32}',record.get('nonce','')) is not None
-                and publication['nonce']==record['nonce']
-                and type(publication['before_ns']) is int and type(record.get('expires')) in (int,float)
-                and publication['before_ns']==int(record['expires']*1_000_000_000),'admission-publication-proof-invalid')
-        # Every enabled replacement starts 0600. chmod(0644) is its service-visible
-        # publication, and updates kernel ctime even if rename/fsync stalled first.
-        # Both ctime and the absolute proof deadline use this host's CLOCK_REALTIME;
-        # ctime persists across reboot. Never trust a pre-write serialized timestamp.
-        require(stat.S_IMODE(info.st_mode)==0o644 and
-                0<info.st_ctime_ns<=publication['before_ns'],'admission-publication-after-deadline')
+                and confirmation['nonce']==record['nonce'],'admission-confirmation-proof-invalid')
+        require(stat.S_IMODE(info.st_mode)==0o644,'admission-confirmation-mode-invalid')
     require((record['manager_sha'],record['helper_sha']) in ((MANAGER_SHA,HELPER_SHA),(NEW_MANAGER_SHA,NEW_HELPER_SHA)),'admission-source-invalid')
     for path,key in [(MANAGER,'manager_sha'),(HELPER,'helper_sha'),(CONFIG,'config_sha'),(SELF,'operator_sha')]:
         require(sha(read(path)[0])==record[key],'admission-file-drift')
@@ -606,14 +606,16 @@ def install_runtime_admission_guard(mod,ticket):
 def admission_worker():
     require(os.geteuid()!=0,'admission-worker-must-use-existing-service-user')
     require(read(PAUSE)[0]==RUNBLOCK,'admission-override-missing')
-    ticket=check_admission_ticket(STABILITY_SECONDS)
+    ticket=check_admission_ticket(STABILITY_SECONDS,bootstrap=True)
     mod=module_at(MANAGER,ticket['manager_sha']); cfg=mod.load_config(CONFIG)
     # Establish the original interlock before a slow read-only policy probe. A
     # controller can then stop this preflight safely without losing any JIT.
     with mod.with_lock(Path(cfg['lock_file'])): pass
     verify_live_group(mod,cfg,ticket)
-    check_admission_ticket(STABILITY_SECONDS,expected=ticket)
+    check_admission_ticket(STABILITY_SECONDS,expected=ticket,bootstrap=True)
     write_ready(ticket)
+    # Run the actual daemon for the stability check, but its JIT guard accepts only
+    # confirmed. Probation is bootstrap-only; neither probation nor pending dispatches.
     install_runtime_admission_guard(mod,ticket)
     mod.LOG.disabled=False  # Preserve the manager's original runtime audit logging.
     require(mod.main(['--config',str(CONFIG),'daemon','--interval','30'])==0,'admission-manager-failed')
@@ -650,9 +652,10 @@ def start_normal(doc,side,terminal,proof):
     require(observed_files(doc)==side,'resume-file-drift')
     installed(side=='after'); config(installed(side=='after'),AFTER if side=='after' else BEFORE)
     resume_budget(proof,0)
-    doc['phase']=terminal; journal(doc)  # Terminal durable before boot-independent permission.
-    resume_budget(proof,0)  # A slow durable write must not enable an expired probation ticket.
-    public_gate(doc,'enabled',**{k:v for k,v in ticket.items() if k not in ('schema','transaction','phase')})
+    doc['phase']=terminal; journal(doc)  # Terminal intent is not an admission permission.
+    fields={k:v for k,v in ticket.items() if k not in ('schema','transaction','phase')}
+    public_gate(doc,'pending',**fields)
+    public_gate(doc,'confirmed',**fields)
 
 def recovery_service_layout():
     # The disk override may be ahead of systemd after a crash before daemon-reload.
@@ -732,7 +735,7 @@ def terminal_current(doc):
         state=decode(path.read_bytes()); require(type(state) is dict and type(state.get('lease')) is str,'terminal-lease-invalid'); states.append(state)
     require(set(inventory)<=set('sanctuary-ci-'+state['lease'] for state in states),'untracked-terminal-domain')
     gate=check_admission_ticket()
-    require(gate['phase']=='enabled' and gate['transaction']==doc['transaction'] and gate['terminal']==doc['phase'],'terminal-admission-drift')
+    require(gate['phase']=='confirmed' and gate['transaction']==doc['transaction'] and gate['terminal']==doc['phase'],'terminal-admission-drift')
     require(is_active(),'terminal-manager-inactive')
     return True
 
