@@ -116,3 +116,5 @@ python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-activate.s
 python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-diagnose-v2.py"); compile(p.read_text(),str(p),"exec")'
 
 python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.py"); compile(p.read_text(),str(p),"exec")'
+
+python3 -c 'from pathlib import Path; p=Path("scripts/runner-controlled-cutover.py"); compile(p.read_text(),str(p),"exec")'

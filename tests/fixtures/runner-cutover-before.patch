@@ -1,0 +1,192 @@
+diff --git a/runner/host-helper/ci_runner_host_helper.py b/runner/host-helper/ci_runner_host_helper.py
+index e6173c1..18645f4 100755
+--- a/runner/host-helper/ci_runner_host_helper.py
++++ b/runner/host-helper/ci_runner_host_helper.py
+@@ -44,7 +44,6 @@ PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
+ EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
+                         "medium": frozenset({4})}
+ MIN_FREE_DISK_GIB = 60
+-# Included within the prelaunch budget for filesystem metadata/host-writer races.
+ DISK_MARGIN_GIB = 2
+ MAX_LEASE_SECONDS = "7200"
+ HELPER_LOCK = Path("/run/lock/ci-runner-host-helper.lock")
+@@ -237,14 +236,8 @@ def profile_has_slot(counts: dict[str, int], profile: str) -> bool:
+ def reservation_fits(free_bytes: int, profile: str) -> bool:
+     if profile not in PROFILE_DISK_GIB:
+         return False
+-    return free_bytes >= MIN_FREE_DISK_GIB * 1024**3
+-
+-
+-def post_reservation_floor_gib(profile: str) -> int:
+-    # Nominal remainder is 36/56 GiB. Keep a 2-GiB metadata/race allowance
+-    # inside that budget, rather than adding it to the 60-GiB launch threshold.
+-    # Refuse larger host-writer races before creating any VM.
+-    return MIN_FREE_DISK_GIB - PROFILE_DISK_GIB[profile] - DISK_MARGIN_GIB
++    return free_bytes - PROFILE_DISK_GIB[profile] * 1024**3 >= \
++        (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3
+ 
+ 
+ def bounded_paths(lease: str) -> tuple[Path, Path, Path]:
+@@ -458,7 +451,7 @@ def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
+     if stat.st_size != bytes_reserved or stat.st_blocks * 512 < bytes_reserved:
+         raise RuntimeError("runner backing file is not fully allocated")
+     if shutil.disk_usage(OVERLAY_ROOT).free < \
+-            post_reservation_floor_gib(profile) * 1024**3:
++            (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB) * 1024**3:
+         raise RuntimeError("NVMe floor was breached during reservation")
+     run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", "nodiscard", str(backing)])
+     if backing.stat().st_blocks * 512 < bytes_reserved:
+diff --git a/runner/manager/ci_runner_manager.py b/runner/manager/ci_runner_manager.py
+index 227267c..0fc73c0 100755
+--- a/runner/manager/ci_runner_manager.py
++++ b/runner/manager/ci_runner_manager.py
+@@ -49,6 +49,7 @@ FOUR_POOL_CONCURRENCY = 4
+ POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
+ POOL_LIMITS = {"heavy": 2, "medium": 2}
+ POOL_DISK_GIB = {"heavy": 24, "medium": 4}
++DISK_MARGIN_GIB = 2
+ RUNNER_OVERLAY_ROOT = "/var/lib/ci-runner/overlay"
+ JIT_CONFIG_ENDPOINT_SUFFIX = "/actions/runners/generate-jitconfig"
+ REPOSITORY_JIT_ENDPOINT_RE = re.compile(
+@@ -120,30 +121,6 @@ class NotFound(RunnerError):
+     pass
+ 
+ 
+-def log_discovery_error(repo: str, stage: str, error: Exception, *,
+-                        role: str | None = None, profile: str | None = None,
+-                        run_id: Any = None, job_id: Any = None) -> None:
+-    """Report a rejected candidate without exception text, headers or response data."""
+-    status = None
+-    cause: BaseException | None = error
+-    seen: set[int] = set()
+-    while cause is not None and id(cause) not in seen:
+-        seen.add(id(cause))
+-        if isinstance(cause, urllib.error.HTTPError):
+-            if type(cause.code) is int and 100 <= cause.code <= 599:
+-                status = cause.code
+-            break
+-        cause = cause.__cause__ or cause.__context__
+-    LOG.warning(
+-        "candidate discovery skipped repo=%s role=%s profile=%s stage=%s "
+-        "run_id=%s job_id=%s error=%s http_status=%s",
+-        repo, role or "-", profile or "-", stage,
+-        run_id if type(run_id) is int and run_id > 0 else "-",
+-        job_id if type(job_id) is int and job_id > 0 else "-",
+-        type(error).__name__, status if status is not None else "-",
+-    )
+-
+-
+ class RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+     """Expose redirects to the caller so POST policy is explicit and testable."""
+ 
+@@ -507,10 +484,8 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
+         if available_mib - requested_memory - unresident_mib < reserve_mib:
+             errors.append("host projected free memory is below the configured reserve")
+         disk = shutil.disk_usage(str(cfg["overlay_root"]))
+-        # The configured threshold is free space BEFORE allocating a pool's
+-        # fully reserved backing file. The root helper repeats this check and
+-        # verifies the corresponding remaining floor after fallocate.
+-        if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
++        if disk.free - POOL_DISK_GIB[profile] * 1024**3 < \
++                (int(cfg["min_free_disk_gib"]) + DISK_MARGIN_GIB) * 1024**3:
+             errors.append("bounded overlay reservation would breach NVMe floor")
+         return errors
+     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
+@@ -1245,47 +1220,30 @@ class GitHubClient:
+         candidates = []
+         for status in ("queued", "in_progress"):
+             for run in listings.workflow_runs(self, repo, status):
+-                if not isinstance(run, dict) or type(run.get("id")) is not int or run["id"] < 1:
++                if not isinstance(run, dict) or type(run.get("id")) is not int:
+                     continue
+-                try:
+-                    candidates.extend(self._role_run_candidates(repo, role, run, listings))
+-                except RateLimited:
+-                    raise
+-                except Exception as exc:
+-                    log_discovery_error(repo, "role-run", exc, role=role, run_id=run["id"])
+-        return candidates
+-
+-    def _role_run_candidates(self, repo: str, role: str, run: dict[str, Any],
+-                             listings: WorkflowListSnapshot) -> list[dict[str, Any]]:
+-        matching = []
+-        for job in listings.workflow_jobs(self, repo, run["id"]):
+-            if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
+-                    type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
+-                    type(job.get("run_attempt")) is not int or job.get("status") != "queued":
+-                continue
+-            head = role_source_head(job.get("labels"))
+-            execution = role_execution_sha(job.get("labels"))
+-            if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
+-                    run["id"], run.get("run_attempt"), head, execution):
+-                matching.append((job, head, execution))
+-        if not matching:
+-            return []
+-        detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
+-        if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
+-                for key in ("id", "run_attempt", "head_sha", "head_branch")):
+-            return []
+-        candidates = []
+-        for job, head, execution in matching:
+-            try:
+-                evidence = self._role_evidence(detail, repo, role, head, execution)
+-                if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
+-                        job.get("head_sha") == evidence["source_sha"]:
+-                    candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
+-            except RateLimited:
+-                raise
+-            except Exception as exc:
+-                log_discovery_error(repo, "role-evidence", exc, role=role,
+-                                    run_id=run["id"], job_id=job["id"])
++                matching = []
++                for job in listings.workflow_jobs(self, repo, run["id"]):
++                    if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
++                            type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
++                            type(job.get("run_attempt")) is not int or job.get("status") != "queued":
++                        continue
++                    head = role_source_head(job.get("labels"))
++                    execution = role_execution_sha(job.get("labels"))
++                    if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
++                            run["id"], run.get("run_attempt"), head, execution):
++                        matching.append((job, head, execution))
++                if not matching:
++                    continue
++                detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
++                if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
++                        for key in ("id", "run_attempt", "head_sha", "head_branch")):
++                    continue
++                for job, head, execution in matching:
++                    evidence = self._role_evidence(detail, repo, role, head, execution)
++                    if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
++                            job.get("head_sha") == evidence["source_sha"]:
++                        candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
+         return candidates
+ 
+     def verify_role_job(self, candidate: dict[str, Any], job: dict[str, Any], *,
+@@ -2679,23 +2637,11 @@ def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
+         if role is not None:
+             label = EXECUTION_ROLES[role]["label"]
+         for repo in repos:
+-            try:
+-                candidates = source.candidate_jobs(repo, label)
+-                if not isinstance(candidates, list):
+-                    raise RunnerError("dispatch candidate list is invalid")
+-            except RateLimited:
+-                raise
+-            except Exception as exc:
+-                log_discovery_error(repo, "candidate-list", exc, role=role, profile=profile)
+-                continue
+-            for candidate in candidates:
+-                if not isinstance(candidate, dict) or candidate.get("repo") != repo or \
++            for candidate in source.candidate_jobs(repo, label):
++                if candidate.get("repo") != repo or \
+                         type(candidate.get("job_id")) is not int or candidate["job_id"] <= 0 or \
+                         type(candidate.get("run_id")) is not int or candidate["run_id"] <= 0:
+-                    log_discovery_error(repo, "candidate-identity",
+-                                        RunnerError("dispatch candidate identity is invalid"),
+-                                        role=role, profile=profile)
+-                    continue
++                    raise RunnerError("dispatch candidate identity is invalid")
+                 identity = (repo, candidate["job_id"])
+                 if identity in seen:
+                     continue
