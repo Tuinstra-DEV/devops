@@ -104,7 +104,7 @@ immutable `288dc75d` source identity and WODIQ 604 support; do not silently reta
 this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`947b7c16afb5e52f66a09a61e4ee3c9eaedf6f9d92836d7a31a185afc6af83ca`. The previously distributed `5574d262…` version is withdrawn;
+`c3acd2488db14e79aed170486a439fb3d76a881583b18816eb90ab88543d8679`. The previously distributed `5574d262…` version is withdrawn;
 do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
@@ -373,7 +373,8 @@ private transaction container is `/var/backups/runner-cutover-288dc75d-v2/`.
 Each attempt has a random `tx-<32 hex>` subdirectory and the root-owned `active.json`
 pointer selects it. The script prints its transaction ID. A durable `backing-up`
 journal is written before the first copy, and the pointer only after that journal.
-Partial copies are hash-checked and completed without overwrite. After `abort` or
+Partial copies and a completed backup interrupted before drain intent are
+hash-checked and continued without overwrite. After `abort` or
 rollback, a new attempt verifies the previous backups and chooses a new ID. An
 orphan created before pointer publication remains untouched and is never treated
 as a verified rollback source. No previous directory or worktree is deleted.
@@ -539,9 +540,9 @@ context or app binding was changed; actual migration PR verification remains req
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 53 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 54 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 828 Python passes / 1 existing Linux-findmnt
+- Full `make test`: pass locally, 829 Python passes / 1 existing Linux-findmnt
   skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
   the instrumented macOS runtime; fresh Python child processes now inject actual
   `os._exit(73)` crashes at the same boundaries, without skipping a scenario.
@@ -554,4 +555,4 @@ context or app binding was changed; actual migration PR verification remains req
   CI checkout without fetching history or reading the protected host configuration.
 - No UI changes; no screenshot applies. No Tracker mutation or new Story.
 
-Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-review-green.log`, `runner-cutover-review-final-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.
+Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-review-green.log`, `runner-cutover-review-final-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.

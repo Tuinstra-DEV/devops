@@ -279,7 +279,7 @@ def backup():
 def initialize_backup(raw,info,updated):
     mkdir(TRANSACTIONS)
     doc=active_doc() if ACTIVE.exists() else None
-    if doc and doc['phase']=='backing-up':
+    if doc and doc['phase'] in ('backing-up','prepared'):
         require(doc['before_sha']==sha(raw) and doc['after_sha']==sha(updated),'partial-backup-source-drift')
     else:
         if doc:

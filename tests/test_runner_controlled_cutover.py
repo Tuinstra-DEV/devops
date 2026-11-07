@@ -406,6 +406,17 @@ class TransactionTests(unittest.TestCase):
         previous=a.BACKUP
         a.drain();self.assertNotEqual(a.BACKUP,previous);self.assertTrue(previous.is_dir())
         self.assertEqual(a.backup()['phase'],'drained')
+    def test_review_r4_completed_backup_before_drain_intent_can_retry(self):
+        a=self.a;original=a.journal
+        def fail(doc):
+            original(doc)
+            if doc['phase']=='prepared':raise RuntimeError('injected-after-backup')
+        with patch.object(a,'journal',side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError,'injected-after-backup'):a.drain()
+        previous=a.BACKUP;original_bytes=(previous/'manager.before').read_bytes()
+        a.drain();self.assertEqual(a.BACKUP,previous)
+        self.assertEqual((previous/'manager.before').read_bytes(),original_bytes)
+        self.assertEqual(a.backup()['phase'],'drained')
     def test_review_r4c_partial_backup_is_verified_and_completed_without_overwrite(self):
         a=self.a;original=a.write
         def fail(path,data,info=None):
