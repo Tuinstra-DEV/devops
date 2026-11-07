@@ -1,4 +1,4 @@
-"""Executable trust and routing contract for the reusable Sanctuary workflow."""
+"""Historical routing contracts for consumers retaining the pre-compact immutable pin."""
 
 import ast
 import io
@@ -14,7 +14,7 @@ import urllib.error
 from unittest.mock import patch
 
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/reusable-trusted-verification.yml"
+WORKFLOW = Path(__file__).resolve().parents[1] / "tests/fixtures/trusted-verification-before-wodiq-compact.yml"
 SHA = "a" * 40
 BASE = "b" * 40
 WORKFLOW_SHA = "c" * 40
@@ -807,7 +807,7 @@ else:
 
 class IsolatedRoleRoutingTests(unittest.TestCase):
     REQUEST = 'request-isolated-role-runner'
-    PRODUCER = WORKFLOW.with_name('reusable-gate-pr-security.yml')
+    PRODUCER = WORKFLOW.parents[2] / '.github/workflows/reusable-gate-pr-security.yml'
     EXECUTION_HASHES = {
         WORKFLOW.name: 'c515060adf3c722c02a872feafb8174bdd2d1bcb33402f0a41acea89d6deb4be',
         PRODUCER.name: '726109e5e54101f6286b9982d5b5bd3d2ea2c81e1377847fe24b9217dbcd8db7',
