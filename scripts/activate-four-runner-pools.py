@@ -29,7 +29,7 @@ import tomllib
 from typing import Callable
 
 
-MANAGER_SHA256 = "81aa1f6405f71ebf15740079bbde89c8f4e7d44820110172a6ad1565728591ec"
+MANAGER_SHA256 = "aab54e656e1acbd261d3f28de16d53ac4a9c500276012c1e9f0897022195c40b"
 HELPER_SHA256 = "addf16e83af68ecfd99fcc080dfa93f8f04e2c8e57098f091c5688c100be6954"
 UNIT_SHA256 = "c99fdf23b9c50971be678565db54e85d5227040ff1108ccb3622a9c2ae4d806d"
 SYSTEMD_UNIT_OBJECT = "/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice"

@@ -1,11 +1,21 @@
 # Compact WODIQ verification
 
-The new immutable revision of `reusable-trusted-verification.yml` is a
-**WODIQ-only entrypoint**. Other repositories must retain their existing reviewed
-pins; this revision is not a drop-in upgrade for Gate, Tracker, Notify or the
-single-job adapters. Their exact previous workflow source remains in
-`tests/fixtures/trusted-verification-before-wodiq-compact.yml`, with a fixed hash
-and its existing offline contract tests.
+The admitted immutable revision `604ad2b9e636798899cb90a7aa8bdfa8d6ad2a4d`
+of `reusable-trusted-verification.yml` is a **WODIQ-only entrypoint**. Keep WODIQ's
+compact no-input callers on that pin. The exact workflow source is frozen in
+`tests/fixtures/wodiq-compact-at-604ad2b9.yml` and its routing/identity/plan tests
+remain active.
+
+The normal main merge into DEV-54 restores the general shared interface at the
+new coordinated rollout revision, including the Tessera cache repair. It is not
+a drop-in upgrade for the compact no-input caller: that caller would be rejected
+rather than silently mapped to a different plan or result contract. General
+consumers retain their fixed input, output and adapter contracts. The historical
+pre-compact general source also remains in
+`tests/fixtures/trusted-verification-before-wodiq-compact.yml` with its fixed hash.
+No consumer pin or runner admission is changed by this integration. The retained
+604 slot continues to admit the complete compact workflow at its original path;
+no new reusable pathname or extra trusted slot is introduced.
 
 The WODIQ consumer has no command, path, label, profile, trust or selection input.
 One GitHub-hosted preflight verifies the current PR, merge parents, source/head/
