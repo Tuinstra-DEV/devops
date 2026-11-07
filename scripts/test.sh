@@ -20,6 +20,7 @@ done
 
 ./scripts/test-runner-platform.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_runner_2338_repair.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_runner_controlled_cutover.py
 
 if ! grep -q "Auth0" "README.md"; then
   echo "README must document Auth0 direction"
