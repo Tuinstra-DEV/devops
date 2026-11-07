@@ -104,7 +104,7 @@ immutable `288dc75d` source identity and WODIQ 604 support; do not silently reta
 this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`b8bad777b33e3d453da1c05d8053ff76e07ceee1034378449e32364c5771d9dc`. The previously distributed `5574d262…` and `c3acd248…` versions are withdrawn;
+`266ca775a2d5f2838b33fd7fba658e9b590f6cf5f48ea3c218921527f7930fdd`. The previously distributed `5574d262…`, `c3acd248…` and `b8bad777…` versions are withdrawn;
 do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
@@ -424,7 +424,9 @@ and starting the service. The service checks it again after its live GETs and
 before dispatch, reserving 35 seconds for stability. The final `enabled` write
 flushes/fsyncs its temporary file, checks both deadlines immediately before rename,
 and rechecks after directory fsync. Expiry, including after a terminal journal,
-records recovery intent and blocks admission; the command does not report APPLIED. Aim to stage and start `commit` within 30 seconds after
+records recovery intent and blocks admission; the command does not report APPLIED.
+The controller postcheck is supporting protection; admission independently enforces
+the durable publication rule below, including when the controller abruptly exits. Aim to stage and start `commit` within 30 seconds after
 collection completes, leaving room for the two GETs, installation and stability.
 Expiry refuses safely; recollect AFTER rather than weakening the deadline.
 
@@ -468,6 +470,33 @@ completed activation/rollback can restart on later boots without reusing an
 expired activation proof; it still checks all pinned files and performs fresh
 live group GETs. This dependency is temporary: use the explicit finalization below
 after the transaction has succeeded and been observed stable.
+
+An `enabled` record additionally carries `publication.before_ns`, equal to the
+absolute proof deadline in nanoseconds, and `publication.nonce`, equal to the
+admission proof generation nonce shared with the readiness receipt. The service
+checks these bindings itself. An enabled replacement is created root-private at
+0600; rename retains that mode. Only the final `chmod(0644)` makes it readable by
+the service and updates the kernel's `st_ctime_ns`. The reader requires exact mode
+0644 and a positive inode ctime no later than `publication.before_ns`. It reads
+metadata from the same open file descriptor as the JSON. A pre-write timestamp
+inside JSON is not accepted as proof of publication time.
+
+If rename/fsync stalls and chmod happens after expiry, the kernel ctime exceeds
+the deadline. The admission wrapper and runtime JIT guard then reject `enabled`
+independently of the controller, including after a crash/reboot with an `applied`
+journal and readable gate. `finalize` also rejects this invalid permission; use
+`reconcile` and fresh proof/recovery. No controller postcheck is needed to reject it.
+
+The file ctime and absolute publication deadline use **the same Sanctuary host
+CLOCK_REALTIME**, at nanosecond representation. The existing monotonic deadline
+still bounds live operations within that boot; it is not compared with persisted
+filesystem timestamps or reused across boots. A timely published unchanged record
+remains valid after its original proof expires and after reboot until explicit
+finalization. Later chmod/chown/replacement changes ctime and can invalidate it;
+do not restore or touch an old gate to resume admission. Root ownership is still
+the trust boundary: this is not attestation against a malicious root operator.
+Finalization's stable observation and ordinary-daemon restart are unchanged, and
+remove the gate/wrapper, ending this temporary dependency.
 
 A runtime guard rejects new JIT POSTs when the root record is blocked/changed,
 while an already-started JIT may finish normally. The existing manager's normal
@@ -584,6 +613,14 @@ credential/HTTP and the daemon boundary, audits file I/O and argv/env/subprocess
 exports, and asserts the exact two authenticated GETs. Finalization tests cover
 stability refusal, running guests, failed restart after pickup, abrupt crash after
 override removal, idempotence and later rollback.
+The third-review fault injection advances the fixture host clock by 301 seconds
+after enabled rename, makes the gate readable, and executes real `os._exit(73)`
+before any controller postcheck/handler. The original b8bad777 version accepted it
+(the regression failed before implementation). The service now refuses on the same
+boot and a simulated next boot, including before loading the manager; recovery
+remains available. The virtual-clock fixture models filesystem ctime in that same
+clock, with a separate test exercising actual kernel ctime, deadline/nonce binding
+and permissions. Timely permission still supports post-expiry/reboot finalization.
 No production sudo/crash/drain rehearsal is claimed by these offline fixtures.
 
 Fresh consumer and required-check GETs are recorded in
@@ -592,9 +629,9 @@ context or app binding was changed; actual migration PR verification remains req
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 63 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 66 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 838 Python passes / 1 existing Linux-findmnt
+- Full `make test`: pass locally, 841 Python passes / 1 existing Linux-findmnt
   skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
   the instrumented macOS runtime; fresh Python child processes now inject actual
   `os._exit(73)` crashes at the same boundaries, without skipping a scenario.
@@ -607,4 +644,4 @@ context or app binding was changed; actual migration PR verification remains req
   CI checkout without fetching history or reading the protected host configuration.
 - No UI changes; no screenshot applies. No Tracker mutation or new Story.
 
-Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-second-review-red.log`, `runner-cutover-second-review-green.log`, `runner-cutover-second-review-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.
+Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-second-review-red.log`, `runner-cutover-second-review-green.log`, `runner-cutover-second-review-full-test.log`, `runner-cutover-third-review-red.log`, `runner-cutover-third-review-green.log`, `runner-cutover-third-review-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.

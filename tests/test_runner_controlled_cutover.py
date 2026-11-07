@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time as real_time
 import tomllib
 import types
 import unittest
@@ -86,6 +87,23 @@ class TransactionTests(unittest.TestCase):
         self.fail_restart=False; self.fail_after_launch=False; self.time=10000.; self.auto_finish=False
         self.cleanup_fails=False; self.claim_clears=False
         a.time=types.SimpleNamespace(time=lambda:self.time,monotonic=lambda:self.time,sleep=self.sleep)
+        # Model filesystem CLOCK_REALTIME in the same virtual clock as the controller.
+        # Store the publication timestamp in mtime so it survives a fixture child exit;
+        # production uses the kernel's unforgeable-by-utime st_ctime_ns instead.
+        original_chmod=Path.chmod;original_read=a.read
+        def chmod(path,mode,*args,**kwargs):
+            result=original_chmod(path,mode,*args,**kwargs)
+            if path==a.GATE:
+                stamp=int(self.time*1_000_000_000);os.utime(path,ns=(stamp,stamp))
+            return result
+        def read(path):
+            data,info=original_read(path)
+            if path==a.GATE:
+                values={key:getattr(info,key) for key in dir(info) if key.startswith('st_')}
+                values['st_ctime_ns']=info.st_mtime_ns;info=types.SimpleNamespace(**values)
+            return data,info
+        a.read=read;self.real_read=original_read
+        chmod_patch=patch.object(Path,'chmod',chmod);chmod_patch.start();self.addCleanup(chmod_patch.stop)
         def cmd(args):
             self.calls.append(args)
             if args[:2]==['systemctl','show']:
@@ -677,6 +695,42 @@ class TransactionTests(unittest.TestCase):
         a=self.a;self.applied();a.finalize();self.snapshot('after');a.drain(True)
         self.snapshot('before');a.recover();a.finalize()
         self.assertEqual(a.CONFIG.read_bytes(),self.original);self.assertEqual(a.backup()['phase'],'finalized')
+    def test_late_enabled_chmod_then_abrupt_exit_is_rejected_on_same_and_next_boot(self):
+        a=self.a;self.drain();self.crash_process('commit','after-late-enabled-chmod')
+        self.assertEqual(a.backup()['phase'],'applied')
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'enabled')
+        self.assertEqual(a.GATE.stat().st_mode&0o777,0o644)
+        self.time+=400
+        for boot in (a.BOOT_FILE.read_text().strip(),'next-boot'):
+            with patch.object(a,'boot_identity',return_value=boot):
+                with self.assertRaisesRegex(a.Refused,'publication'):a.check_admission_ticket()
+                with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'module_at') as loader:
+                    with self.assertRaisesRegex(a.Refused,'publication'):a.admission_worker()
+                    loader.assert_not_called()
+        with self.assertRaisesRegex(a.Refused,'publication'):a.finalize()
+        self.active=False;a.reconcile_recovery()
+        self.assertEqual(a.backup()['phase'],'recovery-drained')
+    def test_timely_enabled_publication_can_finalize_after_expiry_and_boot_change(self):
+        a=self.a;self.applied();self.time+=1000
+        with patch.object(a,'boot_identity',return_value='next-boot'):
+            self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
+            a.finalize();a.finalize()
+        self.assertEqual(a.backup()['phase'],'finalized');self.assertFalse(a.WRAPPER.exists())
+    def test_enabled_publication_uses_real_kernel_ctime_and_binds_deadline_nonce_and_mode(self):
+        a=self.a;self.applied();record=a.decode(a.read(a.GATE)[0])
+        a.read=self.real_read  # Use real filesystem ctime, without virtual-clock metadata.
+        def publish(expires,nonce=None,mode=0o644):
+            record['expires']=expires;record['publication']={'before_ns':int(expires*1_000_000_000),
+                                                           'nonce':nonce or record['nonce']}
+            a.write(a.GATE,a.encoded(record));a.GATE.chmod(mode)
+        publish(real_time.time()-1)
+        with self.assertRaisesRegex(a.Refused,'publication-after-deadline'):a.check_admission_ticket()
+        publish(real_time.time()+300)
+        self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
+        publish(real_time.time()+300,nonce='0'*32)
+        with self.assertRaisesRegex(a.Refused,'publication-proof'):a.check_admission_ticket()
+        publish(real_time.time()+300,mode=0o600)
+        with self.assertRaisesRegex(a.Refused,'publication-after-deadline'):a.check_admission_ticket()
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='--crash-fixture':
@@ -689,9 +743,15 @@ if __name__=='__main__':
             if point=='before-enabled' and phase=='enabled':os._exit(73)
             return original_gate(doc,phase,**fields)
         original_reload=a.reload
+        original_fsync_dir=a.fsync_dir
+        def fsync_dir(path):
+            if point=='after-late-enabled-chmod' and path==a.GATE.parent and a.GATE.exists() and a.decode(a.GATE.read_bytes()).get('phase')=='enabled':
+                if a.GATE.stat().st_mode&0o777==0o600:fixture.time+=301
+                else:os._exit(73)  # No controller deadline postcheck or exception/finally runs.
+            return original_fsync_dir(path)
         def reload():
             if point=='after-remove' and not a.PAUSE.exists():os._exit(73)
             return original_reload()
-        a.command=command;a.public_gate=gate;a.reload=reload
+        a.command=command;a.public_gate=gate;a.reload=reload;a.fsync_dir=fsync_dir
         {'commit':a.commit,'recover':a.recover,'finalize':a.finalize}[action]();os._exit(74)
     unittest.main()

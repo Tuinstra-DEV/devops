@@ -474,6 +474,8 @@ def boot_identity():
 
 def public_gate(doc,phase,**fields):
     record={'schema':1,'transaction':doc['transaction'],'phase':phase,**fields}
+    if phase=='enabled':
+        record['publication']={'nonce':record['nonce'],'before_ns':int(record['expires']*1_000_000_000)}
     def deadline():
         require(time.time()<record['expires'] and time.monotonic()<record['monotonic_expires'],'admission-proof-expired-before-publication')
     # The callback runs AFTER temporary-file flush/fsync, immediately before rename.
@@ -503,14 +505,27 @@ def observed_files(doc):
     return 'before' if values==before else ('after' if values==after else 'mixed')
 
 def check_admission_ticket(reserve=0,expected=None):
-    record=decode(read(GATE)[0])
+    raw,info=read(GATE); record=decode(raw)
     require(record.get('schema')==1 and record.get('phase') in ('probation','enabled'),'admission-blocked')
     require(re.fullmatch('tx-[a-f0-9]{32}',record.get('transaction','')) is not None,'admission-transaction-invalid')
     if expected is not None: require(record==expected,'admission-ticket-changed')
     if record['phase']=='probation':
         require(record['boot']==boot_identity(),'admission-boot-changed')
         require(time.time()+reserve<record['expires'] and time.monotonic()+reserve<record['monotonic_expires'],'admission-proof-expired')
-    else: require(record.get('terminal') in ('applied','rolled-back','aborted'),'admission-terminal-invalid')
+    else:
+        require(record.get('terminal') in ('applied','rolled-back','aborted'),'admission-terminal-invalid')
+        publication=record.get('publication')
+        require(type(publication) is dict and set(publication)=={'nonce','before_ns'}
+                and re.fullmatch('[a-f0-9]{32}',record.get('nonce','')) is not None
+                and publication['nonce']==record['nonce']
+                and type(publication['before_ns']) is int and type(record.get('expires')) in (int,float)
+                and publication['before_ns']==int(record['expires']*1_000_000_000),'admission-publication-proof-invalid')
+        # Every enabled replacement starts 0600. chmod(0644) is its service-visible
+        # publication, and updates kernel ctime even if rename/fsync stalled first.
+        # Both ctime and the absolute proof deadline use this host's CLOCK_REALTIME;
+        # ctime persists across reboot. Never trust a pre-write serialized timestamp.
+        require(stat.S_IMODE(info.st_mode)==0o644 and
+                0<info.st_ctime_ns<=publication['before_ns'],'admission-publication-after-deadline')
     require((record['manager_sha'],record['helper_sha']) in ((MANAGER_SHA,HELPER_SHA),(NEW_MANAGER_SHA,NEW_HELPER_SHA)),'admission-source-invalid')
     for path,key in [(MANAGER,'manager_sha'),(HELPER,'helper_sha'),(CONFIG,'config_sha'),(SELF,'operator_sha')]:
         require(sha(read(path)[0])==record[key],'admission-file-drift')
