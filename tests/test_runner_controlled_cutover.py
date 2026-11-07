@@ -1,5 +1,6 @@
 """Offline transaction tests; never run sudo, gh, virsh, systemctl or a network."""
 import contextlib
+import builtins
 import copy
 import importlib.util
 import io
@@ -45,13 +46,13 @@ class TransactionTests(unittest.TestCase):
         self.a=load(); a=self.a
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve(); a.UID=os.getuid(); a.ANCHOR=self.root
-        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF'):
+        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF','WRAPPER'):
             setattr(a,name,self.root/name.lower())
         a.JOURNAL=a.BACKUP/'journal.json';a.ACTIVE=a.TRANSACTIONS/'active.json'
         a.BOOT_FILE.write_text('11111111-1111-4111-8111-111111111111')
         a.SELF.write_bytes(SCRIPT.read_bytes())
         a.BLOCK=a.BLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
-        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
+        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/libexec/runner-cutover-admission.py',str(a.WRAPPER).encode())
         for p in (a.STATE,a.OVERLAY,a.STAGE): p.mkdir(mode=0o700)
         a.LOCK.write_bytes(b''); a.LOCK.chmod(0o600)
         a.MANAGER.write_bytes(historical('runner/manager/ci_runner_manager.py'))
@@ -92,9 +93,9 @@ class TransactionTests(unittest.TestCase):
                 return {'DropInPaths':str(a.DROPIN)+(' '+str(a.PAUSE) if a.PAUSE.exists() else ''),
                     'FragmentPath':str(a.UNIT),'User':'ci-runner-manager','Group':'ci-runner-manager','Type':'simple',
                     'KillMode':'control-group','Restart':'no' if a.PAUSE.exists() and a.PAUSE.read_bytes()==a.BLOCK else 'always',
-                    'ExecStart':'{ argv[]='+('/usr/bin/python3 -I '+str(a.SELF)+(' drain-worker' if a.PAUSE.read_bytes()==a.BLOCK else ' admission-worker') if a.PAUSE.exists() else
+                    'ExecStart':'{ argv[]='+('/usr/bin/python3 -I '+str(a.SELF if a.PAUSE.read_bytes()==a.BLOCK else a.WRAPPER)+(' drain-worker' if a.PAUSE.read_bytes()==a.BLOCK else ' admission-worker') if a.PAUSE.exists() else
                         '/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml daemon --interval 30')+' ; }',
-                    'ActiveState':'active' if self.active else 'inactive','ExecMainStatus':'0','NRestarts':'0'}[prop]
+                    'ActiveState':'active' if self.active else 'inactive','ExecMainStatus':'0','NRestarts':'0','MainPID':'123' if self.active else '0','ExecMainStartTimestampMonotonic':'100'}[prop]
             if args[:2]==['systemctl','stop']:
                 if args[2]==a.SERVICE:self.active=False
                 else:self.socket=False
@@ -129,11 +130,11 @@ class TransactionTests(unittest.TestCase):
 
     def attach_existing(self,root,state):
         self.root=Path(root);self.a=load();a=self.a;a.UID=os.getuid();a.ANCHOR=self.root
-        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF'):
+        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF','WRAPPER'):
             setattr(a,name,self.root/name.lower())
         a.JOURNAL=a.BACKUP/'journal.json';a.ACTIVE=a.TRANSACTIONS/'active.json'
         a.BLOCK=a.BLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
-        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
+        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/libexec/runner-cutover-admission.py',str(a.WRAPPER).encode())
         self.configure_runtime()
         for key,value in state.items():setattr(self,key,value)
     def crash_process(self,action,point='before-start'):
@@ -476,9 +477,8 @@ class TransactionTests(unittest.TestCase):
             if doc['phase']=='applied':self.time+=301
         with patch.object(a,'journal',side_effect=slow):
             with self.assertRaisesRegex(a.Refused,'insufficient-evidence'):a.commit()
-        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'probation')
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
         self.assertNotIn('APPLIED;',self.output.getvalue())
-        with self.assertRaisesRegex(a.Refused,'proof-expired'):a.check_admission_ticket()
         a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
     def test_review_r3_live_get_delay_rechecks_ticket_before_any_admission(self):
         a=self.a;self.applied();record=a.decode(a.read(a.GATE)[0]);record.update(phase='probation',expires=self.time+70,monotonic_expires=self.time+70,boot=a.boot_identity())
@@ -508,13 +508,13 @@ class TransactionTests(unittest.TestCase):
     def test_enabled_guard_can_reboot_long_after_activation_proof_expired(self):
         a=self.a;self.applied();ticket=a.check_admission_ticket();self.time+=1000
         calls=[];mod=types.SimpleNamespace()
-        mod.open_url=lambda request,timeout=20:calls.append((request,timeout))
+        mod.open_url=lambda request,timeout=20:calls.append((request.full_url,timeout))
         client=types.SimpleNamespace()
-        client.request=lambda method,path:mod.open_url(path)
-        client.verify_org_group=lambda cfg:[client.request('GET',path) for path in ('group','repositories')]
+        client.request=lambda method,path:mod.open_url(types.SimpleNamespace(get_method=lambda:method,full_url='https://api.github.com'+path,data=None))
+        client.verify_org_group=lambda cfg:[client.request('GET',path) for path in a.LIVE_PATHS]
         mod.organization_client=lambda cfg:client
-        a.verify_live_group(mod,{},ticket)
-        self.assertEqual([call[0] for call in calls],['group','repositories'])
+        a.verify_live_group(mod,self.cfg,ticket)
+        self.assertEqual([call[0] for call in calls],['https://api.github.com'+p for p in a.LIVE_PATHS])
         self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
     def test_recover_repairs_old_terminal_journal_with_unfinished_gate_publication(self):
         a=self.a;self.applied();self.snapshot('after');a.drain(True);self.snapshot('before');a.recover()
@@ -548,6 +548,135 @@ class TransactionTests(unittest.TestCase):
     def test_no_config_or_secret_contents_in_success_or_failure_output(self):
         self.applied();out=self.output.getvalue()
         self.assertNotIn('github_token_file',out);self.assertNotIn(self.original.decode(),out)
+    def test_last_enabled_write_checks_deadline_after_temporary_fsync(self):
+        a=self.a;self.drain();original=a.os.fsync;injected=[]
+        original_write=a.write
+        def write(path,data,*args,**kwargs):
+            if path==a.GATE and a.decode(data)['phase']=='enabled':
+                def delayed(fd):
+                    original(fd)
+                    if not injected:self.time+=301;injected.append(True)
+                with patch.object(a.os,'fsync',side_effect=delayed):return original_write(path,data,*args,**kwargs)
+            return original_write(path,data,*args,**kwargs)
+        with patch.object(a,'write',side_effect=write):
+            with self.assertRaisesRegex(a.Refused,'expired'):a.commit()
+        self.assertTrue(injected);self.assertNotEqual(a.backup()['phase'],'applied')
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
+        self.assertNotIn('APPLIED;',self.output.getvalue())
+    def test_live_readback_refuses_extra_get_before_network(self):
+        a=self.a;mod=types.SimpleNamespace(open_url=lambda *args,**kwargs:None)
+        calls=[];client=types.SimpleNamespace(request=lambda *args,**kwargs:calls.append(args))
+        client.verify_org_group=lambda cfg:client.request('GET','/user')
+        mod.organization_client=lambda cfg:client
+        with self.assertRaisesRegex(a.Refused,'live-readback'):
+            a.verify_live_group(mod,self.cfg,{'phase':'enabled'})
+        self.assertEqual(calls,[])
+    def test_finalize_returns_to_original_service_and_preserves_running_job(self):
+        a=self.a;self.applied();self.running();before=self.time
+        a.finalize()
+        self.assertGreaterEqual(self.time-before,a.FINALIZE_STABILITY_SECONDS)
+        self.assertFalse(a.PAUSE.exists());self.assertFalse(a.WRAPPER.exists());self.assertFalse(a.GATE.exists())
+        self.assertTrue(self.active);self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
+        self.assertEqual(a.backup()['phase'],'finalized');a.finalize()
+        self.assertEqual(a.CONFIG.read_bytes(),(a.BACKUP/'config.after').read_bytes())
+    def test_finalize_unstable_manager_keeps_guard_and_files(self):
+        a=self.a;self.applied();original=a.time.sleep
+        def fail(seconds):original(seconds);self.active=False
+        a.time.sleep=fail
+        with self.assertRaisesRegex(a.Refused,'terminal-manager-inactive'):a.finalize()
+        self.assertTrue(a.PAUSE.exists());self.assertEqual(a.backup()['phase'],'applied')
+    def test_wrapper_credential_boundary_uses_only_existing_systemd_file_and_two_gets(self):
+        a=self.a;self.applied();token='synthetic-credential-boundary-73f12';credential=Path(a.ORG_CREDENTIAL)
+        # Exercise the real, hash-pinned credential/client code in BOTH versions.
+        for path,digest in [(a.BACKUP/'manager.before',a.MANAGER_SHA),(a.MANAGER,a.NEW_MANAGER_SHA)]:
+            mod=a.module_at(path,digest);reads=[];requests=[];env_reads=[]
+            class Environment(dict):
+                def get(self,key,default=None):env_reads.append(key);return super().get(key,default)
+                def __getitem__(self,key):env_reads.append(key);return super().__getitem__(key)
+                def __setitem__(self,key,value):raise AssertionError('wrapper changed environment')
+            environment=Environment(CREDENTIALS_DIRECTORY=str(credential.parent),GH_TOKEN='wrong-synthetic-source')
+            original_open=io.open;original_stat=Path.stat;original_os_open=os.open;original_os_write=os.write
+            class Stream:
+                def __init__(self,wrapped):self.wrapped=wrapped
+                def __getattr__(self,key):return getattr(self.wrapped,key)
+                def __enter__(self):self.wrapped.__enter__();return self
+                def __exit__(self,*args):return self.wrapped.__exit__(*args)
+                def write(self,data):
+                    self_outer.assertNotIn(token.encode() if isinstance(data,bytes) else token,data)
+                    return self.wrapped.write(data)
+            self_outer=self
+            def file_open(file,*args,**kwargs):
+                if not isinstance(file,int) and Path(file)==credential:
+                    self.assertEqual(args[0] if args else kwargs.get('mode','r'),'r')
+                    reads.append(str(file));return io.StringIO(token)
+                if not isinstance(file,int):self.assertTrue(Path(file).is_relative_to(self.root),'unexpected file/credential source')
+                return Stream(original_open(file,*args,**kwargs))
+            def low_open(path,*args,**kwargs):
+                self.assertTrue(Path(path).is_relative_to(self.root),'unexpected file/credential source')
+                return original_os_open(path,*args,**kwargs)
+            def low_write(fd,data):
+                self.assertNotIn(token.encode(),data);return original_os_write(fd,data)
+            def file_stat(path,*args,**kwargs):
+                if path==credential:return types.SimpleNamespace(st_mode=0o100600)
+                return original_stat(path,*args,**kwargs)
+            def http(request,timeout=20):
+                self.assertEqual(request.get_method(),'GET');self.assertIsNone(request.data)
+                self.assertEqual(request.full_url,'https://api.github.com'+a.LIVE_PATHS[len(requests)])
+                self.assertEqual(request.get_header('Authorization'),'Bearer '+token)
+                self.assertNotIn(token,request.full_url)
+                requests.append(request.full_url)
+                response=self.snapshot('after')['group'] if len(requests)==1 else {'total_count':len(a.IDS),
+                    'repositories':[{'full_name':repo,'id':rid,'private':True} for repo,rid in a.IDS.items()]}
+                return io.BytesIO(json.dumps(response).encode())
+            def daemon(args):
+                self.assertEqual(args,['--config',str(a.CONFIG),'daemon','--interval','30']);return 0
+            # Substitute only network, synthetic credential I/O and the daemon boundary.
+            # Any subprocess, alternate credential read, argv/env export or file export fails.
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(a.os,'geteuid',return_value=os.getuid() or 501))
+                stack.enter_context(patch.object(a,'module_at',return_value=mod))
+                stack.enter_context(patch.object(a.os,'environ',environment))
+                stack.enter_context(patch.object(io,'open',side_effect=file_open))
+                stack.enter_context(patch.object(builtins,'open',side_effect=file_open))
+                stack.enter_context(patch.object(os,'open',side_effect=low_open))
+                stack.enter_context(patch.object(os,'write',side_effect=low_write))
+                stack.enter_context(patch.object(Path,'stat',file_stat))
+                stack.enter_context(patch.object(mod,'open_url',side_effect=http))
+                stack.enter_context(patch.object(mod,'main',side_effect=daemon))
+                for name in ('run','Popen','call','check_call','check_output'):
+                    stack.enter_context(patch.object(subprocess,name,side_effect=AssertionError('wrapper spawned subprocess')))
+                stack.enter_context(patch.object(os,'system',side_effect=AssertionError('wrapper spawned shell')))
+                for name in dir(os):
+                    if name.startswith(('exec','spawn','posix_spawn')) or name in ('putenv','unsetenv','fork','forkpty'):
+                        stack.enter_context(patch.object(os,name,side_effect=AssertionError('wrapper exported credential/process state')))
+                a.admission_worker()
+            self.assertEqual(reads,[a.ORG_CREDENTIAL]);self.assertEqual(len(requests),2)
+            self.assertTrue(set(env_reads)<= {'CREDENTIALS_DIRECTORY'})
+            self.assertNotIn(token,repr(sys.argv));self.assertNotIn(token,self.output.getvalue())
+            for file in self.root.rglob('*'):
+                if file.is_file():self.assertNotIn(token.encode(),file.read_bytes())
+    def test_live_readback_rejects_alternative_credential_or_api_before_loading_client(self):
+        a=self.a;mod=types.SimpleNamespace(organization_client=lambda cfg:self.fail('credential client must not load'))
+        for key,value in [('org_github_token_file','/etc/ci-runner/org-github.token'),
+                          ('org_github_token_file','GH_TOKEN'),('github_api_url','https://example.invalid')]:
+            cfg=dict(self.cfg);cfg[key]=value
+            with self.assertRaisesRegex(a.Refused,'live-readback'):a.verify_live_group(mod,cfg,{'phase':'enabled'})
+    def test_finalize_restart_failure_after_pickup_is_recoverable_without_claim_deletion(self):
+        a=self.a;self.applied();self.fail_after_launch=True
+        with self.assertRaises(a.Refused):a.finalize()
+        self.assertEqual(a.backup()['phase'],'finalizing');self.assertEqual(a.PAUSE.read_bytes(),a.BLOCK)
+        self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
+        self.fail_after_launch=False;a.finalize()
+        self.assertEqual(a.backup()['phase'],'finalized');self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
+    def test_finalize_crash_after_override_removal_can_retry(self):
+        a=self.a;self.applied();self.running();self.crash_process('finalize','after-remove')
+        self.assertEqual(a.backup()['phase'],'finalizing');self.assertFalse(a.PAUSE.exists())
+        a.finalize();self.assertEqual(a.backup()['phase'],'finalized')
+        self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
+    def test_finalize_then_deliberate_rollback_is_supported(self):
+        a=self.a;self.applied();a.finalize();self.snapshot('after');a.drain(True)
+        self.snapshot('before');a.recover();a.finalize()
+        self.assertEqual(a.CONFIG.read_bytes(),self.original);self.assertEqual(a.backup()['phase'],'finalized')
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='--crash-fixture':
@@ -559,6 +688,10 @@ if __name__=='__main__':
         def gate(doc,phase,**fields):
             if point=='before-enabled' and phase=='enabled':os._exit(73)
             return original_gate(doc,phase,**fields)
-        a.command=command;a.public_gate=gate
-        {'commit':a.commit,'recover':a.recover}[action]();os._exit(74)
+        original_reload=a.reload
+        def reload():
+            if point=='after-remove' and not a.PAUSE.exists():os._exit(73)
+            return original_reload()
+        a.command=command;a.public_gate=gate;a.reload=reload
+        {'commit':a.commit,'recover':a.recover,'finalize':a.finalize}[action]();os._exit(74)
     unittest.main()

@@ -104,7 +104,7 @@ immutable `288dc75d` source identity and WODIQ 604 support; do not silently reta
 this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`c3acd2488db14e79aed170486a439fb3d76a881583b18816eb90ab88543d8679`. The previously distributed `5574d262…` version is withdrawn;
+`b8bad777b33e3d453da1c05d8053ff76e07ceee1034378449e32364c5771d9dc`. The previously distributed `5574d262…` and `c3acd248…` versions are withdrawn;
 do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
@@ -159,10 +159,10 @@ exactly **five trusted workflow refs plus one producer workflow ref**; no sevent
 entry and no sixth trusted pin, even temporarily. Repository IDs, private-only
 selection, all role actors/events/repositories, credentials, capacities, 24/4 GiB
 backing allocations, image and base unit stay unchanged. The controlled service
-drop-in now persists after resume and runs the reviewed admission wrapper, with
+drop-in persists during guarded resume until explicit `finalize`, and runs the reviewed admission wrapper with
 normal `Restart=always`; credential bindings and the original service sandbox
 remain unchanged. The wrapper/operator SHA is part of its root-owned admission
-record and must remain installed at the reviewed path. Only the three workflow-ref
+record until finalization; the root operator remains available for later recovery/rollback. Only the three workflow-ref
 locations and trusted-array order change in the protected policy. Atomic writes
 preserve owner/group/mode and all unrelated bytes.
 
@@ -421,8 +421,10 @@ All evidence expires **300 seconds after collection START**, including the measu
 GETs, admission, and stability checks use one shared wall/monotonic deadline. The
 root controller checks it again immediately before publishing admission permission
 and starting the service. The service checks it again after its live GETs and
-before dispatch, reserving 35 seconds for stability; APPLIED cannot be recorded
-past the shared deadline. Aim to stage and start `commit` within 30 seconds after
+before dispatch, reserving 35 seconds for stability. The final `enabled` write
+flushes/fsyncs its temporary file, checks both deadlines immediately before rename,
+and rechecks after directory fsync. Expiry, including after a terminal journal,
+records recovery intent and blocks admission; the command does not report APPLIED. Aim to stage and start `commit` within 30 seconds after
 collection completes, leaving room for the two GETs, installation and stability.
 Expiry refuses safely; recollect AFTER rather than weakening the deadline.
 
@@ -433,7 +435,13 @@ Marcel explicitly trusts the unprivileged collector/gh session and maintains the
 caller/config/group editing freeze. The root process reads no credential and makes
 no network request. The existing sandboxed service account independently repeats
 GETs of group 4 and its selected repository IDs with its unchanged systemd org
-credential before every guarded daemon start. The pinned manager validates their
+credential before every guarded daemon start until finalization. The only source
+is `/run/credentials/ci-runner-manager.service/org_github_token`, in the existing
+`ci-runner-manager` service context. The startup probe permits exactly two GETs:
+`https://api.github.com/orgs/Tuinstra-DEV/actions/runner-groups/4` and
+`https://api.github.com/orgs/Tuinstra-DEV/actions/runner-groups/4/repositories?per_page=100&page=1`.
+No redirect, alternate origin/source, token export to argv/env/subprocess/files,
+or extra GET is allowed by this probe. The pinned manager validates their
 exact policy against the actual config. Failure, rate limiting or mismatch denies
 admission. These live GETs strengthen group verification; they do **not** repeat the
 full branch/PR/active-source inventory or the required-check inventory. Those remain
@@ -442,8 +450,8 @@ GET can verify this private organization policy; no extra credential is requeste
 
 ### Durable resume and boot/crash recovery
 
-The pause override is never unlinked. It changes atomically between cleanup-only
-and the reviewed admission wrapper; the latter retains normal `Restart=always`.
+During resume/recovery the pause override is never unlinked. It changes atomically
+between cleanup-only and `/usr/local/libexec/runner-cutover-admission.py`; the latter retains normal `Restart=always`.
 `/etc/ci-runner/cutover-admission.json` is a root-owned readable control record
 containing transaction ID, nonce, code/config hashes, boot ID and deadlines only.
 The protected journal and backups remain private. The wrapper uses the existing
@@ -458,8 +466,8 @@ and publish boot-independent `enabled` permission. A crash between those writes
 leaves probation permission, so the next boot still refuses admission. Fully
 completed activation/rollback can restart on later boots without reusing an
 expired activation proof; it still checks all pinned files and performs fresh
-live group GETs. Keep the installed wrapper and its metadata: removing the guard
-or its files is not part of normal cleanup.
+live group GETs. This dependency is temporary: use the explicit finalization below
+after the transaction has succeeded and been observed stable.
 
 A runtime guard rejects new JIT POSTs when the root record is blocked/changed,
 while an already-started JIT may finish normally. The existing manager's normal
@@ -503,6 +511,43 @@ missing override, it reconciles/drains first and asks for fresh BEFORE afterward
 Do not manually delete the override, change the journal phase, start the bare
 manager, reset claims or reuse an expired file to force admission.
 
+### Finalize: remove the temporary startup dependency
+
+After APPLIED, Claude confirms the exact AFTER readback and normal queued-job pickup.
+Marcel then runs:
+
+```sh
+sudo /usr/local/sbin/runner-controlled-cutover.py finalize
+```
+
+Expected: **`FINALIZED; original service start active; wrapper and override removed; backups retained`**.
+`FINALIZE_STABILITY_SECONDS=300` requires five continuous minutes with the same
+MainPID/start timestamp, healthy service, zero restarts/exit status and unchanged
+manager/helper/config hashes. This is a separate post-activation observation window,
+not a renewal of the five-minute evidence validity. It changes no trusted pin,
+credential, GitHub policy, capacity or guest lifetime.
+
+Only after that observation does the script persist `finalizing`, close admission
+at the same bounded JIT/lock interlock and stop the manager process while leaving
+its guests/leases intact. It removes only the reviewed cutover override, reloads
+systemd and starts the original daemon command from the unchanged pinned base unit.
+After a further 35-second startup check it removes the separate admission-wrapper
+file and its public gate record, then records `finalized`. The root operator and
+all private journals/backups stay available for rollback; the base service no
+longer references them. Subsequent boots use the original service startup and do
+not incur the wrapper's two extra GitHub GETs. Existing normal manager API behavior
+and credential bindings remain unchanged.
+
+An unstable observation refuses before removal. A restart failure, including pickup
+of a guest, keeps `finalizing`, blocks/stops at the safe interlock and retains actual
+files and claims. Retry `finalize` after any JIT quarantine settles; do not clear it.
+A crash after override removal may boot the normal daemon: that removal was already
+authorized by the durable stable-policy intent, with complete verified files.
+Repeating `finalize` reconciles the actual service/files and finishes cleanup; an
+already finalized healthy service returns `ALREADY-FINALIZED` without interruption.
+For this phase use `finalize` rather than manually recreating/removing metadata.
+Deliberate `rollback-drain` remains supported after finalization.
+
 ### Timeout, failed restart and deliberate rollback
 
 - **Before PATCH:** refresh BEFORE and use `abort` when the cleanup service is
@@ -532,6 +577,13 @@ The revised suite includes actual abrupt child-process exits around new/old resu
 and the terminal/gate publication boundary; tests also cover JIT-stop refusal,
 late old/new pickup, slow helper start at proof age 304, stability/journal overrun, normal
 reboot after proof expiry, partial installation/backup and safe retry after abort.
+The second-review regressions reproduced the final-write deadline gap, an extra
+GET, and the missing finalization action before implementation. The credential
+regression exercises both exact pinned manager versions, substitutes only a synthetic
+credential/HTTP and the daemon boundary, audits file I/O and argv/env/subprocess
+exports, and asserts the exact two authenticated GETs. Finalization tests cover
+stability refusal, running guests, failed restart after pickup, abrupt crash after
+override removal, idempotence and later rollback.
 No production sudo/crash/drain rehearsal is claimed by these offline fixtures.
 
 Fresh consumer and required-check GETs are recorded in
@@ -540,9 +592,9 @@ context or app binding was changed; actual migration PR verification remains req
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 54 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 63 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 829 Python passes / 1 existing Linux-findmnt
+- Full `make test`: pass locally, 838 Python passes / 1 existing Linux-findmnt
   skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
   the instrumented macOS runtime; fresh Python child processes now inject actual
   `os._exit(73)` crashes at the same boundaries, without skipping a scenario.
@@ -555,4 +607,4 @@ context or app binding was changed; actual migration PR verification remains req
   CI checkout without fetching history or reading the protected host configuration.
 - No UI changes; no screenshot applies. No Tracker mutation or new Story.
 
-Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-review-green.log`, `runner-cutover-review-final-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.
+Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-final-backup-red.log`, `runner-cutover-second-review-red.log`, `runner-cutover-second-review-green.log`, `runner-cutover-second-review-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.

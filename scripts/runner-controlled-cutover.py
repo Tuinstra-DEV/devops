@@ -37,6 +37,7 @@ HELPER=Path('/usr/local/libexec/ci-runner-host-helper')
 DROPIN=Path(str(UNIT)+'.d/20-org-credential.conf')
 PAUSE=Path(str(UNIT)+'.d/91-controlled-cutover.conf')
 SELF=Path('/usr/local/sbin/runner-controlled-cutover.py')
+WRAPPER=Path('/usr/local/libexec/runner-cutover-admission.py')
 BLOCK=('[Service]\nExecStart=\nExecStart=/usr/bin/python3 -I '+str(SELF)+' drain-worker\nRestart=no\n').encode()
 STATE=Path('/var/lib/ci-runner-manager/state')
 OVERLAY=Path('/var/lib/ci-runner/overlay')
@@ -48,8 +49,12 @@ JOURNAL=BACKUP/'journal.json'
 GATE=Path('/etc/ci-runner/cutover-admission.json')
 READY=Path('/run/ci-runner-manager/cutover-ready.json')
 BOOT_FILE=Path('/proc/sys/kernel/random/boot_id')
-RUNBLOCK=('[Service]\nExecStart=\nExecStart=/usr/bin/python3 -I '+str(SELF)+' admission-worker\nRestart=always\n').encode()
+RUNBLOCK=('[Service]\nExecStart=\nExecStart=/usr/bin/python3 -I '+str(WRAPPER)+' admission-worker\nRestart=always\n').encode()
 STABILITY_SECONDS=35
+FINALIZE_STABILITY_SECONDS=300  # A separate continuous observation window after successful resume.
+ORG_CREDENTIAL='/run/credentials/ci-runner-manager.service/org_github_token'
+LIVE_PATHS=('/orgs/Tuinstra-DEV/actions/runner-groups/4',
+            '/orgs/Tuinstra-DEV/actions/runner-groups/4/repositories?per_page=100&page=1')
 UID=0
 ANCHOR=Path('/')
 PAT=re.compile(re.escape(PREFIX)+r'(?:reusable-trusted-verification|reusable-gate-pr-security)\.yml@[a-f0-9]{40}')
@@ -107,7 +112,7 @@ def fsync_dir(path):
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try: os.fsync(fd)
     finally: os.close(fd)
-def write(path,data,info=None):
+def write(path,data,info=None,*,before_replace=None):
     secure_parent(path.parent)
     tmp=path.with_name('.runner-cutover-'+str(os.getpid())+'-'+path.name)
     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -115,6 +120,7 @@ def write(path,data,info=None):
         with os.fdopen(fd,'wb') as f:
             if info: os.fchown(f.fileno(),info.st_uid,info.st_gid); os.fchmod(f.fileno(),stat.S_IMODE(info.st_mode))
             f.write(data); f.flush(); os.fsync(f.fileno())
+        if before_replace is not None: before_replace()
         os.replace(tmp,path); fsync_dir(path.parent)
     finally:
         if tmp.exists(): tmp.unlink()
@@ -190,7 +196,7 @@ def installed(new=False):
         require(command(['systemctl','show',SERVICE,'-p',prop,'--value'])==value,'unit-property-drift')
     override=read(PAUSE)[0] if PAUSE.exists() else None
     require(override in (None,BLOCK,RUNBLOCK),'pause-drift')
-    expected_exec=('/usr/bin/python3 -I '+str(SELF)+(' drain-worker' if override==BLOCK else ' admission-worker') if override else
+    expected_exec=('/usr/bin/python3 -I '+str(SELF if override==BLOCK else WRAPPER)+(' drain-worker' if override==BLOCK else ' admission-worker') if override else
                    '/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml daemon --interval 30')
     actual=command(['systemctl','show',SERVICE,'-p','ExecStart','--value'])
     require(actual.count('argv[]=')==1 and 'argv[]='+expected_exec+' ;' in actual,'exec-drift')
@@ -283,7 +289,8 @@ def initialize_backup(raw,info,updated):
         require(doc['before_sha']==sha(raw) and doc['after_sha']==sha(updated),'partial-backup-source-drift')
     else:
         if doc:
-            require(doc['phase'] in ('aborted','rolled-back'),'existing-transaction-needs-recovery')
+            require(doc['phase'] in ('aborted','rolled-back') or
+                    (doc['phase']=='finalized' and doc['finalize_terminal'] in ('aborted','rolled-back')),'existing-transaction-needs-recovery')
             backup()  # Verify completed rollback bytes before selecting a new ID.
             require(not is_active() or sha(read(CONFIG)[0])==doc['before_sha'],'previous-policy-drift')
         identifier='tx-'+uuid.uuid4().hex
@@ -416,7 +423,8 @@ def drain(reverse=False):
     evidence(read(STAGE/('after.json' if reverse else 'before.json'))[0],selected,
              REVERSE_REMOVING if reverse else FORWARD_REMOVING)
     if reverse:
-        doc=backup(); require(doc['phase']=='applied','wrong-rollback-phase')
+        doc=backup(); require(doc['phase']=='applied' or
+                              (doc['phase']=='finalized' and doc['finalize_terminal']=='applied'),'wrong-rollback-phase')
         require(sha(raw)==doc['after_sha'],'config-drift')
     else:
         newmod=candidate(); updated=replacement(raw,cfg,newmod)
@@ -466,8 +474,21 @@ def boot_identity():
 
 def public_gate(doc,phase,**fields):
     record={'schema':1,'transaction':doc['transaction'],'phase':phase,**fields}
-    write(GATE,encoded(record)); GATE.chmod(0o644); fsync_dir(GATE.parent)
+    def deadline():
+        require(time.time()<record['expires'] and time.monotonic()<record['monotonic_expires'],'admission-proof-expired-before-publication')
+    # The callback runs AFTER temporary-file flush/fsync, immediately before rename.
+    write(GATE,encoded(record),before_replace=deadline if phase=='enabled' else None)
+    GATE.chmod(0o644); fsync_dir(GATE.parent)
+    if phase=='enabled': deadline()  # Also catch delayed directory fsync; callers revoke even a terminal journal.
     return record
+
+def wrapper_bytes():
+    return ('#!/usr/bin/python3 -I\nimport runpy\nrunpy.run_path('+repr(str(SELF))+', run_name="__main__")\n').encode()
+
+def install_wrapper():
+    if WRAPPER.exists(): require(read(WRAPPER)[0]==wrapper_bytes(),'admission-wrapper-drift')
+    else: write(WRAPPER,wrapper_bytes())
+    WRAPPER.chmod(0o644); fsync_dir(WRAPPER.parent)
 
 def block_admission():
     doc=active_doc(); public_gate(doc,'blocked')
@@ -493,6 +514,7 @@ def check_admission_ticket(reserve=0,expected=None):
     require((record['manager_sha'],record['helper_sha']) in ((MANAGER_SHA,HELPER_SHA),(NEW_MANAGER_SHA,NEW_HELPER_SHA)),'admission-source-invalid')
     for path,key in [(MANAGER,'manager_sha'),(HELPER,'helper_sha'),(CONFIG,'config_sha'),(SELF,'operator_sha')]:
         require(sha(read(path)[0])==record[key],'admission-file-drift')
+    require(read(WRAPPER)[0]==wrapper_bytes(),'admission-wrapper-drift')
     return record
 
 @contextlib.contextmanager
@@ -529,21 +551,28 @@ def ready_receipt(record):
 
 def verify_live_group(mod,cfg,record):
     # Service-account GETs using unchanged systemd credentials; never as root.
+    require(cfg.get('org_github_token_file')==ORG_CREDENTIAL,'live-readback-credential-source')
+    require(cfg.get('github_api_url','https://api.github.com')=='https://api.github.com','live-readback-api-origin')
     client=mod.organization_client(cfg); require(client is not None,'live-group-client-unavailable')
-    original=client.request
-    def get_only(method,*args,**kwargs):
-        require(method=='GET','live-readback-write-refused'); return original(method,*args,**kwargs)
+    original=client.request; seen=[]
+    def get_only(method,path,*args,**kwargs):
+        require(method=='GET' and not args and not kwargs and len(seen)<2
+                and path==LIVE_PATHS[len(seen)],'live-readback-request-refused')
+        seen.append(path); return original(method,path)
     client.request=get_only
     original_open=mod.open_url
     live_deadline=time.monotonic()+40
     def bounded_open(request,timeout=20):
+        require(request.get_method()=='GET' and request.full_url=='https://api.github.com'+seen[-1]
+                and request.data is None,'live-readback-transport-refused')
         remaining=(min(record['expires']-time.time(),record['monotonic_expires']-time.monotonic())-STABILITY_SECONDS
                    if record['phase']=='probation' else live_deadline-time.monotonic())
         require(remaining>0,'admission-proof-expired')
         return original_open(request,timeout=min(timeout,remaining))
     mod.open_url=bounded_open
-    try: client.verify_org_group(cfg)
-    finally: mod.open_url=original_open
+    try:
+        client.verify_org_group(cfg); require(tuple(seen)==LIVE_PATHS,'live-readback-incomplete')
+    finally: mod.open_url=original_open; client.request=original
 
 def install_runtime_admission_guard(mod,ticket):
     original=mod.GitHubClient.request
@@ -582,6 +611,7 @@ def start_normal(doc,side,terminal,proof):
     journal(doc); block_admission()
     resume_budget(proof)
     command(['systemctl','start','ci-runner-host-helper.socket'])
+    install_wrapper()
     write_override(RUNBLOCK)
     command(['systemctl','reset-failed',SERVICE])
     resume_budget(proof)  # Last root check immediately before publishing admission permission.
@@ -620,7 +650,7 @@ def recovery_service_layout():
     require(paths in ({str(DROPIN)},{str(DROPIN),str(PAUSE)}),'recovery-dropin-drift')
     actual=command(['systemctl','show',SERVICE,'-p','ExecStart','--value'])
     allowed=('/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml daemon --interval 30',
-             '/usr/bin/python3 -I '+str(SELF)+' drain-worker','/usr/bin/python3 -I '+str(SELF)+' admission-worker')
+             '/usr/bin/python3 -I '+str(SELF)+' drain-worker','/usr/bin/python3 -I '+str(WRAPPER)+' admission-worker')
     require(actual.count('argv[]=')==1 and any('argv[]='+value+' ;' in actual for value in allowed),'recovery-exec-drift')
 
 def keep_paused():
@@ -672,7 +702,7 @@ def commit():
             start_normal(doc,'after','applied',proof)
         print('APPLIED; active; manager-sha256 '+NEW_MANAGER_SHA+'; helper-sha256 '+NEW_HELPER_SHA)
     except BaseException:
-        if doc['phase'] in ('installing','resuming'): failed_resume(doc)
+        if doc['phase'] in ('installing','resuming','applied'): failed_resume(doc)
         raise
 
 def terminal_current(doc):
@@ -691,8 +721,69 @@ def terminal_current(doc):
     require(is_active(),'terminal-manager-inactive')
     return True
 
+def normal_service_current(doc):
+    side='after' if doc['finalize_terminal']=='applied' else 'before'
+    require(observed_files(doc)==side,'finalize-file-drift')
+    require(not PAUSE.exists() and not PAUSE.is_symlink(),'finalize-override-present')
+    mod=installed(side=='after'); config(mod,AFTER if side=='after' else BEFORE)
+    require(is_active() and command(['systemctl','is-active','ci-runner-host-helper.socket'])=='active','finalize-service-inactive')
+    for prop in ('ExecMainStatus','NRestarts'):
+        require(command(['systemctl','show',SERVICE,'-p',prop,'--value'])=='0','finalize-service-not-clean')
+
+def finalize():
+    doc=backup()
+    if doc['phase']=='finalized':
+        normal_service_current(doc)
+        require(not WRAPPER.exists() and not WRAPPER.is_symlink() and not GATE.exists(),'finalize-metadata-present')
+        print('ALREADY-FINALIZED; original service start verified'); return
+    if doc['phase']!='finalizing':
+        require(doc['phase'] in ('applied','aborted','rolled-back'),'wrong-finalize-phase')
+        terminal_current(doc)
+        identity=[command(['systemctl','show',SERVICE,'-p',prop,'--value']) for prop in ('MainPID','ExecMainStartTimestampMonotonic')]
+        require(identity[0].isdigit() and int(identity[0])>0 and identity[1].isdigit(),'finalize-service-identity-invalid')
+        with bounded_commands(FINALIZE_STABILITY_SECONDS+90):
+            until=time.monotonic()+FINALIZE_STABILITY_SECONDS
+            while time.monotonic()<until:
+                time.sleep(min(5,until-time.monotonic()))
+                terminal_current(doc)
+                require(all(command(['systemctl','show',SERVICE,'-p',prop,'--value'])==value for prop,value in
+                            zip(('MainPID','ExecMainStartTimestampMonotonic'),identity)),'finalize-service-restarted')
+                for prop in ('ExecMainStatus','NRestarts'):
+                    require(command(['systemctl','show',SERVICE,'-p',prop,'--value'])=='0','finalize-service-not-clean')
+        doc.update(finalize_terminal=doc['phase'],phase='finalizing',finalize_observed_at=time.time())
+        journal(doc)  # Stable policy accepted before the first irreversible removal.
+    side='after' if doc['finalize_terminal']=='applied' else 'before'
+    require(observed_files(doc)==side,'finalize-file-drift')
+    try:
+        # Close at the existing JIT interlock, retaining all running guests/claims.
+        keep_paused()
+        require(read(PAUSE)[0]==BLOCK,'finalize-pause-drift')
+        if WRAPPER.exists(): require(read(WRAPPER)[0]==wrapper_bytes(),'finalize-wrapper-drift')
+        PAUSE.unlink(); fsync_dir(PAUSE.parent); reload()
+        command(['systemctl','start','ci-runner-host-helper.socket'])
+        command(['systemctl','reset-failed',SERVICE]); command(['systemctl','start',SERVICE])
+        with bounded_commands(STABILITY_SECONDS+90):
+            identity=command(['systemctl','show',SERVICE,'-p','MainPID','--value'])
+            time.sleep(STABILITY_SECONDS); normal_service_current(doc)
+            require(command(['systemctl','show',SERVICE,'-p','MainPID','--value'])==identity,'finalize-service-restarted')
+        # The ordinary daemon is now running, with no admission wrapper or new GETs.
+        if WRAPPER.exists(): WRAPPER.unlink(); fsync_dir(WRAPPER.parent)
+        require(decode(read(GATE)[0])=={'schema':1,'transaction':doc['transaction'],'phase':'blocked'},'finalize-gate-drift')
+        GATE.unlink(); fsync_dir(GATE.parent)
+        doc['phase']='finalized'; journal(doc)
+        print('FINALIZED; original service start active; wrapper and override removed; backups retained')
+    except BaseException:
+        # This also covers failure after the bare daemon has picked up a job.
+        # Retry finalize against actual files/service; never clear a quarantine.
+        if doc['phase']!='finalized':
+            doc['phase']='finalizing'; journal(doc)
+            keep_paused()
+        raise
+
 def reconcile_recovery():
     doc=backup()
+    if doc['phase']=='finalized': return finalize()
+    require(doc['phase']!='finalizing','finalization-incomplete-retry-finalize')
     if doc['phase'] in ('applied','aborted','rolled-back'):
         try: terminal_current(doc)
         except Refused: pass
@@ -709,6 +800,7 @@ def reconcile_recovery():
 
 def recover():
     doc=backup()
+    if doc['phase'] in ('finalizing','finalized'): return finalize()
     if doc['phase']=='rolled-back' and is_active():
         try: terminal_current(doc)
         except Refused: return reconcile_recovery()
@@ -725,11 +817,12 @@ def recover():
             restore_bytes(doc); start_normal(doc,'before','rolled-back',proof)
         print('ROLLED-BACK; active; original hashes restored')
     except BaseException:
-        if doc['phase'] in ('installing','resuming'): failed_resume(doc)
+        if doc['phase'] in ('installing','resuming','rolled-back'): failed_resume(doc)
         raise
 
 def abort():
     doc=backup()
+    if doc['phase'] in ('finalizing','finalized'): return finalize()
     if doc['phase']=='aborted' and is_active():
         try: terminal_current(doc)
         except Refused: return reconcile_recovery()
@@ -740,7 +833,7 @@ def abort():
     try:
         with evidence_budget(proof): start_normal(doc,'before','aborted',proof)
     except BaseException:
-        if doc['phase']=='resuming': failed_resume(doc)
+        if doc['phase'] in ('resuming','aborted'): failed_resume(doc)
         raise
     print('ABORTED; original admission active; running jobs untouched')
 
@@ -751,7 +844,7 @@ def abort_rollback():
     try:
         with evidence_budget(proof): start_normal(doc,'after','applied',proof)
     except BaseException:
-        if doc['phase']=='resuming': failed_resume(doc)
+        if doc['phase'] in ('resuming','applied'): failed_resume(doc)
         raise
     print('ROLLBACK-ABORTED; reviewed AFTER admission active')
 
@@ -859,7 +952,7 @@ def main():
     if action=='admission-worker': return admission_worker()
     if action in ('readback-before','readback-after'): return readback(action=='readback-after')
     actions={'drain':drain,'authorize':authorize,'commit':commit,'abort':abort,'recover':recover,
-             'rollback-drain':lambda:drain(True),'continue-drain':continue_drain,'abort-rollback':abort_rollback,'reconcile':reconcile_recovery}
+             'rollback-drain':lambda:drain(True),'continue-drain':continue_drain,'abort-rollback':abort_rollback,'reconcile':reconcile_recovery,'finalize':finalize}
     require(action in actions or action=='check','unknown-action')
     require(os.geteuid()==0 and sys.stdin.isatty(),'interactive-root-required')
     os.environ.clear(); os.umask(0o077); secure_parent(STAGE)
