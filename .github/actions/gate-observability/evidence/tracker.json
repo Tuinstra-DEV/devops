@@ -5,7 +5,7 @@
   "project_id": "4511896763891792",
   "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
   "fingerprints": {
-    "sdk_initialization": "sha256:51f952c26688730ecad097315bf12ee3da37027dd71df78976df8001195ea640",
+    "sdk_initialization": "sha256:3f620aef956ef37c48f3e8807e521e0071d638c98e4feb932e00c697203a207e",
     "routing": "sha256:d103976532b3f73113fdb217bdae113b656a92f8c6873e083587abc2e9a8924d",
     "privacy_filters": "sha256:4f2d6deea88c41362a941fbfb954aadbc5f3cef99bb22b47d873862a834d6463",
     "deployment_symbols": "sha256:7a36cda48fe817aa208da41166fd433dfa4ed7df2f87c59ec6df6c850f2e00f4"
@@ -64,21 +64,21 @@
     },
     {
       "id": "api",
-      "verification_source": "1eb90853447977720035a4d8fbdd52b1316a223d",
-      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "verification_source": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51",
+      "artifact_digest": "sha256:1189f3ba6b8df2ffe8e925238418c83ca9b4ff723175c6adcbbb6c8cb34bd0d9",
       "run": {
         "workflow": ".github/workflows/deploy-production.yml",
-        "id": "41718877570",
+        "id": "42030562014",
         "attempt": 1,
-        "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d"
+        "source_sha": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51"
       },
       "sentry": {
-        "issue_id": "158417286",
+        "issue_id": "158906568",
         "event_ids": [
-          "dd84c86a97d6406ead9af12755b7b216"
+          "6f1c248ccff0499c8cd8442e4f1e36c4"
         ]
       },
-      "heal_case_id": "cfd56bc39bb6447caf8e6dfb08b79dcf",
+      "heal_case_id": "b74a9532d7534344b7da008ed8a764b4",
       "source_frame": {
         "path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
         "line": 30
@@ -88,7 +88,6 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -98,7 +97,6 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -106,7 +104,6 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -115,21 +112,21 @@
     },
     {
       "id": "worker",
-      "verification_source": "1eb90853447977720035a4d8fbdd52b1316a223d",
-      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "verification_source": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51",
+      "artifact_digest": "sha256:1189f3ba6b8df2ffe8e925238418c83ca9b4ff723175c6adcbbb6c8cb34bd0d9",
       "run": {
         "workflow": ".github/workflows/deploy-production.yml",
-        "id": "41718877570",
+        "id": "42030562014",
         "attempt": 1,
-        "source_sha": "1eb90853447977720035a4d8fbdd52b1316a223d"
+        "source_sha": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51"
       },
       "sentry": {
-        "issue_id": "158417518",
+        "issue_id": "158906569",
         "event_ids": [
-          "0b829ee796d441929907f86cf270cee1"
+          "f202b76dc6b840e69019fbf9a362d441"
         ]
       },
-      "heal_case_id": "4b8b8d87bea3498d9d3c2a5401fac0cf",
+      "heal_case_id": "abca927116c3423ebc3ab9131504615c",
       "source_frame": {
         "path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
         "line": 29
@@ -139,7 +136,6 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -149,7 +145,6 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -157,7 +152,6 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "tracker-TRAC-223-mc-verification.json",
             "tracker-live-cases.json",
             "tracker-local-verification.md"
           ]
@@ -166,8 +160,8 @@
     }
   ],
   "provenance": {
-    "captured_at": "2026-10-15",
-    "source": "operator-verified-actual-sdk-and-signed-intake",
+    "captured_at": "2026-11-05",
+    "source": "operator-verified-actual-sdk-and-provider-intake",
     "verification_environment": "verification",
     "production_event": false
   },

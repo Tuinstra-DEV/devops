@@ -5,7 +5,7 @@
   "project_id": "4511659790630992",
   "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
   "fingerprints": {
-    "sdk_initialization": "sha256:03145dd980432c315d358a5fbf58950f107fce645c902ceb3e5d6989d69a2935",
+    "sdk_initialization": "sha256:6f17730371d6ed5e0fc4892784d521b38b40aac5878aeb10352257311b1c6f4b",
     "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
     "privacy_filters": "sha256:a0c63875a5808ce06b17689d208c52bc063e5d628118d056c066531957ac3853",
     "deployment_symbols": "sha256:d2c3d2ad8a61127576752c7ba4a8e71a217316d1d9a207384efd08f5fb1afdd4"
@@ -115,21 +115,21 @@
     },
     {
       "id": "backend",
-      "verification_source": "317e086b9fa7299f0394c36cdd1df4b229558984",
-      "artifact_digest": "sha256:70ea061384c8ed656bf40c02604ffa4626abd7f68b23d0aa1aabe24f4cbce6ab",
+      "verification_source": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
+      "artifact_digest": "sha256:8c55178cb8859b1b1117092efebdb0f344826ef7bea68dc615ed8ed3a1ae5c59",
       "run": {
         "workflow": ".github/workflows/release-gate.yml",
-        "id": "41645284648",
+        "id": "42067086339",
         "attempt": 1,
-        "source_sha": "317e086b9fa7299f0394c36cdd1df4b229558984"
+        "source_sha": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4"
       },
       "sentry": {
-        "issue_id": "158414954",
+        "issue_id": "158924336",
         "event_ids": [
-          "424ab55d82004813bddedcfda52ecb0c"
+          "d0cd8c26ddce4a24aabd599005648a2b"
         ]
       },
-      "heal_case_id": "61258be6a9024ff38392555ae71a51a7",
+      "heal_case_id": "ee0380d84c15414a838e6546aec0efdf",
       "source_frame": {
         "path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
         "line": 42
@@ -139,7 +139,6 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
             "gate-live-cases.json",
             "gate-local-verification.md"
           ]
@@ -149,7 +148,6 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "gate-IN-46-verification.json",
             "gate-live-cases.json",
             "gate-local-verification.md"
           ]
@@ -157,7 +155,6 @@
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
             "gate-live-cases.json",
             "gate-local-verification.md"
           ]
@@ -166,8 +163,8 @@
     }
   ],
   "provenance": {
-    "captured_at": "2026-11-03T21:08:55.837075+00:00",
-    "source": "operator-verified-actual-sdk-and-signed-intake",
+    "captured_at": "2026-11-05T18:09:27.382Z",
+    "source": "operator-verified-actual-sdk-and-provider-intake",
     "verification_environment": "verification",
     "production_event": false
   },

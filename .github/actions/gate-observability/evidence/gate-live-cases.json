@@ -1,6 +1,6 @@
 {
   "environment": "verification",
-  "observed_at": "2026-11-03T21:08:55.837075+00:00",
+  "observed_at": "2026-11-05T18:12:13.424Z",
   "cases": [
     {
       "heal_case_id": "2263f2f206fd4f6cac90a533f2bbd697",
@@ -22,21 +22,21 @@
       "source_line": "3"
     },
     {
-      "heal_case_id": "61258be6a9024ff38392555ae71a51a7",
-      "external_issue_id": "158414954",
-      "last_event_id": "424ab55d82004813bddedcfda52ecb0c",
+      "heal_case_id": "ee0380d84c15414a838e6546aec0efdf",
+      "external_issue_id": "158924336",
+      "last_event_id": "d0cd8c26ddce4a24aabd599005648a2b",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
       "triage_attempts": 1,
       "fix_status": "not_started",
       "fix_attempts": 0,
-      "release": "317e086b9fa7299f0394c36cdd1df4b229558984",
+      "release": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
       "environment": "verification",
       "component": "backend",
-      "source_commit": "317e086b9fa7299f0394c36cdd1df4b229558984",
-      "artifact_digest": "sha256:70ea061384c8ed656bf40c02604ffa4626abd7f68b23d0aa1aabe24f4cbce6ab",
-      "deployment_receipt_digest": "sha256:892c5ffa9eedce498c2d0e804ae5ead5b8d7bb479fee6ef5faf7fa0bd5f960e7",
+      "source_commit": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
+      "artifact_digest": "sha256:8c55178cb8859b1b1117092efebdb0f344826ef7bea68dc615ed8ed3a1ae5c59",
+      "deployment_receipt_digest": "sha256:5c4bfea2367bed2a055b7e06daaec983c27bab1bc876b6eaa93ab7d914bb1cab",
       "source_path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
       "source_line": "42"
     },
