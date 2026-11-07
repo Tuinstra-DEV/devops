@@ -104,7 +104,8 @@ immutable `288dc75d` source identity and WODIQ 604 support; do not silently reta
 this operator transaction to whatever SHA conflict resolution produces.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`5574d262572eb5120a3cf0c416f22961856084abf8e8b961eb6e0d413baa298d`.
+`947b7c16afb5e52f66a09a61e4ee3c9eaedf6f9d92836d7a31a185afc6af83ca`. The previously distributed `5574d262…` version is withdrawn;
+do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
 
@@ -157,7 +158,11 @@ role matching the last trusted pin. The new order satisfies both. Group 4 remain
 exactly **five trusted workflow refs plus one producer workflow ref**; no seventh
 entry and no sixth trusted pin, even temporarily. Repository IDs, private-only
 selection, all role actors/events/repositories, credentials, capacities, 24/4 GiB
-backing allocations, image and unit stay unchanged. Only the three workflow-ref
+backing allocations, image and base unit stay unchanged. The controlled service
+drop-in now persists after resume and runs the reviewed admission wrapper, with
+normal `Restart=always`; credential bindings and the original service sandbox
+remain unchanged. The wrapper/operator SHA is part of its root-owned admission
+record and must remain installed at the reviewed path. Only the three workflow-ref
 locations and trusted-array order change in the protected policy. Atomic writes
 preserve owner/group/mode and all unrelated bytes.
 
@@ -238,29 +243,36 @@ the script neither clears claims nor interrupts provisioning. On this timeout,
 service/config/binaries are untouched; keep the new backup and use `continue-drain`
 with fresh proof after the cause is resolved.
 
-`DRAIN_TIMEOUT_SECONDS=7500` is a fixed setting, justified by the existing
-7,200-second guest/lease limit plus 300 seconds for cleanup. It deliberately covers
-more than the observed 2,754-second maximum; it is not a delivery estimate.
-After safe admission closure, the manager service runs only a cleanup worker,
-with `Restart=no` and the existing service sandbox/credential bindings. Guests
-keep running. The worker refuses launch, JIT dispatch, and cleanup of **any**
-running, blocked, paused, suspended or unknown-state CI domain. It invokes existing
-reconciliation only once every remaining CI domain is already `shut off` or gone.
-Completed-domain cleanup removes old definitions/storage/runner registrations;
-no running VM is destroyed. Existing guest/host lease timers and job limits remain
-in force; the preparation does not extend them or claim to prevent pre-existing
-application/runtime failures.
+`DRAIN_TIMEOUT_SECONDS=7500` is an **operator wait budget**, chosen from the
+existing 7,200-second runtime/lease TTL plus a 300-second cleanup allowance. It is
+not a hard guarantee of natural completion or clean idle by second 7,500. The
+observed job maximum does not establish a worst-case runtime bound.
 
-The driver bounds the drain loop and prints only counts/status. Each subprocess
-timeout is capped at the lesser of 90 seconds and the remaining shared deadline.
-Refusal can lag the configured deadline by one 10-second polling interval; no
-sequence of subprocesses receives a new full budget. No loop
-restarts the 7,500-second budget without an explicit `continue-drain` action.
-At timeout/interruption, config and binaries remain original, admission stays
-paused and jobs remain untouched. Claude refreshes BEFORE without PATCHing;
-Marcel runs `abort` to resume the original manager, including still-running jobs.
-Alternatively the operator can explicitly retry `continue-drain`. No kill,
-cancellation, unverified state deletion or forced cleanup is a timeout action.
+**The existing host expiration timer can destroy a VM at its TTL while admission
+is paused.** Guest runtime limits also remain in force. The controller does not
+cancel jobs or deliberately destroy running guests; it does not stop, extend or
+neutralize those existing timers. A job can therefore still fail at the existing
+TTL. The effective completion boundary is 7,200 seconds plus whatever cleanup
+actually requires, including timer scheduling, helper work and GitHub/API retries.
+
+After safe admission closure, the manager service runs only a cleanup worker,
+with `Restart=no` and its existing sandbox/credential bindings. The worker refuses
+launch, JIT dispatch and cleanup of any running, blocked, paused, suspended or
+unknown-state CI domain. It invokes reconciliation only once every remaining CI
+domain is already `shut off` or gone. Completed-domain cleanup removes definitions,
+storage and registrations; it does not terminate an executing guest.
+
+Subprocess timeouts share the remaining 7,500-second wait budget. One polling
+interval, scheduler/filesystem delay, or an already-started cleanup worker can
+outlast that budget. On expiry/interruption, the command records the interrupted
+phase, leaves admission closed and returns without claiming idle or resetting the
+budget. A still-running cleanup worker is allowed to finish; `abort` will refuse
+while that service remains active. No state, claim or backup is deleted to force
+progress. For a job still running, refresh BEFORE and use `abort` to resume the
+original manager. For cleanup taking longer, retain the current files/group and
+use `continue-drain` (or `reconcile` after a resume failure) for an explicit new
+bounded attempt, or diagnose the failed cleanup. Do not patch the group until an
+actual `DRAINED` / `RECOVERY-DRAINED` result exists.
 
 ### Scanner and consumer readiness before moving Gate security
 
@@ -357,7 +369,14 @@ first service change. Root verifies the actual order, helper/unit/manager hashes
 role union, complete selected repository IDs, current source/candidate TOML and
 state. `/var/backups/wodiq-pin-swap` is never reused or deleted: its journal must
 be `applied` or `rolled-back` and its old pause drop-in must be absent. The new
-private journal/backups live at `/var/backups/runner-cutover-288dc75d-v1`.
+private transaction container is `/var/backups/runner-cutover-288dc75d-v2/`.
+Each attempt has a random `tx-<32 hex>` subdirectory and the root-owned `active.json`
+pointer selects it. The script prints its transaction ID. A durable `backing-up`
+journal is written before the first copy, and the pointer only after that journal.
+Partial copies are hash-checked and completed without overwrite. After `abort` or
+rollback, a new attempt verifies the previous backups and chooses a new ID. An
+orphan created before pointer publication remains untouched and is never treated
+as a verified rollback source. No previous directory or worktree is deleted.
 
 **Do not PATCH yet.** Drain time invalidates pre-drain proof. Claude collects BEFORE
 again and transfers it; Marcel installs it with the same `sudo install` command:
@@ -390,61 +409,149 @@ sudo install -o root -g root -m 0600 /home/mtuinstra/runner-cutover-after.json /
 sudo /usr/local/sbin/runner-controlled-cutover.py commit
 ```
 
-Expected after one 35-second stability window: **`APPLIED; active`** with the exact
+Expected after a service-owned ready receipt (including live group GETs) and
+one 35-second stability window: **`APPLIED; active`** with the exact
 new binary hashes. Claude then runs `readback-after` once more and verifies ordinary
 queued jobs pick up successfully before migrating Tessera and the remaining
 consumer calls to `288dc75d`. No new WODIQ 604 migration is required here.
 
-All evidence expires **300 seconds after collection START**, including the roughly
-180 seconds spent collecting; it does not gain a fresh five minutes at completion.
-Commit requires at least 45 seconds remaining for installation/resume checks.
-Aim for transfer, install and commit within 60 seconds of collector completion.
-If that budget is missed, leave admission paused and recollect AFTER; do not rerun
-the group PATCH or weaken expiry. Root also checks the collection began after the
-relevant drain/authorization timestamp. Evidence is operator-supplied GET readback,
-not an independently root-authenticated API connection; root never reads a token.
+All evidence expires **300 seconds after collection START**, including the measured
+191.1 seconds spent collecting (about three minutes). Installation, helper start, override changes, live
+GETs, admission, and stability checks use one shared wall/monotonic deadline. The
+root controller checks it again immediately before publishing admission permission
+and starting the service. The service checks it again after its live GETs and
+before dispatch, reserving 35 seconds for stability; APPLIED cannot be recorded
+past the shared deadline. Aim to stage and start `commit` within 30 seconds after
+collection completes, leaving room for the two GETs, installation and stability.
+Expiry refuses safely; recollect AFTER rather than weakening the deadline.
 
-### Timeout, restart failure and rollback
+The staged JSON is a **trusted operator declaration**, not signed GitHub evidence,
+remote attestation or an atomic cross-repository lock. Root ownership/hash checks
+protect the staged copy; they do not prove its assertions were honestly collected.
+Marcel explicitly trusts the unprivileged collector/gh session and maintains the
+caller/config/group editing freeze. The root process reads no credential and makes
+no network request. The existing sandboxed service account independently repeats
+GETs of group 4 and its selected repository IDs with its unchanged systemd org
+credential before every guarded daemon start. The pinned manager validates their
+exact policy against the actual config. Failure, rate limiting or mismatch denies
+admission. These live GETs strengthen group verification; they do **not** repeat the
+full branch/PR/active-source inventory or the required-check inventory. Those remain
+operator assertions requiring fresh collection and the freeze. No public/anonymous
+GET can verify this private organization policy; no extra credential is requested.
 
-- **Drain timeout before PATCH:** Claude recollects BEFORE, Marcel stages it and
-  runs `abort`. Expected `ABORTED; original admission active`; busy jobs keep running.
-  `continue-drain` explicitly retries the bounded drain without deleting backups.
-- **Restart fails while idle:** automatic exact manager/helper/config restoration;
-  expected `AUTO-RESTORED; admission PAUSED`. Claude PATCHes the full BEFORE payload,
-  runs `readback-before`, recollects BEFORE and transfers it. Marcel stages it and
-  runs `recover`; expected `ROLLED-BACK; active`. No group auto-PATCH occurs in root.
-- **Failure after a new guest picked up:** expected `RECOVERY-DRAIN-REQUIRED`.
-  Keep the new files and AFTER group; the script does not restore policy underneath
-  that guest. Marcel runs `continue-drain`, waits for `RECOVERY-DRAINED`, then Claude
-  restores BEFORE/readback/fresh proof and Marcel runs `recover`. Do not PATCH BEFORE
-  or restore binaries before the guest and cleanup finish. An unresolved JIT claim
-  blocks the stop and requires diagnosis; the tool never clears it to force progress.
-- **Deliberate later rollback:** first migrate every `288dc75d` consumer, including
-  isolated metadata/producer calls, back to a still-admitted retained route. Finish
-  all immutable old-source/nonterminal `288` runs. Claude collects AFTER, Marcel
-  stages it and runs `rollback-drain`. After `ROLLBACK-DRAINED`, Claude PATCHes BEFORE,
-  readbacks/collects BEFORE, Marcel stages it and runs `recover`. If rollback draining
-  times out, keep AFTER and use `abort-rollback` with fresh AFTER to resume it.
+### Durable resume and boot/crash recovery
 
-Backups, prior transactions and worktrees are retained. No credentials, policy
-contents, child error output or response bodies are printed by operator actions.
-Thirty offline fixtures cover real pinned old/new source bytes, busy drain, claim race,
-old-role callers, expiry, previous-transaction collision, timeout, failed restart,
-late pickup, atomic bytes/modes and full rollback. A real sudo dry run/production
-drain is deliberately not claimed; protected preflight is still Marcel's step.
+The pause override is never unlinked. It changes atomically between cleanup-only
+and the reviewed admission wrapper; the latter retains normal `Restart=always`.
+`/etc/ci-runner/cutover-admission.json` is a root-owned readable control record
+containing transaction ID, nonce, code/config hashes, boot ID and deadlines only.
+The protected journal and backups remain private. The wrapper uses the existing
+service user, sandbox and credential bindings. It does not broaden access.
+
+Before every risky resume step, the journal becomes `resuming`, with intended
+BEFORE/AFTER files and terminal state. A probation ticket is valid only in that
+boot and within the shared deadline. The service repeats the live policy GETs,
+rechecks the ticket/files and records readiness; the controller then observes 35
+seconds of stability. Only after that does it durably write the terminal journal
+and publish boot-independent `enabled` permission. A crash between those writes
+leaves probation permission, so the next boot still refuses admission. Fully
+completed activation/rollback can restart on later boots without reusing an
+expired activation proof; it still checks all pinned files and performs fresh
+live group GETs. Keep the installed wrapper and its metadata: removing the guard
+or its files is not part of normal cleanup.
+
+A runtime guard rejects new JIT POSTs when the root record is blocked/changed,
+while an already-started JIT may finish normally. The existing manager's normal
+pre-POST rejection handling is retained; the controller never clears an ambiguous
+quarantine claim. Resume failure writes `recovery-stopping` **before** attempting a
+safe stop. If JIT quarantine prevents that stop, the intent and blocked gate survive;
+`RECOVERY-STOP-BLOCKED` explicitly means the current process may still be active.
+An inactive manager with an unresolved quarantine also requires diagnosis, not
+claim deletion. Do not change group selection in either case.
+
+After an interrupted command or reboot, Marcel uses the reviewed installed tool:
+
+```sh
+sudo /usr/local/sbin/runner-controlled-cutover.py reconcile
+```
+
+This reads/verifies the active journal, every original backup, the three actual
+file hashes and protected config permissions. It validates the real service/unit,
+credential binding, command and drop-ins, accepting only the exact known forms,
+including a disk override ahead of daemon-reload. It blocks future admission,
+closes the current manager at the existing lock/JIT boundary, and drains existing
+leases naturally. BEFORE, AFTER and partial installs are supported; no assumption
+that new binaries are installed is used. No guest is killed and no claim is cleared.
+It is safe to repeat after a timeout. An already completed, coherent, enabled
+transaction is checked against actual service/files/leases and returns a no-op.
+Unknown file/unit drift fails closed for diagnosis.
+
+Expected once genuinely idle: `RECOVERY-DRAINED`. Only then Claude ensures the
+exact BEFORE group (PATCH only when needed), runs `readback-before`, collects and
+transfers fresh BEFORE. Marcel stages it and resumes the original files:
+
+```sh
+sudo install -o root -g root -m 0600 /home/mtuinstra/runner-cutover-before.json /root/runner-cutover-stage/before.json
+sudo /usr/local/sbin/runner-controlled-cutover.py recover
+```
+
+Expected: `ROLLED-BACK; active`. Repeating `recover` checks actual files/service/
+leases and returns `ALREADY-ROLLED-BACK`; it does not interrupt a healthy guest.
+If `recover` first encounters an unfinished `installing`/`resuming` phase or a
+missing override, it reconciles/drains first and asks for fresh BEFORE afterward.
+Do not manually delete the override, change the journal phase, start the bare
+manager, reset claims or reuse an expired file to force admission.
+
+### Timeout, failed restart and deliberate rollback
+
+- **Before PATCH:** refresh BEFORE and use `abort` when the cleanup service is
+  inactive. The original manager resumes, including still-running guests, and a
+  subsequent `drain` starts a new verified transaction. For longer cleanup, use an
+  explicit `continue-drain` after checking its status; it does not silently extend
+  the previous deadline.
+- **Idle resume failure:** the durable recovery intent is recorded first. Exact
+  original manager/helper/config bytes are restored and admission remains closed
+  (`AUTO-RESTORED`). Claude restores BEFORE if needed and supplies fresh BEFORE;
+  Marcel runs `recover`.
+- **Failure after old or new manager pickup:** the actual files/group stay in place,
+  phase `recovery-draining` records which files are present, and the gate is blocked.
+  Use `reconcile`, then the fresh BEFORE/recover sequence above. This applies equally
+  to failed commit, failed old-manager recovery, abort and abort-rollback resumes.
+  A safe-stop refusal cannot lose the recovery status. Existing TTL timers still
+  apply to the guest while draining.
+- **Deliberate later rollback:** first migrate every 288 consumer to an admitted
+  retained route and complete all nonterminal immutable 288-source runs. Collect
+  AFTER, stage it and use `rollback-drain`. After `ROLLBACK-DRAINED`, Claude restores
+  BEFORE/readback/fresh collection and Marcel runs `recover`. `abort-rollback` with
+  fresh AFTER resumes the new files if the rollback drain must be abandoned.
+
+The seven original review regressions were executed against SHA `5574d262…` before
+implementation: all failed (four assertion failures and three transaction errors).
+The revised suite includes actual abrupt child-process exits around new/old resume
+and the terminal/gate publication boundary; tests also cover JIT-stop refusal,
+late old/new pickup, slow helper start at proof age 304, stability/journal overrun, normal
+reboot after proof expiry, partial installation/backup and safe retry after abort.
+No production sudo/crash/drain rehearsal is claimed by these offline fixtures.
+
+Fresh consumer and required-check GETs are recorded in
+[the exact per-repository inventory](dev54-required-check-inventory.md). No required
+context or app binding was changed; actual migration PR verification remains required.
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 30 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 53 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 805 Python passes / 1 existing Linux-findmnt
-  skip and 41 Node passes. The existing macOS process-group EPERM was reproduced
-  on one rerun; its focused rerun and final full suite passed without test changes.
+- Full `make test`: pass locally, 828 Python passes / 1 existing Linux-findmnt
+  skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
+  the instrumented macOS runtime; fresh Python child processes now inject actual
+  `os._exit(73)` crashes at the same boundaries, without skipping a scenario.
   Optional Packer and the unconfigured cross-repository fleet check were unavailable.
-- Read-only `readback-before`: `GROUP-BEFORE-MATCH`. The version-2 collector ran
-  in 167.7 seconds (21:13:19 UTC), confirming Tracker's remaining isolated `ea`
+- Earlier read-only `readback-before`: `GROUP-BEFORE-MATCH`. The final version-2 collector ran
+  in 191.1 seconds (22:02:42 UTC), confirming Tracker's remaining isolated `ea`
   metadata caller; no group PATCH, sudo transaction or consumer run was performed.
 - The old-manager fixture is reconstructed from checked-in source plus a reviewed
   reverse patch and required to match the exact deployed SHA. It works in a shallow
   CI checkout without fetching history or reading the protected host configuration.
 - No UI changes; no screenshot applies. No Tracker mutation or new Story.
+
+Review logs: `/private/tmp/runner-cutover-review-red.log`, `runner-cutover-final-deadline-red.log`, `runner-cutover-review-green.log`, `runner-cutover-review-final-full-test.log`. The operator checksum at the top belongs to this revision, not the withdrawn copy.

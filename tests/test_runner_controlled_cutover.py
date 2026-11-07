@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import tomllib
 import types
@@ -44,9 +45,13 @@ class TransactionTests(unittest.TestCase):
         self.a=load(); a=self.a
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve(); a.UID=os.getuid(); a.ANCHOR=self.root
-        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK'):
+        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF'):
             setattr(a,name,self.root/name.lower())
-        a.JOURNAL=a.BACKUP/'journal.json'
+        a.JOURNAL=a.BACKUP/'journal.json';a.ACTIVE=a.TRANSACTIONS/'active.json'
+        a.BOOT_FILE.write_text('11111111-1111-4111-8111-111111111111')
+        a.SELF.write_bytes(SCRIPT.read_bytes())
+        a.BLOCK=a.BLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
+        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
         for p in (a.STATE,a.OVERLAY,a.STAGE): p.mkdir(mode=0o700)
         a.LOCK.write_bytes(b''); a.LOCK.chmod(0o600)
         a.MANAGER.write_bytes(historical('runner/manager/ci_runner_manager.py'))
@@ -71,6 +76,11 @@ class TransactionTests(unittest.TestCase):
                         [('metadata-preflight',a.TRUSTED+a.PINS[-1],'pull_request'),('pr-security-producer',a.PRODUCER,'pull_request_target')]})
         self.cfg=cfg; self.original=serialize(cfg); a.CONFIG.write_bytes(self.original); a.CONFIG.chmod(0o640)
         self.binary=a.MANAGER.read_bytes(); self.helper_binary=a.HELPER.read_bytes()
+        self.configure_runtime()
+        self.output=io.StringIO(); self.capture=contextlib.redirect_stdout(self.output); self.capture.__enter__();self.addCleanup(self.capture.__exit__,None,None,None)
+        self.snapshot('before')
+    def configure_runtime(self):
+        a=self.a
         self.active=True; self.socket=True; self.calls=[]; self.inventory={}; self.busy=False
         self.fail_restart=False; self.fail_after_launch=False; self.time=10000.; self.auto_finish=False
         self.cleanup_fails=False; self.claim_clears=False
@@ -81,8 +91,8 @@ class TransactionTests(unittest.TestCase):
                 prop=args[args.index('-p')+1]
                 return {'DropInPaths':str(a.DROPIN)+(' '+str(a.PAUSE) if a.PAUSE.exists() else ''),
                     'FragmentPath':str(a.UNIT),'User':'ci-runner-manager','Group':'ci-runner-manager','Type':'simple',
-                    'KillMode':'control-group','Restart':'no' if a.PAUSE.exists() else 'always',
-                    'ExecStart':'{ argv[]='+('/usr/bin/python3 -I '+str(a.SELF)+' drain-worker' if a.PAUSE.exists() else
+                    'KillMode':'control-group','Restart':'no' if a.PAUSE.exists() and a.PAUSE.read_bytes()==a.BLOCK else 'always',
+                    'ExecStart':'{ argv[]='+('/usr/bin/python3 -I '+str(a.SELF)+(' drain-worker' if a.PAUSE.read_bytes()==a.BLOCK else ' admission-worker') if a.PAUSE.exists() else
                         '/usr/local/bin/ci-runner-manager --config /etc/ci-runner/manager.toml daemon --interval 30')+' ; }',
                     'ActiveState':'active' if self.active else 'inactive','ExecMainStatus':'0','NRestarts':'0'}[prop]
             if args[:2]==['systemctl','stop']:
@@ -91,7 +101,7 @@ class TransactionTests(unittest.TestCase):
                 return ''
             if args[:2]==['systemctl','start']:
                 if args[2]!=a.SERVICE:self.socket=True;return ''
-                if a.PAUSE.exists():
+                if a.PAUSE.exists() and a.PAUSE.read_bytes()==a.BLOCK:
                     self.assertTrue(all(v=='shut off' for v in self.inventory.values()))
                     if not self.cleanup_fails:
                         self.inventory={}
@@ -99,6 +109,8 @@ class TransactionTests(unittest.TestCase):
                     self.active=False;return ''
                 if self.fail_restart:raise a.Refused('command-failed')
                 self.active=True
+                if a.PAUSE.exists() and a.PAUSE.read_bytes()==a.RUNBLOCK:
+                    ticket=a.check_admission_ticket(a.STABILITY_SECONDS);a.write_ready(ticket)
                 if self.fail_after_launch:
                     self.running();self.active=False;raise a.Refused('command-failed')
                 return ''
@@ -114,8 +126,23 @@ class TransactionTests(unittest.TestCase):
         def module_at(path,expected):
             module=original_module_at(path,expected);module.RUNNER_OVERLAY_ROOT=str(a.OVERLAY);return module
         a.module_at=module_at
-        self.output=io.StringIO(); self.capture=contextlib.redirect_stdout(self.output); self.capture.__enter__();self.addCleanup(self.capture.__exit__,None,None,None)
-        self.snapshot('before')
+
+    def attach_existing(self,root,state):
+        self.root=Path(root);self.a=load();a=self.a;a.UID=os.getuid();a.ANCHOR=self.root
+        for name in ('MANAGER','CONFIG','UNIT','HELPER','DROPIN','PAUSE','STATE','OVERLAY','STAGE','BACKUP','OLD_BACKUP','OLD_PAUSE','LOCK','TRANSACTIONS','GATE','READY','BOOT_FILE','SELF'):
+            setattr(a,name,self.root/name.lower())
+        a.JOURNAL=a.BACKUP/'journal.json';a.ACTIVE=a.TRANSACTIONS/'active.json'
+        a.BLOCK=a.BLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
+        a.RUNBLOCK=a.RUNBLOCK.replace(b'/usr/local/sbin/runner-controlled-cutover.py',str(a.SELF).encode())
+        self.configure_runtime()
+        for key,value in state.items():setattr(self,key,value)
+    def crash_process(self,action,point='before-start'):
+        # Fresh interpreter: direct fork + Python work is unsafe on instrumented macOS.
+        # os._exit in that interpreter still skips every handler/finally in the controller.
+        state={key:getattr(self,key) for key in ('time','active','socket','inventory')}
+        proc=subprocess.run([sys.executable,'-B',str(Path(__file__).resolve()),'--crash-fixture',str(self.root),json.dumps(state),action,point],capture_output=True,text=True,timeout=30)
+        self.assertEqual(proc.returncode,73,msg='crash fixture did not reach the requested operation: '+proc.stderr)
+
     def sleep(self,seconds):
         self.time+=seconds
         if self.auto_finish:self.inventory={n:'shut off' for n in self.inventory}
@@ -135,7 +162,7 @@ class TransactionTests(unittest.TestCase):
     def applied(self):self.drain();self.a.commit()
     def test_success_while_busy_then_rollback_exact_bytes_modes_and_pins(self):
         a=self.a;self.running();self.auto_finish=True;self.applied()
-        self.assertTrue(self.active);self.assertFalse(a.PAUSE.exists());self.assertEqual(a.CONFIG.stat().st_mode&0o777,0o640)
+        self.assertTrue(self.active);self.assertEqual(a.PAUSE.read_bytes(),a.RUNBLOCK);self.assertEqual(a.CONFIG.stat().st_mode&0o777,0o640)
         cfg=tomllib.loads(a.CONFIG.read_text());self.assertEqual(cfg['org_workflow_refs'],a.AFTER[:-1]);self.assertEqual(len(cfg['org_workflow_refs']),5)
         self.assertEqual(cfg['org_workflow_refs'][0],a.TRUSTED+a.PINS[-1]);self.assertEqual(cfg['org_workflow_refs'][3],a.TRUSTED+a.PINS[3])
         self.assertEqual(a.sha(a.MANAGER.read_bytes()),a.NEW_MANAGER_SHA);self.assertEqual(a.sha(a.HELPER.read_bytes()),a.NEW_HELPER_SHA)
@@ -176,7 +203,7 @@ class TransactionTests(unittest.TestCase):
     def test_restart_failure_after_pickup_retains_new_files_until_guest_finishes(self):
         a=self.a;self.drain();self.fail_after_launch=True
         with self.assertRaises(a.Refused):a.commit()
-        self.assertEqual(a.backup()['phase'],'recovery-drain-required');self.assertTrue(a.PAUSE.exists())
+        self.assertEqual(a.backup()['phase'],'recovery-draining');self.assertTrue(a.PAUSE.exists())
         self.assertEqual(a.sha(a.MANAGER.read_bytes()),a.NEW_MANAGER_SHA);self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
     def test_retired_ref_in_branch_or_waiting_source_refuses_before_pause(self):
         a=self.a
@@ -228,7 +255,7 @@ class TransactionTests(unittest.TestCase):
     def test_rollback_refuses_new_consumers_before_pausing(self):
         a=self.a;self.applied();self.snapshot('after',used=[a.NEW])
         with self.assertRaisesRegex(a.Refused,'ref-in-use'):a.drain(True)
-        self.assertTrue(self.active);self.assertFalse(a.PAUSE.exists())
+        self.assertTrue(self.active);self.assertEqual(a.PAUSE.read_bytes(),a.RUNBLOCK)
     def test_cleanup_failure_is_bounded_without_force(self):
         a=self.a;a.DRAIN_TIMEOUT_SECONDS=20;self.running();self.auto_finish=True;self.cleanup_fails=True
         with self.assertRaisesRegex(a.Refused,'drain-timeout'):a.drain()
@@ -312,8 +339,215 @@ class TransactionTests(unittest.TestCase):
                 b.command(['fixed-read']);self.time+=1.5;b.command(['fixed-read']);self.time+=1
                 with self.assertRaisesRegex(b.Refused,'bounded-wait-expired'):b.command(['fixed-read'])
         self.assertEqual(called,[2,.5]);self.assertIsNone(b.COMMAND_DEADLINE)
+    def test_review_r1_crash_at_resume_is_boot_closed_and_recoverable(self):
+        a=self.a;self.drain();self.crash_process('commit')
+        doc=a.backup();self.assertEqual(doc['phase'],'resuming')
+        self.active=False
+        with patch.object(a,'boot_identity',return_value='another-boot'):
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+        a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
+        self.snapshot('before');a.recover();a.recover()
+        self.assertTrue(self.active);self.assertEqual(a.CONFIG.read_bytes(),self.original)
+    def test_review_r2a_quarantine_failure_records_intent_before_safe_stop_refusal(self):
+        a=self.a;self.drain();original_command=a.command;history=a.STATE/'dispatch-history.json'
+        claim=json.dumps({'Tuinstra-DEV/gate:1':{'blocked_until':(1<<63)-1,'attempts':1}})
+        def fail(args):
+            result=original_command(args)
+            if args==['systemctl','start',a.SERVICE] and (not a.PAUSE.exists() or a.PAUSE.read_bytes()!=a.BLOCK):
+                self.active=True;history.write_text(claim);raise a.Refused('injected-start-failure')
+            return result
+        a.command=fail;a.ADMISSION_TIMEOUT_SECONDS=2
+        with self.assertRaises(a.Refused):a.commit()
+        self.assertTrue(a.backup()['phase'].startswith('recovery-'))
+        self.assertEqual(history.read_text(),claim)
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
+        a.command=original_command;history.write_text('{}') # External fixture: original JIT settled normally.
+        a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
+        self.snapshot('before');a.recover();self.assertTrue(self.active)
+    def test_review_r2b_old_manager_pickup_failure_has_recovery_drain(self):
+        a=self.a;self.drain();self.fail_restart=True
+        with self.assertRaises(a.Refused):a.commit()
+        self.fail_restart=False;self.fail_after_launch=True;self.snapshot('before')
+        with self.assertRaises(a.Refused):a.recover()
+        self.assertEqual(a.backup()['phase'],'recovery-draining')
+        self.assertEqual(a.backup()['file_set'],'before')
+        self.assertEqual(self.inventory,{'sanctuary-ci-gh-1':'running'})
+        self.fail_after_launch=False;self.auto_finish=True
+        a.reconcile_recovery();self.snapshot('before');a.recover()
+        self.assertTrue(self.active);self.assertEqual(a.CONFIG.read_bytes(),self.original)
+    def test_review_r3_slow_helper_cannot_open_admission_at_304_seconds(self):
+        a=self.a;self.drain();proof=self.snapshot('after');proof.update(started=self.time-250,finished=self.time-70)
+        (a.STAGE/'after.json').write_bytes(a.encoded(proof));doc=a.backup();doc['authorized_at']=self.time-300;a.journal(doc)
+        original=a.command;opened=[]
+        def slow(args):
+            if args==['systemctl','start','ci-runner-host-helper.socket']:self.time+=54
+            if args==['systemctl','start',a.SERVICE] and (not a.PAUSE.exists() or a.PAUSE.read_bytes()!=a.BLOCK):opened.append(self.time)
+            return original(args)
+        a.command=slow
+        try:a.commit()
+        except a.Refused:pass
+        self.assertEqual(opened,[])
+        self.assertNotEqual(a.backup()['phase'],'applied')
+        self.assertNotIn('APPLIED;',self.output.getvalue())
+    def test_review_r4a_abort_can_retry_and_preserves_verified_original_backup(self):
+        a=self.a;a.drain();self.snapshot('before');a.abort();previous=a.BACKUP
+        original_backup=(previous/'config.before').read_bytes()
+        self.snapshot('before');a.drain()
+        self.assertNotEqual(a.BACKUP,previous)
+        self.assertEqual((previous/'config.before').read_bytes(),original_backup)
+        self.assertEqual(a.backup()['phase'],'drained')
+    def test_review_r4b_crash_before_initial_journal_allows_new_transaction(self):
+        a=self.a;original=a.write
+        def fail(path,data,info=None):
+            if path.name=='journal.json':raise RuntimeError('injected-first-journal-failure')
+            return original(path,data,info)
+        with patch.object(a,'write',side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError,'injected-first-journal'):a.drain()
+        previous=a.BACKUP
+        a.drain();self.assertNotEqual(a.BACKUP,previous);self.assertTrue(previous.is_dir())
+        self.assertEqual(a.backup()['phase'],'drained')
+    def test_review_r4c_partial_backup_is_verified_and_completed_without_overwrite(self):
+        a=self.a;original=a.write
+        def fail(path,data,info=None):
+            if path.name=='helper.before':raise RuntimeError('injected-partial-backup')
+            return original(path,data,info)
+        with patch.object(a,'write',side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError,'injected-partial'):a.drain()
+        previous=a.BACKUP;original_bytes=(previous/'manager.before').read_bytes()
+        a.drain();self.assertEqual(a.BACKUP,previous)
+        self.assertEqual((previous/'manager.before').read_bytes(),original_bytes)
+        self.assertEqual(a.backup()['phase'],'drained')
+    def test_review_r1_old_recover_crash_is_boot_closed(self):
+        a=self.a;self.drain();self.fail_restart=True
+        with self.assertRaises(a.Refused):a.commit()
+        self.fail_restart=False;self.snapshot('before');self.crash_process('recover')
+        self.assertEqual(a.backup()['phase'],'resuming');self.assertEqual(a.backup()['file_set'],'before')
+        with patch.object(a,'boot_identity',return_value='new-boot'):
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+        self.active=False;a.reconcile_recovery();self.snapshot('before');a.recover();a.recover()
+        self.assertTrue(self.active)
+    def test_review_r1_crash_between_terminal_journal_and_enable_is_boot_closed(self):
+        a=self.a;self.drain();self.crash_process('commit','before-enabled')
+        self.assertEqual(a.backup()['phase'],'applied');self.active=False
+        with patch.object(a,'boot_identity',return_value='new-boot'):
+            with self.assertRaisesRegex(a.Refused,'boot'):a.check_admission_ticket()
+        a.reconcile_recovery();self.snapshot('before');a.recover();self.assertTrue(self.active)
+    def test_review_r1_missing_override_repair_preserves_running_guest(self):
+        a=self.a;self.applied();doc=a.backup();doc['phase']='resuming';a.journal(doc)
+        a.PAUSE.unlink();self.running();self.auto_finish=True
+        a.reconcile_recovery();self.assertEqual(a.PAUSE.read_bytes(),a.BLOCK)
+        self.assertEqual(a.backup()['phase'],'recovery-drained')
+        self.assertFalse(any('destroy' in call or 'kill' in call for call in self.calls))
+    def test_review_r2_inactive_quarantine_is_preserved_and_recovery_intent_survives(self):
+        a=self.a;self.drain();original=a.command;history=a.STATE/'dispatch-history.json'
+        claim=json.dumps({'Tuinstra-DEV/gate:1':{'blocked_until':(1<<63)-1,'attempts':1}})
+        def fail(args):
+            result=original(args)
+            if args==['systemctl','start',a.SERVICE] and a.PAUSE.read_bytes()==a.RUNBLOCK:
+                history.write_text(claim);self.active=False;raise a.Refused('injected-inactive-quarantine')
+            return result
+        a.command=fail
+        with self.assertRaises(a.Refused):a.commit()
+        self.assertEqual(a.backup()['phase'],'recovery-stopping');self.assertEqual(history.read_text(),claim)
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'blocked')
+    def test_review_r3_stability_overrun_cannot_report_applied(self):
+        a=self.a;self.drain();proof=self.snapshot('after');proof.update(started=self.time-250,finished=self.time-70)
+        (a.STAGE/'after.json').write_bytes(a.encoded(proof));doc=a.backup();doc['authorized_at']=self.time-300;a.journal(doc)
+        original=a.time.sleep
+        def slow(seconds):original(seconds+20 if seconds==a.STABILITY_SECONDS else seconds)
+        a.time.sleep=slow
+        with self.assertRaisesRegex(a.Refused,'insufficient-evidence'):a.commit()
+        self.assertNotEqual(a.backup()['phase'],'applied');self.assertNotIn('APPLIED;',self.output.getvalue())
+    def test_review_r3_terminal_journal_delay_cannot_enable_expired_admission(self):
+        a=self.a;self.drain();original=a.journal
+        def slow(doc):
+            original(doc)
+            if doc['phase']=='applied':self.time+=301
+        with patch.object(a,'journal',side_effect=slow):
+            with self.assertRaisesRegex(a.Refused,'insufficient-evidence'):a.commit()
+        self.assertEqual(a.decode(a.read(a.GATE)[0])['phase'],'probation')
+        self.assertNotIn('APPLIED;',self.output.getvalue())
+        with self.assertRaisesRegex(a.Refused,'proof-expired'):a.check_admission_ticket()
+        a.reconcile_recovery();self.assertEqual(a.backup()['phase'],'recovery-drained')
+    def test_review_r3_live_get_delay_rechecks_ticket_before_any_admission(self):
+        a=self.a;self.applied();record=a.decode(a.read(a.GATE)[0]);record.update(phase='probation',expires=self.time+70,monotonic_expires=self.time+70,boot=a.boot_identity())
+        a.write(a.GATE,a.encoded(record));a.GATE.chmod(0o644)
+        def slow(*args):self.time+=36
+        with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'verify_live_group',side_effect=slow),patch.object(a,'write_ready') as ready:
+            with self.assertRaisesRegex(a.Refused,'proof-expired'):a.admission_worker()
+            ready.assert_not_called()
+    def test_review_r4_partial_backup_tampering_is_not_overwritten_on_retry(self):
+        a=self.a;original=a.write
+        def fail(path,data,info=None):
+            if path.name=='helper.before':raise RuntimeError('injected-partial')
+            return original(path,data,info)
+        with patch.object(a,'write',side_effect=fail):
+            with self.assertRaises(RuntimeError):a.drain()
+        target=a.BACKUP/'manager.before';target.write_bytes(b'tampered')
+        with self.assertRaisesRegex(a.Refused,'partial-backup-drift'):a.drain()
+        self.assertEqual(target.read_bytes(),b'tampered');self.assertTrue(self.active)
+    def test_review_runtime_guard_rejects_new_jit_without_clearing_existing_claim(self):
+        a=self.a;self.applied();ticket=a.check_admission_ticket();mod=a.installed(True)
+        calls=[]
+        with patch.object(mod.GitHubClient,'request',side_effect=lambda *args,**kwargs:calls.append(args)):
+            a.install_runtime_admission_guard(mod,ticket);client=object.__new__(mod.GitHubClient)
+            a.block_admission()
+            with self.assertRaises(mod.OrgPreflightRejected):client.request('POST','/orgs/Tuinstra-DEV/actions/runners/generate-jitconfig',{})
+            self.assertEqual(calls,[])
+    def test_enabled_guard_can_reboot_long_after_activation_proof_expired(self):
+        a=self.a;self.applied();ticket=a.check_admission_ticket();self.time+=1000
+        calls=[];mod=types.SimpleNamespace()
+        mod.open_url=lambda request,timeout=20:calls.append((request,timeout))
+        client=types.SimpleNamespace()
+        client.request=lambda method,path:mod.open_url(path)
+        client.verify_org_group=lambda cfg:[client.request('GET',path) for path in ('group','repositories')]
+        mod.organization_client=lambda cfg:client
+        a.verify_live_group(mod,{},ticket)
+        self.assertEqual([call[0] for call in calls],['group','repositories'])
+        self.assertEqual(a.check_admission_ticket()['phase'],'enabled')
+    def test_recover_repairs_old_terminal_journal_with_unfinished_gate_publication(self):
+        a=self.a;self.applied();self.snapshot('after');a.drain(True);self.snapshot('before');a.recover()
+        doc=a.backup();ticket=a.decode(a.read(a.GATE)[0]);ticket['phase']='probation';a.write(a.GATE,a.encoded(ticket));a.GATE.chmod(0o644)
+        a.recover();self.assertEqual(a.backup()['phase'],'recovery-drained')
+        self.snapshot('before');a.recover();self.assertTrue(self.active)
+    def test_recovery_refuses_changed_service_unit_before_signaling_it(self):
+        a=self.a;self.drain();doc=a.backup();doc['phase']='resuming';a.journal(doc)
+        a.UNIT.write_bytes(b'changed-unit');before=len(self.calls)
+        with self.assertRaisesRegex(a.Refused,'recovery-unit-drift'):a.reconcile_recovery()
+        self.assertFalse(any(call[:2]==['systemctl','stop'] for call in self.calls[before:]))
+    def test_partial_installation_recovery_checks_all_three_real_file_hashes(self):
+        a=self.a;self.drain();doc=a.backup();doc['phase']='installing';a.journal(doc)
+        a.write(a.MANAGER,(a.STAGE/'manager.new').read_bytes(),a.MANAGER.stat())
+        self.assertEqual(a.observed_files(doc),'mixed')
+        a.reconcile_recovery();self.snapshot('before');a.recover()
+        self.assertEqual(a.MANAGER.read_bytes(),self.binary);self.assertEqual(a.HELPER.read_bytes(),self.helper_binary)
+    def test_admission_worker_cannot_run_as_root(self):
+        with patch.object(self.a.os,'geteuid',return_value=0):
+            with self.assertRaisesRegex(self.a.Refused,'must-use-existing-service-user'):self.a.admission_worker()
+    def test_enabled_guard_detects_changed_installed_operator_package(self):
+        a=self.a;self.applied();a.SELF.write_bytes(b'changed-package')
+        with self.assertRaisesRegex(a.Refused,'admission-file-drift'):a.check_admission_ticket()
+    def test_admission_preflight_creates_lifecycle_lock_before_live_gets(self):
+        a=self.a;self.applied();a.LOCK.unlink()
+        def probe(*args):
+            handle=a.take_lock();self.assertIsNotNone(handle);os.close(handle)
+            raise a.Refused('injected-live-get-refusal')
+        with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'verify_live_group',side_effect=probe):
+            with self.assertRaisesRegex(a.Refused,'injected-live-get-refusal'):a.admission_worker()
     def test_no_config_or_secret_contents_in_success_or_failure_output(self):
         self.applied();out=self.output.getvalue()
         self.assertNotIn('github_token_file',out);self.assertNotIn(self.original.decode(),out)
 
-if __name__=='__main__':unittest.main()
+if __name__=='__main__':
+    if len(sys.argv)>1 and sys.argv[1]=='--crash-fixture':
+        fixture=TransactionTests();fixture.attach_existing(sys.argv[2],json.loads(sys.argv[3]))
+        a=fixture.a;action,point=sys.argv[4:6];original=a.command;original_gate=a.public_gate
+        def command(args):
+            if point=='before-start' and args==['systemctl','start',a.SERVICE] and (not a.PAUSE.exists() or a.PAUSE.read_bytes()!=a.BLOCK):os._exit(73)
+            return original(args)
+        def gate(doc,phase,**fields):
+            if point=='before-enabled' and phase=='enabled':os._exit(73)
+            return original_gate(doc,phase,**fields)
+        a.command=command;a.public_gate=gate
+        {'commit':a.commit,'recover':a.recover}[action]();os._exit(74)
+    unittest.main()
