@@ -98,24 +98,27 @@ access, caller workaround, host file or organization setting is changed here.
 This section supersedes the former request for a naturally idle window. Preparation
 only: no host, runner group, credential, consumer or deployment is changed here.
 The implementation PR is stacked on #206; it must be reviewed together with #206.
-GitHub currently marks #206 `CONFLICTING` / `DIRTY`; its integration with main
-needs a separate reviewed conflict resolution before any merge. Preserve the
-immutable `288dc75d` source identity and WODIQ 604 support; do not silently retarget
-this operator transaction to whatever SHA conflict resolution produces.
+#206 now contains a normal merge of main `ef06940823c78eee88c6be3023ea6b7b0165b0be`,
+recorded by integration commit `59d777f17f6f021a7ae5567c62c70810f4508172`. #210 incorporates that exact parent
+with a normal merge. The general workflow, manager and helper retain their reviewed
+previous-source bytes; main's observability updates are preserved. Compact no-input
+WODIQ callers must keep admitted `604ad2b9`: its exact workflow is frozen and tested
+in `tests/fixtures/wodiq-compact-at-604ad2b9.yml`. The new general pin is not a
+drop-in upgrade for those callers. No consumer repository is changed here.
 The standalone operator script is `scripts/runner-controlled-cutover.py`, also
 staged at `/private/tmp/runner-controlled-cutover.py`, SHA-256
-`43baae40366e3c151cbaac3a5a70f31d70a194f19efd6819fb9be8a16379ff8c`. The previously distributed `5574d262…`, `c3acd248…`, `b8bad777…` and `266ca775…` versions are withdrawn;
+`850a27d1c2a868643b4e8be8679ae43c374ccde38c3c1a67547f044e7dfe0c51`. The previously distributed `5574d262…`, `c3acd248…`, `b8bad777…`, `266ca775…` and `43baae40…` versions are withdrawn;
 do not execute it or mix its v1 journal with this v2 protocol.
 
 ### Fixed versions and reconciliation
 
-The new shared workflow pin is **`288dc75d5f07819cc2c41ab456140c3ee14de369`**,
-the reviewed #206 head, rather than an unspecified future merge SHA. Keep that
+The new shared workflow pin is **`59d777f17f6f021a7ae5567c62c70810f4508172`**,
+the reviewed #206 main-integration commit, replacing planned pin `288dc75d`. Keep that
 commit reachable; merge #206 with its history preserved. If #206's executable
 sources change during review, stop and regenerate this transaction and its hashes.
 A documentation-only merge commit does not change the chosen workflow identity.
 
-| Component | Current, read-only verified on 7 November | Combined target from `288dc75d` |
+| Component | Current, read-only verified on 7 November | Combined target from `59d777f1` |
 | --- | --- | --- |
 | Manager | `5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3` | `aab54e656e1acbd261d3f28de16d53ac4a9c500276012c1e9f0897022195c40b` |
 | Host helper | `fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613` | `addf16e83af68ecfd99fcc080dfa93f8f04e2c8e57098f091c5688c100be6954` |
@@ -123,7 +126,7 @@ A documentation-only merge commit does not change the chosen workflow identity.
 
 The #205-only playbook's `81aa1f6405f71ebf15740079bbde89c8f4e7d44820110172a6ad1565728591ec`
 correctly identifies its historical manager, but **does not match #206's source**.
-It will refuse a source checkout at `288dc75d`; after this combined installation
+It will refuse a source checkout at `59d777f1`; after this combined installation
 it will also refuse the installed manager. Do not run that playbook before, during
 or after this transaction as an extra installation/rollback step. Its standalone
 procedure remains historical. This script pins and restores both exact binaries,
@@ -148,9 +151,9 @@ AFTER trusted, in TOML order:
 1 604ad2b9e636798899cb90a7aa8bdfa8d6ad2a4d
 2 23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e
 3 a8ace2f171d7d127bbfb3a6d6b13f158f461ba98
-4 288dc75d5f07819cc2c41ab456140c3ee14de369
-metadata role: 288dc75d5f07819cc2c41ab456140c3ee14de369
-producer role: 288dc75d5f07819cc2c41ab456140c3ee14de369
+4 59d777f17f6f021a7ae5567c62c70810f4508172
+metadata role: 59d777f17f6f021a7ae5567c62c70810f4508172
+producer role: 59d777f17f6f021a7ae5567c62c70810f4508172
 ```
 
 Both installed validators enforce index 3 = `a8ace2f1…` and the enabled metadata
@@ -206,9 +209,9 @@ also blocks it; changing today's branch does not repair yesterday's queued run.
 There were no `ea86c62e` producer callers in the inspected branches. If one appears,
 migrate it to the still-working hosted producer pin `2ca87c18bddce63379b7a33dc6de5be2f0a1d951`
 and finish its old run before retiring that producer role ref. New callers must
-not target the unadmitted `288dc75d` until the host/group transaction is applied.
+not target the unadmitted `59d777f1` until the host/group transaction is applied.
 Tessera can remain on admitted `ea` throughout the drain, then adopt the cache
-repair at `288dc75d` afterward. The same retained pins keep ordinary queued work
+repair at `59d777f1` afterward. The same retained pins keep ordinary queued work
 eligible after resume.
 
 Historical completed runs/obsolete branches are not blanket re-enrolled: do not
@@ -277,7 +280,7 @@ actual `DRAINED` / `RECOVERY-DRAINED` result exists.
 ### Scanner and consumer readiness before moving Gate security
 
 The deployed scanner digest beginning `b20881ca…` does not recognize the `ea86c62e`
-caller, and it will not automatically recognize `288dc75d`. Gate's current trusted
+caller, and it will not automatically recognize `59d777f1`. Gate's current trusted
 PR caller is frozen at `43ead52517b9ab7e3d6f6bb94305be2b98a10fd9`, on
 `pull_request` plus the deliberately unsupported `merge_group`. Tracker's current
 security producer stays at hosted `2ca87c18…`. Do not replace those with a new SHA
@@ -285,7 +288,7 @@ alone and claim Sanctuary scanning works.
 
 Required separate Gate backend/scanner work:
 
-1. Add the exact `reusable-gate-pr-security.yml@288dc75d5f07819cc2c41ab456140c3ee14de369`
+1. Add the exact `reusable-gate-pr-security.yml@59d777f17f6f021a7ae5567c62c70810f4508172`
    target caller to `CiGateTextScanner::TRUSTED_PR_SECURITY_WORKFLOW_REFS`, preserving
    the existing old callers until their migrations/runs finish. Keep exact trigger,
    concurrency/metadata filter, job keys and permissions checks; add positive and
@@ -301,7 +304,7 @@ Required separate Gate backend/scanner work:
    variables through the normal reviewed registration path. `ActionsOidcVerifier`
    checks registration equality; runner-group membership alone grants no publisher
    authority. No wildcard or verifier bypass is part of this migration.
-4. After APPLIED, migrate each canonical consumer to `288dc75d`, verify a real
+4. After APPLIED, migrate each canonical consumer to `59d777f1`, verify a real
    eligible human PR on `ci-pr-security-producer` / Sanctuary, and verify the
    untrusted/bot fallback and replay/stale-source rejection. The operator transaction
    only admits that fixed role; it does not count as this end-to-end proof.
@@ -310,7 +313,7 @@ Resolve/privately verify the existing host credential's protected default/base
 Contents-read access as described above. The agent cannot use sudo to inspect
 protected files; local gh access is not proof of host credential access. Any genuinely
 new credential grant remains Marcel's separate decision. Tracker's published-container
-runtime provenance is still absent from source `288dc75d`; it remains a prerequisite
+runtime provenance is still absent from source `59d777f1`; it remains a prerequisite
 for that consumer feature, not something this host swap implements or proves.
 
 ### Exact operator sequence
@@ -325,8 +328,8 @@ One-time local staging, in the reviewed preparation checkout:
 cp scripts/runner-controlled-cutover.py /private/tmp/runner-controlled-cutover.py
 python3.14 /private/tmp/runner-controlled-cutover.py group-before > /private/tmp/runner-group4-before.json
 python3.14 /private/tmp/runner-controlled-cutover.py group-after > /private/tmp/runner-group4-after.json
-git show 288dc75d5f07819cc2c41ab456140c3ee14de369:runner/manager/ci_runner_manager.py > /private/tmp/runner-cutover-manager.new
-git show 288dc75d5f07819cc2c41ab456140c3ee14de369:runner/host-helper/ci_runner_host_helper.py > /private/tmp/runner-cutover-helper.new
+git show 59d777f17f6f021a7ae5567c62c70810f4508172:runner/manager/ci_runner_manager.py > /private/tmp/runner-cutover-manager.new
+git show 59d777f17f6f021a7ae5567c62c70810f4508172:runner/host-helper/ci_runner_host_helper.py > /private/tmp/runner-cutover-helper.new
 shasum -a 256 /private/tmp/runner-controlled-cutover.py /private/tmp/runner-cutover-manager.new /private/tmp/runner-cutover-helper.new
 scp /private/tmp/runner-controlled-cutover.py /private/tmp/runner-cutover-manager.new /private/tmp/runner-cutover-helper.new mtuinstra@sanctuary.tuinstra.dev:
 ```
@@ -369,7 +372,7 @@ first service change. Root verifies the actual order, helper/unit/manager hashes
 role union, complete selected repository IDs, current source/candidate TOML and
 state. `/var/backups/wodiq-pin-swap` is never reused or deleted: its journal must
 be `applied` or `rolled-back` and its old pause drop-in must be absent. The new
-private transaction container is `/var/backups/runner-cutover-288dc75d-v2/`.
+private transaction container is `/var/backups/runner-cutover-59d777f1-v2/`.
 Each attempt has a random `tx-<32 hex>` subdirectory and the root-owned `active.json`
 pointer selects it. The script prints its transaction ID. A durable `backing-up`
 journal is written before the first copy, and the pointer only after that journal.
@@ -414,7 +417,7 @@ Expected after a service-owned ready receipt (including live group GETs) and
 one 35-second stability window: **`APPLIED; active`** with the exact
 new binary hashes. Claude then runs `readback-after` once more and verifies ordinary
 queued jobs pick up successfully before migrating Tessera and the remaining
-consumer calls to `288dc75d`. No new WODIQ 604 migration is required here.
+consumer calls to `59d777f1`. No new WODIQ 604 migration is required here.
 
 All evidence expires **300 seconds after collection START**, including the measured
 191.1 seconds spent collecting (about three minutes). Installation, helper start, override changes, live
@@ -485,6 +488,15 @@ it automatically. Use `reconcile` → fresh BEFORE evidence → `recover`. `fina
 refuses pending. A crash after the completed confirmed rename preserves a valid
 confirmation decision and can use normal finalization. Temporary files are not
 admission records; only the fixed gate pathname is read by the service.
+
+**Accepted residual risk (Marcel, 8 November 2026):** the operating system can
+pause the controller after its final monotonic check and before the atomic rename.
+If the deadline passes during that pause and execution resumes, confirmation can
+be published after expiry. Marcel explicitly accepts this remaining check/rename
+gap for execution once the other prerequisites are satisfied. The protocol does
+not claim an atomic clock check plus filesystem rename, and adds no further
+clock-discontinuity detection. Crashes before rename still leave pending; the
+existing reconcile/fresh-proof/recover path and deliberate rollback remain available.
 
 Definitive permission no longer depends on ctime, mtime, a wall-clock publication
 timestamp or a controller postcheck. Real-time proof-age checks remain for initial
@@ -594,7 +606,7 @@ Deliberate `rollback-drain` remains supported after finalization.
   A safe-stop refusal cannot lose the recovery status. Existing TTL timers still
   apply to the guest while draining.
 - **Deliberate later rollback:** first migrate every 288 consumer to an admitted
-  retained route and complete all nonterminal immutable 288-source runs. Collect
+  retained route and complete all nonterminal immutable previous-source runs. Collect
   AFTER, stage it and use `rollback-drain`. After `ROLLBACK-DRAINED`, Claude restores
   BEFORE/readback/fresh collection and Marcel runs `recover`. `abort-rollback` with
   fresh AFTER resumes the new files if the rollback drain must be abandoned.
@@ -627,9 +639,9 @@ context or app binding was changed; actual migration PR verification remains req
 
 ### Preparation verification
 
-- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 73 pass.
+- `python3.14 -B -m unittest tests/test_runner_controlled_cutover.py`: 74 pass.
 - `make lint`: pass with the existing Python 3.14/Ansible environment.
-- Full `make test`: pass locally, 848 Python passes / 1 existing Linux-findmnt
+- Full `make test`: pass locally, 856 Python passes / 1 existing Linux-findmnt
   skip and 41 Node passes. Direct Python `fork()` crash fixtures proved unstable on
   the instrumented macOS runtime; fresh Python child processes now inject actual
   `os._exit(73)` crashes at the same boundaries, without skipping a scenario.

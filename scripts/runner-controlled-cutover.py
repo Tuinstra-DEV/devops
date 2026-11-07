@@ -16,7 +16,7 @@ PINS=['e1a9f09504b903120e9b5297eff64f58a891c907','604ad2b9e636798899cb90a7aa8bdf
       '23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e','a8ace2f171d7d127bbfb3a6d6b13f158f461ba98',
       'ea86c62eeac615cb292a78bf50995fed81c051ee']
 OLD=TRUSTED+PINS[0]
-TARGET='288dc75d5f07819cc2c41ab456140c3ee14de369'
+TARGET='59d777f17f6f021a7ae5567c62c70810f4508172'
 NEW=TRUSTED+TARGET
 PRODUCER=PREFIX+'reusable-gate-pr-security.yml@'+PINS[-1]
 BEFORE=[TRUSTED+x for x in PINS]+[PRODUCER]
@@ -42,7 +42,7 @@ BLOCK=('[Service]\nExecStart=\nExecStart=/usr/bin/python3 -I '+str(SELF)+' drain
 STATE=Path('/var/lib/ci-runner-manager/state')
 OVERLAY=Path('/var/lib/ci-runner/overlay')
 STAGE=Path('/root/runner-cutover-stage')
-TRANSACTIONS=Path('/var/backups/runner-cutover-288dc75d-v2')
+TRANSACTIONS=Path('/var/backups/runner-cutover-59d777f1-v2')
 ACTIVE=TRANSACTIONS/'active.json'
 BACKUP=TRANSACTIONS/'unselected'
 JOURNAL=BACKUP/'journal.json'
@@ -485,6 +485,7 @@ def public_gate(doc,phase,**fields):
                     time.monotonic()<min(COMMAND_DEADLINE,record['monotonic_expires']),'confirmation-deadline-expired')
         confirm()  # The durable pending publication precedes the decision in this process.
         # Prepare permissions and fsync BEFORE rechecking monotonic time and rename.
+        # The OS-pause gap between that last check and rename is explicitly accepted in the plan.
         write(GATE,encoded(record),before_replace=confirm,public=True)
     else:
         write(GATE,encoded(record)); GATE.chmod(0o644); fsync_dir(GATE.parent)

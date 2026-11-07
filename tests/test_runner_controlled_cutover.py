@@ -161,6 +161,15 @@ class TransactionTests(unittest.TestCase):
         (self.a.OVERLAY/'gh-1.qcow2').write_bytes(b'synthetic')
     def drain(self):self.a.drain();self.snapshot('before');self.a.authorize();self.snapshot('after')
     def applied(self):self.drain();self.a.commit()
+    def test_integrated_rollout_pin_and_retained_policy(self):
+        a=self.a
+        pin='59d777f17f6f021a7ae5567c62c70810f4508172'
+        self.assertEqual(a.TARGET,pin)
+        self.assertEqual(a.AFTER,[a.TRUSTED+a.PINS[-1],a.TRUSTED+a.PINS[1],
+                                a.TRUSTED+a.PINS[2],a.TRUSTED+a.PINS[3],a.TRUSTED+pin,
+                                a.PREFIX+'reusable-gate-pr-security.yml@'+pin])
+        self.assertIn(pin,(ROOT/'docs/runner/dev54-cache-cutover-plan.md').read_text())
+
     def test_success_while_busy_then_rollback_exact_bytes_modes_and_pins(self):
         a=self.a;self.running();self.auto_finish=True;self.applied()
         self.assertTrue(self.active);self.assertEqual(a.PAUSE.read_bytes(),a.RUNBLOCK);self.assertEqual(a.CONFIG.stat().st_mode&0o777,0o640)

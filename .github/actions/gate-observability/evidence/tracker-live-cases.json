@@ -1,11 +1,11 @@
 {
   "environment": "verification",
-  "observed_at": "2026-11-03T21:28:00Z",
+  "observed_at": "2026-11-05T17:25:27.007Z",
   "cases": [
     {
-      "heal_case_id": "cfd56bc39bb6447caf8e6dfb08b79dcf",
-      "external_issue_id": "158417286",
-      "last_event_id": "dd84c86a97d6406ead9af12755b7b216",
+      "heal_case_id": "b74a9532d7534344b7da008ed8a764b4",
+      "external_issue_id": "158906568",
+      "last_event_id": "6f1c248ccff0499c8cd8442e4f1e36c4",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -14,15 +14,16 @@
       "fix_attempts": 0,
       "component": "api",
       "environment": "verification",
-      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
-      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "source_commit": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51",
+      "artifact_digest": "sha256:1189f3ba6b8df2ffe8e925238418c83ca9b4ff723175c6adcbbb6c8cb34bd0d9",
       "source_path": "code/api/src/Telemetry/FeedbackSearchPrivacy.php",
-      "source_line": "30"
+      "source_line": "30",
+      "deployment_receipt_digest": "sha256:80c4394eda883fd6d0d079b88584820bba09f15044b9f22bcd8cd64a42ab685c"
     },
     {
-      "heal_case_id": "4b8b8d87bea3498d9d3c2a5401fac0cf",
-      "external_issue_id": "158417518",
-      "last_event_id": "0b829ee796d441929907f86cf270cee1",
+      "heal_case_id": "abca927116c3423ebc3ab9131504615c",
+      "external_issue_id": "158906569",
+      "last_event_id": "f202b76dc6b840e69019fbf9a362d441",
       "status": "triaged",
       "reason": null,
       "occurrences": 1,
@@ -31,10 +32,11 @@
       "fix_attempts": 0,
       "component": "worker",
       "environment": "verification",
-      "source_commit": "1eb90853447977720035a4d8fbdd52b1316a223d",
-      "artifact_digest": "sha256:14483649f56dca4b945c7ab43dfb41d2f537b83279955758e1b7054d3fd7e5b8",
+      "source_commit": "d5280c123f99b7788b73c9cb7b8ce86025fd6f51",
+      "artifact_digest": "sha256:1189f3ba6b8df2ffe8e925238418c83ca9b4ff723175c6adcbbb6c8cb34bd0d9",
       "source_path": "code/api/src/Telemetry/FeedbackSearchSentryPrivacy.php",
-      "source_line": "29"
+      "source_line": "29",
+      "deployment_receipt_digest": "sha256:f9b4d61471ec50d8f87e38337d19d0e7fba5687664ae1edf987879d2f9586918"
     },
     {
       "heal_case_id": "f5a6f3d1325442a382b5fdf09c1ccfee",
