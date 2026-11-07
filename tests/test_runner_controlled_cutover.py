@@ -761,7 +761,7 @@ class TransactionTests(unittest.TestCase):
         fields={key:value for key,value in record.items() if key not in ('schema','transaction','phase','confirmation')}
         a.public_gate(doc,'probation',**fields);mod=a.installed(True)
         path='/orgs/Tuinstra-DEV/actions/runners/generate-jitconfig'
-        with patch.object(a.os,'geteuid',return_value=501),patch.object(a,'module_at',return_value=mod),patch.object(a,'verify_live_group'),patch.object(mod.GitHubClient,'request') as http:
+        with patch.object(a.os,'geteuid',return_value=os.getuid() or 501),patch.object(a,'module_at',return_value=mod),patch.object(a,'verify_live_group'),patch.object(mod.GitHubClient,'request') as http:
             def daemon(args):
                 self.assertEqual(args,['--config',str(a.CONFIG),'daemon','--interval','30'])
                 client=object.__new__(mod.GitHubClient)
