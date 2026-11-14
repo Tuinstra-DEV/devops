@@ -972,20 +972,114 @@ def compose_command(app: dict[str, Any]) -> list[str]:
     return command
 
 
+def wodiq_digest_ref(value: Any) -> str:
+    if (not isinstance(value, str) or len(value) > 512
+            or not re.fullmatch(r"[a-z0-9][a-z0-9._:/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@sha256:[a-f0-9]{64}", value)):
+        raise BackupError("WODIQ release image must be a digest reference")
+    return value
+
+
+def wodiq_release_images(app: dict[str, Any], source: Path | None = None) -> dict[str, str]:
+    source = source or Path(app["compose_env_file"])
+    reject_symlink_components(source)
+    descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != ROOT_UID
+                or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= 64 * 1024):
+            raise BackupError("WODIQ release environment must be root-owned 0600 and bounded")
+        encoded = os.read(descriptor, 64 * 1024 + 1)
+        if len(encoded) != info.st_size:
+            raise BackupError("WODIQ release environment changed while reading")
+    finally:
+        os.close(descriptor)
+    try:
+        lines = encoded.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise BackupError("WODIQ release environment encoding is invalid") from exc
+    values: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.strip().partition("=")
+        key, value = key.strip(), value.strip()
+        if key.startswith("export "):
+            key = key.removeprefix("export ").strip()
+        if not (key.startswith("WODIQ_") and key.endswith("_IMAGE")):
+            continue
+        if not separator:
+            raise BackupError("WODIQ release image value is missing")
+        if not re.fullmatch(r"WODIQ_[A-Z0-9_]+_IMAGE", key):
+            raise BackupError("WODIQ release image key is invalid")
+        if key in values:
+            raise BackupError("WODIQ release image key is duplicated")
+        # Accept literal dotenv quotes, never expand variables or execute input.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = wodiq_digest_ref(value)
+    if not values:
+        raise BackupError("WODIQ release image mapping is empty")
+    return values
+
+
+def running_wodiq_images(app: dict[str, Any]) -> dict[str, str]:
+    release = wodiq_release_images(app)
+    fixed = app.get("approved_images")
+    if not isinstance(fixed, dict) or set(fixed) != {"postgres"}:
+        raise BackupError("WODIQ PostgreSQL image pin is required")
+    postgres = wodiq_digest_ref(fixed["postgres"])
+    compose = compose_command(app)
+    try:
+        services = json.loads(run([*compose, "config", "--format", "json"]).stdout)["services"]
+        configured = {name: wodiq_digest_ref(service["image"]) for name, service in services.items()}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise BackupError("WODIQ Compose image mapping is invalid") from exc
+    if not {"postgres", "redis", app.get("application_service")}.issubset(configured):
+        raise BackupError("WODIQ Compose service mapping is invalid")
+    if any(image not in set(release.values()) for service, image in configured.items()
+           if service not in {"postgres", "redis"}):
+        raise BackupError("WODIQ Compose service images do not match release images")
+    if configured["postgres"] != postgres:
+        raise BackupError("WODIQ PostgreSQL image does not match the fixed dump-service pin")
+    # Compose is authoritative for long-running versus one-shot/profile/disabled
+    # services. New workers participate automatically without a backup code edit.
+    runtime = []
+    for service, spec in services.items():
+        deploy = spec.get("deploy", {})
+        if service != app["postgres_service"] and (
+                spec.get("profiles") or spec.get("restart") == "no" or spec.get("scale") == 0
+                or deploy.get("replicas") == 0 or deploy.get("mode") in {"replicated-job", "global-job"}):
+            continue
+        runtime.append(service)
+    for service in runtime:
+        expected = configured[service]
+        container_id = run([*compose, "ps", "--quiet", service]).stdout.decode().strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise BackupError("approved compose service is not running")
+        image_id = run(["docker", "inspect", "--format", "{{.Image}}", container_id]).stdout.decode().strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise BackupError("running container image identity is invalid")
+        try:
+            digests = json.loads(run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_id]).stdout)
+        except ValueError as exc:
+            raise BackupError("running container image digest evidence is invalid") from exc
+        if not isinstance(digests, list) or expected not in digests:
+            raise BackupError("running container does not use the approved image digest from release/Compose")
+    if wodiq_release_images(app) != release:
+        raise BackupError("WODIQ release images changed during runtime inspection")
+    # Preserve configured refs for excluded services as recovery metadata too;
+    # these refs are not evidence that an excluded service ran during backup.
+    return configured
+
+
 def running_compose_images(app: dict[str, Any], quiesced_service: str | None = None) -> dict[str, str]:
+    if app.get("adapter") == WODIQ_ADAPTER:
+        return running_wodiq_images(app)
     approved = app.get("approved_images")
-    if app.get("adapter") in {TRACKER_ADAPTER, WODIQ_ADAPTER}:
+    if app.get("adapter") == TRACKER_ADAPTER:
         if (not isinstance(approved, dict) or not 2 <= len(approved) <= 32
                 or any(not isinstance(service, str) or not ID_RE.fullmatch(service) for service in approved)
                 or any(not isinstance(image, str) or not SHA_RE.fullmatch(image.rpartition("@sha256:")[2])
                        for image in approved.values())):
             raise BackupError("approved application image mapping is invalid")
-        if app.get("adapter") == WODIQ_ADAPTER:
-            configured_services = json.loads(run([*compose_command(app), "config",
-                                                 "--format", "json"]).stdout)["services"]
-            configured_mapping = {name: service["image"] for name, service in configured_services.items()}
-            if configured_mapping != approved:
-                raise BackupError("compose service images do not match the approved digests")
         configured = image_digests(compose_images(app))
         if configured != image_digests(list(approved.values())):
             raise BackupError("compose image configuration does not match the approved digests")
@@ -1171,27 +1265,52 @@ def wodiq_token_inventory(source: Path, maximum_bytes: int) -> dict[str, tuple[A
     return inventory
 
 
-def wodiq_token_snapshot(source: Path, target: Path, maximum_bytes: int) -> None:
+def cleanup_wodiq_token_staging(directory: Path) -> None:
+    # Called under the producer export lock. Only this adapter's private staging
+    # files are eligible; never walk or delete anything in the live token volume.
+    ensure_directory(directory, 0o700)
+    for path in directory.iterdir():
+        if not re.fullmatch(r"\.tokens\.json\.[a-f0-9]{32}\.tmp", path.name):
+            continue
+        info = path.lstat()
+        if (stat.S_ISREG(info.st_mode) and info.st_uid == ROOT_UID
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1):
+            path.unlink()
+
+
+def wodiq_token_snapshot(source: Path, target: Path, maximum_bytes: int,
+                         *, staging_directory: Path | None = None) -> None:
+    staging = staging_directory or target.parent / "wodiq-token-staging"
+    if source.resolve() == staging.resolve() or staging.resolve().is_relative_to(source.resolve()):
+        raise BackupError("WODIQ token staging must be outside the live source")
+    cleanup_wodiq_token_staging(staging)
     before = wodiq_token_inventory(source, maximum_bytes)
     target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = staging / f".tokens.json.{uuid.uuid4().hex}.tmp"
     try:
-        with tarfile.open(target, "w") as archive:
-            for relative, identity in before.items():
-                if identity[0] == "file":
-                    archive.add(source / relative, arcname=PurePosixPath("garmin-tokens") / relative, recursive=False)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            with tarfile.open(fileobj=handle, mode="w") as archive:
+                for relative, identity in before.items():
+                    if identity[0] == "file":
+                        archive.add(source / relative, arcname=PurePosixPath("garmin-tokens") / relative, recursive=False)
+            handle.flush()
+            os.fsync(handle.fileno())
         if before != wodiq_token_inventory(source, maximum_bytes):
             raise BackupError("WODIQ token inventory changed during export")
-        with tarfile.open(target) as archive:
+        with tarfile.open(temporary) as archive:
             for member in archive.getmembers():
                 relative = str(PurePosixPath(member.name).relative_to("garmin-tokens"))
-                handle = archive.extractfile(member)
-                digest = hashlib.sha256(handle.read(65537)).hexdigest()
+                with archive.extractfile(member) as handle:
+                    digest = hashlib.sha256(handle.read(65537)).hexdigest()
                 if member.size != before[relative][2] or digest != before[relative][-1]:
                     raise BackupError("WODIQ token bytes changed during export")
-        os.chmod(target, 0o600)
+        os.replace(temporary, target)
     except Exception:
         target.unlink(missing_ok=True)
         raise
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def validate_wodiq_restore_adapter_result(value: Any) -> dict[str, Any]:
@@ -1354,6 +1473,8 @@ def create_export(config: dict[str, Any], app_id: str, *, quiesced_operation: st
     final_manifest = spool / f"{artifact_id}.json"
     quota = int(config["spool_quota_bytes"])
     with lock(Path(config["lock_file"])):
+        if app.get("adapter") == WODIQ_ADAPTER:
+            cleanup_wodiq_token_staging(work_root / "wodiq-token-staging")
         initial_usage = spool_usage(spool)
         if initial_usage >= quota:
             raise BackupError("backup spool quota reached")
@@ -1421,9 +1542,11 @@ def create_export(config: dict[str, Any], app_id: str, *, quiesced_operation: st
                             for item in app.get("included_directories", []):
                                 logical = require_id(item["name"], "directory input name")
                                 snapshot = payload / "files" / f"{logical}.tar"
-                                snapshotter = (wodiq_token_snapshot if app.get("adapter") == WODIQ_ADAPTER
-                                               else snapshot_directory)
-                                snapshotter(Path(item["path"]), snapshot, int(item["max_bytes"]))
+                                if app.get("adapter") == WODIQ_ADAPTER:
+                                    wodiq_token_snapshot(Path(item["path"]), snapshot, int(item["max_bytes"]),
+                                                         staging_directory=work_root / "wodiq-token-staging")
+                                else:
+                                    snapshot_directory(Path(item["path"]), snapshot, int(item["max_bytes"]))
                                 inputs.append({"name": f"files/{logical}.tar", "sha256": sha256(snapshot),
                                                "bytes": snapshot.stat().st_size})
                 internal = {
@@ -1433,6 +1556,11 @@ def create_export(config: dict[str, Any], app_id: str, *, quiesced_operation: st
                     "images": sorted(actual_images.values()), "image_services": actual_images,
                     "database": database_versions, "inputs": inputs,
                 }
+                if app.get("adapter") == WODIQ_ADAPTER:
+                    copied_release = wodiq_release_images(app, payload / "files" / "release")
+                    if any(image not in set(copied_release.values()) for service, image in actual_images.items()
+                           if service not in {"postgres", "redis"}):
+                        raise BackupError("WODIQ copied release does not match the exported runtime")
                 if app.get("adapter") == TRACKER_ADAPTER:
                     internal["object_store_bucket"] = app["object_store_bucket"]
                 atomic_json(payload / "backup-manifest.json", internal, 0o600)

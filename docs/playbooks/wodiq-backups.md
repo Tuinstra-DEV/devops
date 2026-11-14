@@ -8,21 +8,32 @@ are part of the PR. Review and merge first; the orchestrator performs the merge.
 ## Export and restore contract
 
 The producer uses `/var/www/wodiq-platform/compose.yml` with the root-owned 0600
-`release.env`. The reviewed image mapping is in `backup/profiles/prod02.json`.
-Every configured service, including the release-only migration service, must
-match its reviewed digest. Each running service must also match its pinned
-image. The source uses locally loaded image coordinates; the isolated restore
-uses the existing reviewed official PostgreSQL 17 digest from the Tracker
-restore adapter. Pre-pull that exact image on Sanctuary if absent:
+`release.env` is the deployed release's reviewed app-image source. Every
+`WODIQ_*_IMAGE` key must contain a literal digest reference; duplicate keys and
+tag-only refs fail closed. Every Compose service except PostgreSQL/Redis must
+use a ref present in that file. New services and new release keys work without
+editing backup code or the producer profile. Redis must use a digest ref.
+The PostgreSQL service that runs pg_dump retains its independent fixed pin in
+`backup/profiles/prod02.json`. Umami/Tracker's image policies are unchanged.
+
+Long-running services must be present and their running images must match the
+release/Compose digest refs. Compose metadata excludes profiled, explicit
+`restart: no`, zero-scale/zero-replica and job services from that running check;
+there is no hardcoded migration-service name or app-service list. The source
+PostgreSQL service is always verified because it runs the dump. Configured refs
+for excluded services are preserved as recovery metadata without claiming that
+those services ran. Release refs are checked again after runtime inspection
+and against the copied release file before payload publication.
+
+A WODIQ deploy updates `release.env` through its existing review/deploy process;
+application image digests are not duplicated in backup profiles. Compose,
+release and running-image mismatches still stop export. The isolated restore
+retains the existing reviewed official PostgreSQL 17 helper digest. Pre-pull
+that exact helper on Sanctuary if absent:
 
 ```sh
 sudo docker pull docker.io/library/postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
 ```
-
-A WODIQ release must update the reviewed service-to-image mapping in this repo
-and the installed producer entry along with `release.env`. A digest change
-without that review blocks export. Do not derive the allowlist automatically
-from running containers during installation.
 
 The dump is PostgreSQL custom format. A read-only repeatable-read transaction
 holds `pg_export_snapshot()` open while **both** `pg_dump --snapshot` and the
@@ -37,8 +48,14 @@ file. WODIQ's `EncryptedGarminTokenStorage.commit` writes/fsyncs a private
 `.tokens.json.*.tmp` file and atomically renames it to `tokens.json`. Export
 rejects temporary files, links, unusual file types and inventory/identity/hash
 changes between scans; it also verifies archived bytes against the first scan.
-An active or interrupted writer fails the run, leaving no acknowledged backup.
-No automatic service stop is introduced. This is a consistent committed-file
+An active or interrupted writer in the live application volume fails the run,
+leaving no acknowledged backup; backup never deletes that application's files.
+At export start, under the existing export lock, the adapter removes only its
+own regular root-owned 0600, single-link `.tokens.json.<32-hex>.tmp` crash
+leftovers in `/run/tuinstra-backup/wodiq-token-staging`. It never follows links
+or removes other names, unsafe files or anything from the live token volume.
+The token archive is staged privately there and atomically published after
+inventory/hash checks. No automatic service stop is introduced. This is a consistent committed-file
 inventory, not a distributed transaction between PostgreSQL and the volume.
 Any future production recovery must respect WODIQ's erasure journal and account
 link fences before serving traffic; never replay Redis queue/provider state.
@@ -78,7 +95,7 @@ VPS02: stage the merged bundle at `/home/mtuinstra/wodiq-backup-staging`. It nee
 ssh mtuinstra@vps02.tuinstra.dev 'cd /home/mtuinstra/wodiq-backup-staging && sudo -n ./scripts/install-wodiq-producer'
 ```
 
-The installer checks reviewed WODIQ runtime images first, saves root-private
+The installer checks the deployed release refs and WODIQ runtime images first, saves root-private
 rollback copies under `/var/backups/tuinstra-backup/wodiq-*`, then installs the
 compatible engine and **merges only WODIQ** into the installed producer JSON.
 Every other application and all top-level producer settings are preserved.
@@ -103,7 +120,16 @@ it creates only a missing WODIQ restic password, never rotates existing
 credentials. The existing escrow handoff upgrades to marker version 4 with
 both prod02 restic passwords, including the previously unescrowed Tracker
 password. Complete the existing 1Password escrow/verification procedure before
-removing the private handoff. Old 4/5/6-field escrow bundles remain readable.
+removing the private handoff. Immediately after the successful 1Password
+readback, delete the plaintext handoff on Sanctuary as its owning user:
+
+```sh
+ssh mtuinstra@sanctuary.tuinstra.dev 'rm -- /home/mtuinstra/.local/share/tuinstra-backup-escrow.json && test ! -e /home/mtuinstra/.local/share/tuinstra-backup-escrow.json'
+```
+
+Do not leave this plaintext file in `/home/mtuinstra`, copy it into a bundle,
+or delete the escrow marker/root credentials. This unlinks the handoff; it is
+not a claim of physical secure erasure. Old 4/5/6-field escrow bundles remain readable.
 A still-present prior handoff blocks upgrade rather than being overwritten.
 The installer creates private rollback copies of installed config/executables
 under `/var/lib/tuinstra-backup/install-rollback.*`. Existing known_hosts content

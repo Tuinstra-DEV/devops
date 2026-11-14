@@ -31,7 +31,16 @@ class WodiqBackupTests(unittest.TestCase):
     def app(self):
         app = json.loads((ROOT / 'backup/profiles/prod02.json').read_text())['applications'][1]
         env = self.root / 'release.env'
-        env.write_text('SYNTHETIC=true\n')
+        self.release_refs = {
+            'wodiq-api': 'synthetic/api@sha256:' + 'a' * 64,
+            'wodiq-management': 'synthetic/manage@sha256:' + 'b' * 64,
+            'wodiq-sync-worker': 'synthetic/sync@sha256:' + 'c' * 64,
+            'wodiq-analytics-retention': 'synthetic/retention@sha256:' + 'd' * 64,
+            'wodiq-migrate': 'synthetic/migrate@sha256:' + 'e' * 64,
+        }
+        self.release_keys = dict(zip(self.release_refs, ('WODIQ_API_IMAGE', 'WODIQ_MANAGEMENT_IMAGE',
+            'WODIQ_SYNC_WORKER_IMAGE', 'WODIQ_ANALYTICS_RETENTION_IMAGE', 'WODIQ_MIGRATION_IMAGE')))
+        env.write_text(''.join(f'{self.release_keys[service]}={image}\n' for service, image in self.release_refs.items()))
         env.chmod(0o600)
         app['compose_env_file'] = str(env)
         return app
@@ -92,21 +101,148 @@ class WodiqBackupTests(unittest.TestCase):
         self.assertTrue(holder.stdin.closed)
         holder.wait.assert_called_once()
 
-    def test_wrong_image_pin_and_wrong_service_mapping_fail_closed(self):
+    def image_runner(self, mapping, *, mismatched_service=None, missing_service=None, config_overrides=None):
+        containers = {service: f'{index:064x}' for index, service in enumerate(mapping, 1)}
+        images = {containers[service]: image for service, image in mapping.items()}
+        if mismatched_service:
+            images[containers[mismatched_service]] = 'synthetic/wrong@sha256:' + 'f' * 64
+
+        def execute(argv, **kwargs):
+            if 'config' in argv:
+                services = {s: {'image': i, 'restart': 'unless-stopped'} for s, i in mapping.items()}
+                services['wodiq-migrate']['profiles'] = ['release']
+                services['wodiq-migrate']['restart'] = 'no'
+                for service, overrides in (config_overrides or {}).items():
+                    services[service].update(overrides)
+                return mock.Mock(stdout=json.dumps({'services': services}).encode())
+            if 'ps' in argv:
+                return mock.Mock(stdout=(containers[argv[-1]] if argv[-1] != missing_service else '').encode())
+            if argv[:2] == ['docker', 'inspect']:
+                return mock.Mock(stdout=('sha256:' + images[argv[-1]].split('@sha256:')[1]).encode())
+            if argv[:3] == ['docker', 'image', 'inspect']:
+                image = next(image for image in images.values() if image.endswith('@' + argv[-1]))
+                return mock.Mock(stdout=json.dumps([image]).encode())
+            raise AssertionError('unexpected image command')
+        return execute
+
+    def release_mapping(self, app):
+        return {**self.release_refs, 'postgres': app['approved_images']['postgres'],
+                'redis': 'synthetic/redis@sha256:' + '1' * 64}
+
+    def test_release_change_and_matching_running_containers_are_accepted(self):
         app = self.app()
-        with mock.patch.object(backup, 'run', return_value=mock.Mock(stdout=json.dumps({
-                'services': {s: {'image': i} for s, i in app['approved_images'].items()}}).encode())), \
-             mock.patch.object(backup, 'compose_images', return_value=['bad@sha256:' + '0' * 64]):
-            with self.assertRaisesRegex(backup.BackupError, 'approved digests'):
+        mapping = self.release_mapping(app)
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            first = backup.running_compose_images(app)
+        self.assertEqual(first['wodiq-management'], self.release_refs['wodiq-management'])
+        env = Path(app['compose_env_file'])
+        changed = 'synthetic/manage@sha256:' + '9' * 64
+        env.write_text(env.read_text().replace(self.release_refs['wodiq-management'], changed))
+        mapping['wodiq-management'] = changed
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            self.assertEqual(backup.running_compose_images(app)['wodiq-management'], changed)
+        self.assertEqual(set(app['approved_images']), {'postgres'})
+
+    def test_container_different_from_release_is_rejected(self):
+        app = self.app()
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(
+                self.release_mapping(app), mismatched_service='wodiq-management')):
+            with self.assertRaisesRegex(backup.BackupError, 'approved image digest'):
                 backup.running_compose_images(app)
-        mapping = {s: {'image': i} for s, i in app['approved_images'].items()}
-        mapping['wodiq-api'], mapping['wodiq-sync-worker'] = mapping['wodiq-sync-worker'], mapping['wodiq-api']
-        with mock.patch.object(backup, 'run', return_value=mock.Mock(stdout=json.dumps({'services': mapping}).encode())):
-            with self.assertRaisesRegex(backup.BackupError, 'service images'):
+
+    def test_release_tag_without_digest_is_rejected_before_docker(self):
+        app = self.app()
+        env = Path(app['compose_env_file'])
+        env.write_text(env.read_text().replace(self.release_refs['wodiq-management'], 'synthetic/manage:latest'))
+        with mock.patch.object(backup, 'run') as execute:
+            with self.assertRaisesRegex(backup.BackupError, 'release image'):
                 backup.running_compose_images(app)
-        del app['approved_images']['postgres']
-        with mock.patch.object(backup, 'run', return_value=mock.Mock(stdout=json.dumps({'services': mapping}).encode())):
-            with self.assertRaises(backup.BackupError):
+        execute.assert_not_called()
+
+    def test_missing_core_compose_or_runtime_service_is_rejected(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        del mapping['postgres']
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            with self.assertRaisesRegex(backup.BackupError, 'service mapping'):
+                backup.running_compose_images(app)
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(
+                self.release_mapping(app), missing_service='wodiq-sync-worker')):
+            with self.assertRaisesRegex(backup.BackupError, 'not running'):
+                backup.running_compose_images(app)
+        env = Path(app['compose_env_file'])
+        env.write_text('\n'.join(line for line in env.read_text().splitlines() if not line.startswith('WODIQ_MIGRATION_IMAGE=')))
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(self.release_mapping(app))):
+            with self.assertRaisesRegex(backup.BackupError, 'release images'):
+                backup.running_compose_images(app)
+
+    def test_new_service_and_new_release_key_are_accepted_without_profile_edit(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        new_image = 'synthetic/account-erasure@sha256:' + '3' * 64
+        mapping['wodiq-account-erasure-worker'] = new_image
+        env = Path(app['compose_env_file'])
+        env.write_text(env.read_text() + 'WODIQ_ACCOUNT_ERASURE_WORKER_IMAGE=' + new_image + '\n')
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            self.assertEqual(backup.running_compose_images(app)['wodiq-account-erasure-worker'], new_image)
+
+    def test_new_compose_service_without_release_key_is_rejected(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        mapping['wodiq-account-erasure-worker'] = 'synthetic/account-erasure@sha256:' + '3' * 64
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            with self.assertRaisesRegex(backup.BackupError, 'release images'):
+                backup.running_compose_images(app)
+
+    def test_compose_metadata_excludes_one_shot_profile_and_disabled_services(self):
+        app = self.app()
+        for metadata in ({'restart': 'no'}, {'profiles': ['maintenance']}, {'scale': 0},
+                         {'deploy': {'replicas': 0}}, {'deploy': {'mode': 'replicated-job'}}):
+            with self.subTest(metadata=metadata):
+                with mock.patch.object(backup, 'run', side_effect=self.image_runner(
+                        self.release_mapping(app), missing_service='wodiq-sync-worker',
+                        config_overrides={'wodiq-sync-worker': metadata})) as execute:
+                    self.assertEqual(backup.running_compose_images(app)['wodiq-sync-worker'], self.release_refs['wodiq-sync-worker'])
+                self.assertFalse(any('ps' in call.args[0] and call.args[0][-1] == 'wodiq-sync-worker'
+                                     for call in execute.call_args_list))
+
+    def test_every_release_image_key_requires_a_digest_even_when_unused(self):
+        app = self.app()
+        env = Path(app['compose_env_file'])
+        valid = env.read_text()
+        for extra in ('WODIQ_FUTURE_DISABLED_IMAGE=synthetic/future:latest',
+                      'WODIQ_FUTURE_DISABLED_IMAGE = synthetic/future:latest',
+                      'export WODIQ_FUTURE_DISABLED_IMAGE=synthetic/future:latest',
+                      'WODIQ_FUTURE_DISABLED_IMAGE=', 'WODIQ_FUTURE_DISABLED_IMAGE'):
+            with self.subTest(extra=extra):
+                env.write_text(valid + extra + '\n')
+                with mock.patch.object(backup, 'run') as execute:
+                    with self.assertRaisesRegex(backup.BackupError, 'release image'):
+                        backup.running_compose_images(app)
+                execute.assert_not_called()
+
+    def test_redis_configured_image_requires_a_digest(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        mapping['redis'] = 'synthetic/redis:latest'
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            with self.assertRaisesRegex(backup.BackupError, 'digest reference'):
+                backup.running_compose_images(app)
+
+    def test_postgres_dump_service_pin_stays_independent_of_release(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        mapping['postgres'] = 'synthetic/postgres@sha256:' + '2' * 64
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            with self.assertRaisesRegex(backup.BackupError, 'PostgreSQL image'):
+                backup.running_compose_images(app)
+
+    def test_compose_app_image_must_appear_in_release(self):
+        app = self.app()
+        mapping = self.release_mapping(app)
+        mapping['wodiq-api'] = 'synthetic/unreleased@sha256:' + '8' * 64
+        with mock.patch.object(backup, 'run', side_effect=self.image_runner(mapping)):
+            with self.assertRaisesRegex(backup.BackupError, 'release images'):
                 backup.running_compose_images(app)
 
     def test_compose_requires_private_release_env_and_explicit_database(self):
@@ -144,6 +280,35 @@ class WodiqBackupTests(unittest.TestCase):
         (source / 'link').symlink_to(source / 'tokens.json')
         with self.assertRaises(backup.BackupError):
             backup.wodiq_token_snapshot(source, target, 1024)
+
+    def test_only_owned_crash_leftovers_in_private_token_staging_are_removed(self):
+        source = self.root / 'live-tokens'
+        source.mkdir()
+        live_tmp = source / ('.tokens.json.' + 'a' * 32 + '.tmp')
+        live_tmp.write_bytes(b'live app writer')
+        staging = self.root / 'private-staging'
+        staging.mkdir(mode=0o700)
+        stale = staging / ('.tokens.json.' + 'b' * 32 + '.tmp')
+        stale.write_bytes(b'own interrupted staging')
+        stale.chmod(0o600)
+        foreign = staging / 'foreign.tmp'
+        foreign.write_bytes(b'leave alone')
+        linked = staging / ('.tokens.json.' + 'c' * 32 + '.tmp')
+        linked.symlink_to(live_tmp)
+        broad = staging / ('.tokens.json.' + 'd' * 32 + '.tmp')
+        broad.write_bytes(b'not our private file')
+        broad.chmod(0o644)
+        with self.assertRaisesRegex(backup.BackupError, 'active writer'):
+            backup.wodiq_token_snapshot(source, self.root / 'tokens.tar', 1024, staging_directory=staging)
+        self.assertFalse(stale.exists())
+        self.assertTrue(live_tmp.exists())
+        self.assertTrue(foreign.exists())
+        self.assertTrue(linked.is_symlink())
+        self.assertTrue(broad.exists())
+        live_tmp.unlink()
+        (source / 'tokens.json').write_bytes(b'encrypted synthetic')
+        backup.wodiq_token_snapshot(source, self.root / 'tokens.tar', 1024, staging_directory=staging)
+        self.assertEqual(set(staging.iterdir()), {foreign, linked, broad})
 
     def test_wodiq_corrupt_transfer_never_acknowledges(self):
         host = {'host_slug': 'tuinstra-prod-02', 'applications': ['wodiq'], 'ssh_user': 'pull',

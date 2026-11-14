@@ -83,7 +83,15 @@ De helper maakt één beheerde Secure Note en vergelijkt de readback. Een bestaa
 beheerd item met vier of vijf velden wordt uitsluitend uitgebreid met de
 ontbrekende `prod01-restore`- en/of Status-Resticcredential; het volledige
 JSON-item gaat via stdin en de helper vergelijkt daarna alle zes waarden. Verwijder het
-handoffbestand op Sanctuary pas na die geslaagde readback. Een root-owned marker
+handoffbestand op Sanctuary onmiddellijk na die geslaagde readback. Voer als
+`mtuinstra` op Sanctuary uit:
+
+```sh
+rm -- /home/mtuinstra/.local/share/tuinstra-backup-escrow.json
+test ! -e /home/mtuinstra/.local/share/tuinstra-backup-escrow.json
+```
+
+Laat de plaintext handoff niet in `/home/mtuinstra` staan. Een root-owned marker
 voorkomt dat een herhaalde installatie ongemerkt een nieuwe leesbare kopie maakt.
 
 De source-only `git archive` bevat bewust niet de twee externe hostkeybestanden.

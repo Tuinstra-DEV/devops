@@ -25,7 +25,7 @@ def install(bundle: Path, config_path: Path = Path('/etc/tuinstra-backup/produce
     wodiq = [a for a in approved['applications'] if a['app_id'] == 'wodiq']
     if current['host_slug'] != 'tuinstra-prod-02' or len(wodiq) != 1:
         raise RuntimeError('producer target is invalid')
-    # Fail before installation if the reviewed images or private env metadata drifted.
+    # Validate the deployed release refs, runtime images and private env metadata.
     engine.running_compose_images(wodiq[0])
     merged = {**current, 'applications': [a for a in current['applications'] if a['app_id'] != 'wodiq'] + wodiq}
     if [a for a in merged['applications'] if a['app_id'] != 'wodiq'] != [a for a in current['applications'] if a['app_id'] != 'wodiq']:
