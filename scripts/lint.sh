@@ -116,3 +116,5 @@ python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-activate.s
 python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-diagnose-v2.py"); compile(p.read_text(),str(p),"exec")'
 
 python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.py"); compile(p.read_text(),str(p),"exec")'
+
+python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("backup/restore-wodiq", "scripts/install-wodiq-producer", "scripts/test_wodiq_backup.py")]'

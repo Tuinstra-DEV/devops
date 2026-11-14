@@ -20,6 +20,7 @@ restore_source="$bundle_root/backup/restore-umami"
 production_restore_source="$bundle_root/backup/production_restore.py"
 production_restore_admin_source="$bundle_root/backup/tuinstra-production-restore"
 tracker_restore_source="$bundle_root/backup/restore-tracker"
+wodiq_restore_source="$bundle_root/backup/restore-wodiq"
 admin_source="$bundle_root/backup/tuinstra-backup-admin"
 profile_source="$bundle_root/backup/profiles/sanctuary.json"
 bootstrap_source="$bundle_root/scripts/bootstrap_backup_credentials.py"
@@ -29,7 +30,7 @@ install_input_verifier="$bundle_root/scripts/verify-install-inputs.py"
 hostkey_root="$bundle_root/install-input/hostkeys"
 
 for source in "$engine_source" "$restore_source" "$production_restore_source" "$production_restore_admin_source" \
-              "$tracker_restore_source" "$admin_source" "$profile_source" "$bootstrap_source" "$escrow_stage_source" \
+              "$tracker_restore_source" "$wodiq_restore_source" "$admin_source" "$profile_source" "$bootstrap_source" "$escrow_stage_source" \
               "$install_input_manifest" "$install_input_verifier"; do
   if [[ ! -f "$source" || -L "$source" ]]; then
     echo "installer input is missing or unsafe: $source" >&2
@@ -65,7 +66,17 @@ fi
 usermod -a -G tuinstra-ops tuinstra-backup
 
 install -d -o root -g root -m 0755 /var/lib/tuinstra-backup
-python3 "$bootstrap_source"
+rollback_dir="$(mktemp -d /var/lib/tuinstra-backup/install-rollback.XXXXXXXX)"
+chmod 0700 "$rollback_dir"
+for installed in /etc/tuinstra-backup/worker.json \
+  /usr/local/libexec/tuinstra-backup/tuinstra_backup.py \
+  /usr/local/libexec/tuinstra-backup/restore-wodiq \
+  /usr/local/sbin/tuinstra-backup-admin; do
+  if [[ -f "$installed" && ! -L "$installed" ]]; then
+    cp -p "$installed" "$rollback_dir/"
+  fi
+done
+python3 "$bootstrap_source" --reuse-identities
 python3 "$escrow_stage_source"
 
 install -d -o root -g tuinstra-backup -m 0750 /etc/tuinstra-backup /etc/tuinstra-backup/ssh
@@ -100,25 +111,29 @@ install -d -o root -g root -m 0711 /mnt/hdd1000-01/backups/production
 install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-prod-01/umami
 install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-prod-01/status
 install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-prod-02/tracker
+install -d -o root -g root -m 0700 /mnt/hdd1000-01/backups/production/tuinstra-prod-02/wodiq
 
 install -o root -g root -m 0755 "$engine_source" /usr/local/libexec/tuinstra-backup/tuinstra_backup.py
 install -o root -g root -m 0755 "$restore_source" /usr/local/libexec/tuinstra-backup/restore-umami
 install -o root -g root -m 0755 "$production_restore_source" /usr/local/libexec/tuinstra-backup/production_restore.py
 install -o root -g root -m 0755 "$production_restore_admin_source" /usr/local/sbin/tuinstra-production-restore
 install -o root -g root -m 0755 "$tracker_restore_source" /usr/local/libexec/tuinstra-backup/restore-tracker
+install -o root -g root -m 0755 "$wodiq_restore_source" /usr/local/libexec/tuinstra-backup/restore-wodiq
 install -o root -g root -m 0755 "$admin_source" /usr/local/sbin/tuinstra-backup-admin
 install -o root -g root -m 0600 "$profile_source" /etc/tuinstra-backup/worker.json
 chown root:root /etc/tuinstra-backup/age-identity.txt \
   /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password \
   /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password \
-  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/wodiq.password
 chown root:root /etc/tuinstra-backup/ssh/prod01 /etc/tuinstra-backup/ssh/prod02
 chown root:root /etc/tuinstra-backup/ssh/prod01-restore
 chmod 0600 /etc/tuinstra-backup/age-identity.txt /etc/tuinstra-backup/ssh/prod01 \
   /etc/tuinstra-backup/ssh/prod02 /etc/tuinstra-backup/ssh/prod01-restore \
   /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/umami.password \
   /etc/tuinstra-backup/restic-passwords/tuinstra-prod-01/status.password \
-  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password \
+  /etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/wodiq.password
 
 known_hosts_temp="$(mktemp /etc/tuinstra-backup/ssh/.known_hosts.XXXXXX)"
 trap 'rm -f "$known_hosts_temp"' EXIT
@@ -126,7 +141,15 @@ awk 'NR==1 { print "vps01.tuinstra.dev " $1 " " $2 }' "$hostkey_root/vps01.pub" 
 awk 'NR==1 { print "vps02.tuinstra.dev " $1 " " $2 }' "$hostkey_root/vps02.pub" >>"$known_hosts_temp"
 chown root:root "$known_hosts_temp"
 chmod 0644 "$known_hosts_temp"
-mv -f "$known_hosts_temp" /etc/tuinstra-backup/ssh/known_hosts
+if [[ -e /etc/tuinstra-backup/ssh/known_hosts ]]; then
+  cmp -s "$known_hosts_temp" /etc/tuinstra-backup/ssh/known_hosts || {
+    echo "existing host trust differs from reviewed inputs; refusing replacement" >&2
+    exit 1
+  }
+  rm -f "$known_hosts_temp"
+else
+  mv "$known_hosts_temp" /etc/tuinstra-backup/ssh/known_hosts
+fi
 trap - EXIT
 
 # Older installations delegated wildcard-shaped privileged subcommands to the pull
@@ -141,20 +164,25 @@ mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run umami
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run status
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run tracker
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin run wodiq
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check umami
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check status
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check tracker
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin check wodiq
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog umami
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog status
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog tracker
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin catalog wodiq
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention umami
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention status
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention tracker
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin retention wodiq
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test umami *
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test tracker *
+mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin restore-test wodiq *
 mtuinstra ALL=(root) NOPASSWD: /usr/local/sbin/tuinstra-backup-admin escrow-recovery-test
 EOF
 chmod 0440 "$sudoers_admin"
@@ -181,6 +209,7 @@ UMask=0077
 ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app umami
 ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-01 --app status
 ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-02 --app tracker
+ExecStart=/usr/local/libexec/tuinstra-backup/tuinstra_backup.py --config /etc/tuinstra-backup/worker.json retain-active --host tuinstra-prod-02 --app wodiq
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectHome=true
@@ -226,6 +255,11 @@ systemd-tmpfiles --create /etc/tmpfiles.d/tuinstra-operations.conf
   --host tuinstra-prod-02 --app tracker --policy-version production-v1 \
   --plan-hash 4da29a1c175b1d5f234644da763e8509c7c02ff6c5e83f5f748346d49a5af725 \
   --hour 3 --minute 0 --daily 7 --weekly 4 --monthly 12
+/usr/local/libexec/tuinstra-backup/tuinstra_backup.py \
+  --config /etc/tuinstra-backup/worker.json policy-reconcile \
+  --host tuinstra-prod-02 --app wodiq --policy-version wodiq-v1 \
+  --plan-hash 8878816abf4abca9c89daeadadf4d106aed65613984986f5e156a25251fba3ca \
+  --hour 5 --minute 0 --daily 14 --weekly 4 --monthly 0
 systemctl daemon-reload
 systemctl enable --now tuinstra-backup-retention.timer
 systemctl is-enabled --quiet tuinstra-backup-retention.timer
@@ -235,6 +269,9 @@ systemctl is-active --quiet tuinstra-backup-cycle-tuinstra-prod-01--umami.timer
 systemctl is-enabled --quiet tuinstra-backup-cycle-tuinstra-prod-01--status.timer
 systemctl is-active --quiet tuinstra-backup-cycle-tuinstra-prod-01--status.timer
 systemctl is-enabled --quiet tuinstra-backup-cycle-tuinstra-prod-02--tracker.timer
+systemctl is-enabled --quiet tuinstra-backup-cycle-tuinstra-prod-02--wodiq.timer
 systemctl is-active --quiet tuinstra-backup-cycle-tuinstra-prod-02--tracker.timer
+systemctl is-active --quiet tuinstra-backup-cycle-tuinstra-prod-02--wodiq.timer
 
+echo "Private rollback directory: $rollback_dir"
 echo "Sanctuary backup installation complete; public bootstrap files: /var/lib/tuinstra-backup/public"

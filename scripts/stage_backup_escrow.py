@@ -17,6 +17,8 @@ SECRET_ROOT = Path("/etc/tuinstra-backup")
 DESTINATION = Path("/home/mtuinstra/.local/share/tuinstra-backup-escrow.json")
 MARKER = Path("/var/lib/tuinstra-backup/escrow-staged-v1")
 SOURCES = {
+    "restic_prod02_tracker": SECRET_ROOT / "restic-passwords/tuinstra-prod-02/tracker.password",
+    "restic_prod02_wodiq": SECRET_ROOT / "restic-passwords/tuinstra-prod-02/wodiq.password",
     "age_identity": SECRET_ROOT / "age-identity.txt",
     "restic_prod01_umami": SECRET_ROOT / "restic-passwords/tuinstra-prod-01/umami.password",
     "restic_prod01_status": SECRET_ROOT / "restic-passwords/tuinstra-prod-01/status.password",
@@ -25,8 +27,8 @@ SOURCES = {
     "ssh_prod01_restore": SECRET_ROOT / "ssh/prod01-restore",
 }
 MAX_SECRET_BYTES = 16 * 1024
-CURRENT_MARKER = "schema-version=3\n"
-UPGRADABLE_MARKERS = frozenset({"schema-version=1\n", "schema-version=2\n"})
+CURRENT_MARKER = "schema-version=4\n"
+UPGRADABLE_MARKERS = frozenset({"schema-version=1\n", "schema-version=2\n", "schema-version=3\n"})
 
 
 class StageError(RuntimeError):

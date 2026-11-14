@@ -33,6 +33,8 @@ SSH_ONE = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_ONE_BODY}\n-----END OPENSS
 SSH_TWO = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_TWO_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
 SSH_RESTORE = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SSH_RESTORE_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
 SECRETS = {
+    "restic_prod02_tracker": "c" * 64 + "\n",
+    "restic_prod02_wodiq": "d" * 64 + "\n",
     "age_identity": AGE,
     "restic_prod01_umami": RESTIC,
     "restic_prod01_status": RESTIC_STATUS,
@@ -42,10 +44,10 @@ SECRETS = {
 }
 LEGACY_SECRETS = {
     name: value for name, value in SECRETS.items()
-    if name not in {"ssh_prod01_restore", "restic_prod01_status"}
+    if name in escrow.LEGACY_SECRET_NAMES
 }
 RESTORE_SECRETS = {
-    name: value for name, value in SECRETS.items() if name != "restic_prod01_status"
+    name: value for name, value in SECRETS.items() if name in escrow.RESTORE_SECRET_NAMES
 }
 
 
@@ -138,7 +140,7 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
 
         self.assertEqual(result, {
             "itemId": ITEM_ID, "created": True, "escrowed": True,
-            "verified": True, "secretCount": 6,
+            "verified": True, "secretCount": 8,
         })
         arguments = "\n".join(" ".join(args) for args, _input in runner.calls)
         for secret in SECRETS.values():
@@ -160,7 +162,7 @@ class BackupOnePasswordEscrowTests(unittest.TestCase):
 
                 self.assertFalse(result["created"])
                 self.assertTrue(result["verified"])
-                self.assertEqual(result["secretCount"], 6)
+                self.assertEqual(result["secretCount"], 8)
                 edits = [
                     (args, input_text) for args, input_text in runner.calls
                     if args[1:3] == ["item", "edit"]

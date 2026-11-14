@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Restore WODIQ into a disposable, networkless PostgreSQL container only."""
+from pathlib import Path
+import json
+import sys
+import tarfile
+import tempfile
+import time
+import uuid
+
+import tuinstra_backup as backup
+
+
+def restore(payload: Path, manifest_path: Path) -> dict:
+    internal = json.loads(manifest_path.read_text())
+    expected = {key: internal[key] for key in
+                ("schema_version", "artifact_id", "host_slug", "app_id", "adapter", "created_at")}
+    backup.validate_payload(payload.parent, expected)
+    if internal["adapter"] != backup.WODIQ_ADAPTER or internal["app_id"] != "wodiq":
+        raise backup.BackupError("WODIQ restore identity is invalid")
+    expected_marker = backup.validate_wodiq_marker(internal["database"]["content_marker"])
+    with tarfile.open(payload / "files/garmin-tokens.tar") as archive:
+        total = 0
+        names = set()
+        for member in archive:
+            name = Path(member.name)
+            total += member.size
+            if (not member.isfile() or name.is_absolute() or ".." in name.parts
+                    or not name.parts or name.parts[0] != "garmin-tokens"
+                    or member.name in names or member.size > 65536
+                    or total > 64 * 1024 * 1024 or len(names) >= 10000):
+                raise backup.BackupError("WODIQ token archive is invalid")
+            names.add(member.name)
+            # Read all bytes (never extract, decrypt, print, or start a provider).
+            with archive.extractfile(member) as handle:
+                if len(handle.read(65537)) != member.size:
+                    raise backup.BackupError("WODIQ token archive is truncated")
+    container = "wodiq-restore-" + uuid.uuid4().hex
+    started = False
+    work_path = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="wodiq-validator-", dir=payload.parent) as work:
+            work_path = Path(work)
+            # Dedicated tmpfs holds the DB; no published ports, mounts, providers,
+            # API or workers. Trust applies only inside this disposable namespace.
+            started = True  # A partially successful docker run must also be cleaned.
+            backup.run(["docker", "run", "--detach", "--pull=never", "--name", container,
+                        "--network", "none", "--security-opt", "no-new-privileges:true", "--memory", "3g", "--pids-limit", "256",
+                        "--tmpfs", "/var/lib/postgresql/data:rw,size=2147483648",
+                        "--env", "POSTGRES_HOST_AUTH_METHOD=trust", backup.WODIQ_POSTGRES_IMAGE])
+            isolation = json.loads(backup.run(["docker", "inspect", "--format", "{{json .HostConfig}}", container]).stdout)
+            if isolation.get("NetworkMode") != "none" or isolation.get("PortBindings"):
+                raise backup.BackupError("WODIQ restore network isolation failed")
+            for _ in range(60):
+                try:
+                    backup.run(["docker", "exec", container, "pg_isready", "-U", "postgres"], timeout=5)
+                    break
+                except backup.BackupError:
+                    time.sleep(1)
+            else:
+                raise backup.BackupError("WODIQ isolated database did not become ready")
+            backup.run(["docker", "exec", container, "createdb", "-U", "postgres", "-T", "template0", "wodiq_restore"])
+            # Keep PostgreSQL's default public schema and remove source ACLs and
+            # ownership. --clean handles archives that explicitly own the schema.
+            backup.run(["docker", "exec", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1",
+                        "-U", "postgres", "-d", "wodiq_restore", "-c", "ALTER SCHEMA public OWNER TO postgres; GRANT ALL ON SCHEMA public TO postgres;"])
+            with (payload / "database.dump").open("rb") as dump:
+                backup.run(["docker", "exec", "-i", container, "pg_restore", "--exit-on-error",
+                            "--single-transaction", "--clean", "--if-exists", "--no-owner", "--no-acl", "-U", "postgres",
+                            "-d", "wodiq_restore"], stdin=dump)
+            with tempfile.TemporaryFile() as sql:
+                sql.write(("SET timezone='UTC';\n" + backup.WODIQ_MARKER_SQL).encode())
+                sql.seek(0)
+                encoded = backup.run(["docker", "exec", "-i", container, "psql", "-XqAt",
+                                      "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "wodiq_restore"], stdin=sql).stdout
+            actual = backup.validate_wodiq_marker({"algorithm": "wodiq-prisma-snapshot-v1", **json.loads(encoded)})
+            if actual != expected_marker:
+                raise backup.BackupError("WODIQ restored ledger or row counts do not match exported snapshot")
+    finally:
+        if started:
+            backup.run(["docker", "rm", "--force", "--volumes", container], timeout=60)
+            remaining = backup.run(["docker", "ps", "--all", "--quiet", "--filter",
+                                    "name=^/" + container + "$"]).stdout.strip()
+            if remaining:
+                raise backup.BackupError("WODIQ restore container cleanup failed")
+    if work_path is None or work_path.exists():
+        raise backup.BackupError("WODIQ restore workspace cleanup failed")
+    result = {
+        "schema_version": 1, "adapter": backup.WODIQ_ADAPTER, "application": "wodiq", "status": "passed",
+        "public_table_count": len(expected_marker["row_counts"]),
+        "application_health": "not-run-external-effects-blocked",
+        "encrypted_secret_validation": "not-run-config-preserved", "database_content_marker": "passed",
+        "token_archive_validation": "passed", "network": "none", "external_effects_blocked": True,
+        "host_ports": 0, "postgres_image": backup.WODIQ_POSTGRES_IMAGE,
+        "application_image": internal["image_services"]["wodiq-api"],
+        "containers_removed": True, "workspace_removed": True,
+    }
+    return backup.validate_wodiq_restore_adapter_result(result)
+
+
+def main() -> int:
+    try:
+        if len(sys.argv) != 2:
+            raise backup.BackupError("expected payload and manifest")
+        print(json.dumps(restore(Path(sys.argv[1]), Path(sys.argv[1]) / "backup-manifest.json"), sort_keys=True, separators=(",", ":")))
+        return 0
+    except (backup.BackupError, OSError, ValueError, KeyError, tarfile.TarError):
+        print("WODIQ isolated restore failed; private command output suppressed", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

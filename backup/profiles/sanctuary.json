@@ -28,7 +28,8 @@
   "production_restore_journal_root": "/var/lib/tuinstra-backup/production-restore/journal",
   "production_restore_work_root": "/var/lib/tuinstra-backup/production-restore/work",
   "restore_adapters": {
-    "tracker-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-tracker"
+    "tracker-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-tracker",
+    "wodiq-compose-v1": "/usr/local/libexec/tuinstra-backup/restore-wodiq"
   },
   "hosts": [
     {
@@ -50,7 +51,7 @@
       "identity_file": "/etc/tuinstra-backup/ssh/prod02",
       "credential_name": "prod02.key",
       "known_hosts_file": "/etc/tuinstra-backup/ssh/known_hosts",
-      "applications": ["tracker"]
+      "applications": ["tracker", "wodiq"]
     }
   ]
 }
