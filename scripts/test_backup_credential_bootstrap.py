@@ -105,7 +105,7 @@ class CredentialBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(
             [call.args for call in ensure_password.call_args_list],
-            [('tuinstra-prod-01', 'umami'), ('tuinstra-prod-01', 'status'), ('tuinstra-prod-02', 'tracker')],
+            [('tuinstra-prod-01', 'umami'), ('tuinstra-prod-01', 'status'), ('tuinstra-prod-02', 'tracker'), ('tuinstra-prod-02', 'wodiq')],
         )
         distinct.assert_called_once_with(list(identities.values()))
 

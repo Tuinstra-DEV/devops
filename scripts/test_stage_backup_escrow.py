@@ -63,8 +63,8 @@ class StageBackupEscrowTests(unittest.TestCase):
         with self.assertRaisesRegex(stage.StageError, "already exists"):
             stage.stage(destination, marker, os.getuid(), os.getgid(), self.sources)
 
-    def test_prior_markers_allow_exactly_one_six_credential_upgrade_handoff(self):
-        for previous_version in (1, 2):
+    def test_prior_markers_allow_exactly_one_eight_credential_upgrade_handoff(self):
+        for previous_version in (1, 2, 3):
             with self.subTest(previous_version=previous_version):
                 root = self.root / f"version-{previous_version}"
                 destination = root / "home/.local/share/tuinstra-backup-escrow.json"
@@ -83,7 +83,7 @@ class StageBackupEscrowTests(unittest.TestCase):
                 self.assertEqual(document["schema_version"], 1)
                 self.assertEqual(set(document["secrets"]), set(stage.SOURCES))
                 self.assertIn("restic_prod01_status", document["secrets"])
-                self.assertEqual(marker.read_text(encoding="ascii"), "schema-version=3\n")
+                self.assertEqual(marker.read_text(encoding="ascii"), "schema-version=4\n")
 
                 destination.unlink()
                 self.assertEqual(

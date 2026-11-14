@@ -80,6 +80,18 @@ SECRET_SPECS = {
         "relative_path": "etc/tuinstra-backup/ssh/prod01-restore",
         "validator": "ssh",
     },
+    "restic_prod02_tracker": {
+        "field_id": "tuinstraBackupResticProd02Tracker",
+        "label": "/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password",
+        "relative_path": "etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/tracker.password",
+        "validator": "restic",
+    },
+    "restic_prod02_wodiq": {
+        "field_id": "tuinstraBackupResticProd02Wodiq",
+        "label": "/etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/wodiq.password",
+        "relative_path": "etc/tuinstra-backup/restic-passwords/tuinstra-prod-02/wodiq.password",
+        "validator": "restic",
+    },
 }
 LEGACY_SECRET_NAMES = frozenset({"age_identity", "restic_prod01_umami", "ssh_prod01", "ssh_prod02"})
 RESTORE_SECRET_NAMES = LEGACY_SECRET_NAMES | {"ssh_prod01_restore"}
@@ -88,6 +100,7 @@ SUPPORTED_SECRET_NAME_SETS = frozenset({
     LEGACY_SECRET_NAMES,
     RESTORE_SECRET_NAMES,
     CURRENT_SECRET_NAMES,
+    RESTORE_SECRET_NAMES | {"restic_prod01_status"},
 })
 SCHEMA_FIELD_ID = "tuinstraBackupEscrowSchema"
 SOURCE_FIELD_ID = "tuinstraBackupEscrowSource"

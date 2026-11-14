@@ -43,6 +43,65 @@
       "included_directories": [
         {"name": "attachments", "path": "/var/lib/tuinstra/tracker/attachments", "max_bytes": 5368709120}
       ]
+    },
+    {
+      "app_id": "wodiq",
+      "enabled": true,
+      "adapter": "wodiq-compose-v1",
+      "compose_project": "wodiq-platform",
+      "compose_file": "/var/www/wodiq-platform/compose.yml",
+      "compose_env_file": "/var/www/wodiq-platform/release.env",
+      "postgres_service": "postgres",
+      "database_name": "wodiq120",
+      "application_service": "wodiq-api",
+      "approved_images": {
+        "postgres": "postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b"
+      },
+      "included_files": [
+        {
+          "name": "compose",
+          "path": "/var/www/wodiq-platform/compose.yml"
+        },
+        {
+          "name": "release",
+          "path": "/var/www/wodiq-platform/release.env"
+        },
+        {
+          "name": "api-env",
+          "path": "/var/www/wodiq-platform/env/api.env"
+        },
+        {
+          "name": "sync-env",
+          "path": "/var/www/wodiq-platform/env/sync.env"
+        },
+        {
+          "name": "management-env",
+          "path": "/var/www/wodiq-platform/env/management.env"
+        },
+        {
+          "name": "retention-env",
+          "path": "/var/www/wodiq-platform/env/retention.env"
+        },
+        {
+          "name": "migration-env",
+          "path": "/var/www/wodiq-platform/env/migration.env"
+        },
+        {
+          "name": "postgres-env",
+          "path": "/var/www/wodiq-platform/env/postgres.env"
+        },
+        {
+          "name": "redis-config",
+          "path": "/var/www/wodiq-platform/secrets/redis.conf"
+        }
+      ],
+      "included_directories": [
+        {
+          "name": "garmin-tokens",
+          "path": "/var/lib/docker/volumes/wodiq-120_garmin-tokens/_data",
+          "max_bytes": 67108864
+        }
+      ]
     }
   ]
 }

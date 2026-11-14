@@ -170,6 +170,7 @@ def ensure_restic_password(host_slug: str, app_id: str) -> Path:
         ("tuinstra-prod-01", "umami"),
         ("tuinstra-prod-01", "status"),
         ("tuinstra-prod-02", "tracker"),
+        ("tuinstra-prod-02", "wodiq"),
     }
     if (host_slug, app_id) not in allowed:
         raise BootstrapError("Restic credential target is not allowlisted")
@@ -188,9 +189,14 @@ def ensure_restic_password(host_slug: str, app_id: str) -> Path:
     return destination
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     try:
         require_root()
+        if argv not in (None, [], ["--reuse-identities"]):
+            raise BootstrapError("only --reuse-identities is accepted")
+        if argv == ["--reuse-identities"]:
+            for path in [SECRET_ROOT / "age-identity.txt", *[SECRET_ROOT / "ssh" / name for name in SSH_IDENTITY_HOSTS]]:
+                validate_secret(path, ssh_credential_uids() if path.parent.name == "ssh" else None)
         for command in ("age-keygen", "ssh-keygen"):
             if shutil.which(command) is None:
                 raise BootstrapError(f"required tool is unavailable: {command}")
@@ -213,6 +219,7 @@ def main() -> int:
         ensure_restic_password("tuinstra-prod-01", "umami")
         ensure_restic_password("tuinstra-prod-01", "status")
         ensure_restic_password("tuinstra-prod-02", "tracker")
+        ensure_restic_password("tuinstra-prod-02", "wodiq")
         print(f"backup credential bootstrap complete; destination_free_gib={available // 1024**3}; public_dir={PUBLIC_ROOT}")
         return 0
     except (BootstrapError, OSError) as exc:
@@ -222,4 +229,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

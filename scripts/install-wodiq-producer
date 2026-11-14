@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Reviewed additive VPS02 upgrade; preserve the installed Tracker entry verbatim as data."""
+from pathlib import Path
+import importlib.util
+import json
+import os
+import shutil
+import stat
+import sys
+import tempfile
+
+
+def install(bundle: Path, config_path: Path = Path('/etc/tuinstra-backup/producer.json'),
+            engine_path: Path = Path('/usr/local/libexec/tuinstra-backup/tuinstra_backup.py'),
+            rollback_root: Path = Path('/var/backups/tuinstra-backup')) -> Path:
+    spec = importlib.util.spec_from_file_location('reviewed_backup', bundle / 'backup/tuinstra_backup.py')
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    for path in (config_path, engine_path):
+        engine.reject_symlink_components(path)
+        if not path.is_file() or path.stat().st_uid != os.geteuid():
+            raise RuntimeError('installed backup input must be root owned')
+    current = json.loads(config_path.read_text())
+    approved = json.loads((bundle / 'backup/profiles/prod02.json').read_text())
+    wodiq = [a for a in approved['applications'] if a['app_id'] == 'wodiq']
+    if current['host_slug'] != 'tuinstra-prod-02' or len(wodiq) != 1:
+        raise RuntimeError('producer target is invalid')
+    # Validate the deployed release refs, runtime images and private env metadata.
+    engine.running_compose_images(wodiq[0])
+    merged = {**current, 'applications': [a for a in current['applications'] if a['app_id'] != 'wodiq'] + wodiq}
+    if [a for a in merged['applications'] if a['app_id'] != 'wodiq'] != [a for a in current['applications'] if a['app_id'] != 'wodiq']:
+        raise RuntimeError('existing applications must remain unchanged')
+    engine.ensure_directory(rollback_root, 0o700)
+    rollback = Path(tempfile.mkdtemp(prefix='wodiq-', dir=rollback_root))
+    shutil.copy2(config_path, rollback / 'producer.json')
+    shutil.copy2(engine_path, rollback / 'tuinstra_backup.py')
+    # The engine is backwards compatible; install it first. Existing dispatchers
+    # retain their old inode/code. No services, timers or trust files are touched.
+    engine.atomic_text(engine_path, (bundle / 'backup/tuinstra_backup.py').read_text(), 0o755)
+    gid = config_path.stat().st_gid
+    engine.atomic_json(config_path, merged, 0o640)
+    os.chown(config_path, os.geteuid(), gid)
+    return rollback
+
+
+if __name__ == '__main__':
+    try:
+        if os.geteuid() != 0 or len(sys.argv) != 1:
+            raise RuntimeError('run with sudo -n on VPS02, with no arguments')
+        rollback = install(Path(__file__).resolve().parents[1])
+        print(f'WODIQ producer installed; private rollback directory: {rollback}')
+    except Exception:
+        print('WODIQ producer installation failed; private output suppressed', file=sys.stderr)
+        raise SystemExit(1)

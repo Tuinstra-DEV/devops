@@ -12,9 +12,9 @@ fi
 resolve_target() {
   case "$1" in
     umami|status) host=tuinstra-prod-01 ;;
-    tracker) host=tuinstra-prod-02 ;;
+    tracker|wodiq) host=tuinstra-prod-02 ;;
     *)
-      echo "backup admin failed: target must be umami, status or tracker" >&2
+      echo "backup admin failed: target must be umami, status or tracker, or wodiq" >&2
       exit 2
       ;;
   esac
@@ -71,7 +71,7 @@ case "${1:-}" in
     exec "$engine" --config "$config" escrow-recovery-test
     ;;
   *)
-    echo "usage: sudo tuinstra-backup-admin {status|catalog [umami|status|tracker]|run [umami|status|tracker]|check [umami|status|tracker]|retention [umami|status|tracker]|restore-test [umami|tracker] SNAPSHOT|escrow-recovery-test}" >&2
+    echo "usage: sudo tuinstra-backup-admin {status|catalog [umami|status|tracker|wodiq]|run [umami|status|tracker|wodiq]|check [umami|status|tracker|wodiq]|retention [umami|status|tracker|wodiq]|restore-test [umami|tracker|wodiq] SNAPSHOT|escrow-recovery-test}" >&2
     exit 2
     ;;
 esac
