@@ -79,7 +79,7 @@ jobs:
 
       - name: Build
         if: steps.changes.outputs.run-checks == 'true'
-        run: npm run build --if-present
+        run: npm run build
 
       - name: Run post-build checks
         if: steps.changes.outputs.run-checks == 'true' && inputs.post-build-scripts != ''
