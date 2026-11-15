@@ -87,9 +87,6 @@ runs:
           Tuinstra-DEV/tracker:tracker-backend-postgres)
             [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip' ]]
             required='ctype,fileinfo,iconv,intl,mbstring,openssl,pdo,pdo_pgsql,zip' ;;
-          Tuinstra-DEV/console:console-php-lint|Tuinstra-DEV/console:console-php-postgres)
-            [[ "$PHP_VERSION" == 8.4 && "$PHP_EXTENSIONS" == 'intl, pdo_pgsql' ]]
-            required='ctype,iconv,intl,pdo_pgsql' ;;
           *) echo 'Unsupported baked PHP contract' >&2; exit 1 ;;
         esac
         php_bin="/usr/bin/php${PHP_VERSION}"
@@ -146,12 +143,6 @@ runs:
       with:
         path: ${{ steps.composer-cache.outputs.path }}
         key: tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}
-    - name: Restore Console Composer downloads
-      if: ${{ github.repository == 'Tuinstra-DEV/console' }}
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.composer-cache.outputs.path }}
-        key: console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}
     - name: Set up Docker Buildx for fixed image checks
       if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0

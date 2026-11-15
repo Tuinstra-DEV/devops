@@ -65,7 +65,7 @@ on:
 
 jobs:
   release-image:
-    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && contains(fromJSON('["Tuinstra-DEV/gate","Tuinstra-DEV/wodiq-app","Tuinstra-DEV/tracker","Tuinstra-DEV/notify","Tuinstra-DEV/console","Tuinstra-DEV/wodiq-site","Tuinstra-DEV/marcel-site","Tuinstra-DEV/tuinstra-site"]'), github.repository) && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'release' && github.event.action == 'published')) && !endsWith(github.actor, '[bot]') && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs['execution-class'] == 'trusted-heavy' && contains(fromJSON('["Tuinstra-DEV/gate","Tuinstra-DEV/wodiq-app","Tuinstra-DEV/tracker","Tuinstra-DEV/notify","Tuinstra-DEV/wodiq-site","Tuinstra-DEV/marcel-site","Tuinstra-DEV/tuinstra-site"]'), github.repository) && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'release' && github.event.action == 'published')) && !endsWith(github.actor, '[bot]') && fromJSON('["self-hosted","trusted-heavy"]') || 'ubuntu-24.04' }}
     permissions:
       attestations: write
       contents: read
