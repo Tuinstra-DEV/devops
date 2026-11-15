@@ -38,7 +38,6 @@ ruby ./scripts/dependency-update-policy-test.rb
 if [[ -n "${DEPENDABOT_FLEET_ROOT:-}" ]]; then
   ruby ./scripts/dependency-update-fleet-test.rb \
     "agent-lab=${DEPENDABOT_FLEET_ROOT}/agent-lab" \
-    "console=${DEPENDABOT_FLEET_ROOT}/console" \
     "devops=${DEPENDABOT_FLEET_ROOT}/devops" \
     "gate=${DEPENDABOT_FLEET_ROOT}/gate" \
     "marcel-site=${DEPENDABOT_FLEET_ROOT}/marcel-site" \
@@ -65,7 +64,6 @@ fi
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
 ./scripts/production-umami-test.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_isolated_restore_harness.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_backup.py

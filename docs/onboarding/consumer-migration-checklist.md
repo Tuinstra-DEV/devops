@@ -210,9 +210,9 @@ make a check required. The Gate baseline workflow reports repository
 file/configuration presence only. It does not scan for security findings or
 prove end-to-end operation.
 
-### Gate PR Security: all 12 repositories
+### Gate PR Security: all 11 repositories
 
-The security rollout covers `gate`, `devops`, `notify`, `console`, `status`,
+The security rollout covers `gate`, `devops`, `notify`, `status`,
 `tracker`, `wodiq-app`, `wodiq-platform`, `openairco`, `marcel-site`,
 `tuinstra-site`, and `wodiq-site`. For each repository:
 
@@ -228,11 +228,11 @@ The security rollout covers `gate`, `devops`, `notify`, `console`, `status`,
   full-SHA-pinned reusable workflow. Keep publisher credentials separate from
   Gate Heal credentials and retain stricter existing checks.
 
-### Gate Observability at production promotion: eight applications
+### Gate Observability at production promotion: seven applications
 
 Gate Observability applies at production promotion only for `gate`, `notify`,
-`console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`, and `openairco`.
-It excludes `devops` and the four site repositories. Keep `Gate Observability`
+`status`, `tracker`, `wodiq-app`, `wodiq-platform`, and `openairco`.
+It excludes `devops` and the three site repositories. Keep `Gate Observability`
 distinct from `Gate PR Security`.
 
 - New applications meet the Sentry standard before their first production

@@ -21,8 +21,8 @@ Gate baseline evidence artifact.
 
 ### Gate PR Security
 
-The planned Gate PR Security requirement covers these 12 repositories: `gate`, `devops`,
-`notify`, `console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
+The planned Gate PR Security requirement covers these 11 repositories: `gate`, `devops`,
+`notify`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
 `openairco`, `marcel-site`, `tuinstra-site`, and `wodiq-site`.
 It evaluates the exact base and head revisions with the same scanner versions,
 rules, and advisory snapshots. New or worsened high/critical findings block an
@@ -40,9 +40,9 @@ the same security guarantee.
 
 ### Gate Observability and Gate Heal QA
 
-Gate Observability applies at production promotion for these eight applications:
-`notify`, `console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
-`openairco`, and `gate`. They do not apply to `devops` or the four site
+Gate Observability applies at production promotion for these seven applications:
+`notify`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
+`openairco`, and `gate`. They do not apply to `devops` or the three site
 repositories. `Gate Heal QA` applies only to automatically generated fix PRs
 for these applications. Gate's existing QA checks and controls remain intact;
 activation for each stack follows its migration. Treat the three decisions as

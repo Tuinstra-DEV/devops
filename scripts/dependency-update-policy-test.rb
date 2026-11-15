@@ -12,7 +12,6 @@ end
 matrix = File.read(File.join(root, "docs/workflows/dependency-rollout-matrix.md"))
 repositories = %w[
   Tuinstra-DEV/devops
-  Tuinstra-DEV/console
   Tuinstra-DEV/gate
   Tuinstra-DEV/marcel-site
   Tuinstra-DEV/notify

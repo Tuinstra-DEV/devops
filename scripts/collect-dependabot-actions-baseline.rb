@@ -9,7 +9,6 @@ require "time"
 
 REPOSITORIES = %w[
   Tuinstra-DEV/WODIQ
-  Tuinstra-DEV/console
   Tuinstra-DEV/devops
   Tuinstra-DEV/gate
   Tuinstra-DEV/marcel-site
