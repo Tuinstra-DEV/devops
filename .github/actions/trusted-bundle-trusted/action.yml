@@ -44,7 +44,7 @@ runs:
       with:
         version: ${{ inputs.pnpm-version }}
     - name: Set up Node.js for fixed npm consumers
-      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' }}
+      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' }}
       uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
       with:
         node-version: ${{ inputs.node-version }}

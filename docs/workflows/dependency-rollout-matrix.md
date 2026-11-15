@@ -4,7 +4,6 @@
 | --- | --- | --- | ---: | --- |
 | Tuinstra-DEV/devops | GitHub Actions | main | 1 | Revert config and policy commit |
 | Tuinstra-DEV/marcel-site | GitHub Actions, npm | develop | 2, hosted-only canary | Restore removed Renovate config and remove Dependabot config |
-| Tuinstra-DEV/openairco-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | Tuinstra-DEV/tuinstra-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | Tuinstra-DEV/wodiq-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | marcel-tuinstra/sudoku-spark-web | GitHub Actions, npm | develop | 3 | Remove Dependabot config |
