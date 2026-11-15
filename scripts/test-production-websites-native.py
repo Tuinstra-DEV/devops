@@ -13,7 +13,7 @@ import uuid
 
 IMAGE = "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
 SOURCE = Path(__file__).resolve().parents[1] / "infra/caddy/public-websites"
-HOSTS = ("wodiq.nl", "www.wodiq.nl", "marcel.tuinstra.dev", "tuinstra.dev", "openairco.tuinstra.dev")
+HOSTS = ("wodiq.nl", "www.wodiq.nl", "marcel.tuinstra.dev", "tuinstra.dev")
 
 
 def run(args):

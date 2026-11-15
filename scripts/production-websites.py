@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DEV-26: validate and atomically reload only the four existing public routes.
+"""DEV-26: validate and atomically reload only the three existing public routes.
 
 Run on VPS01 as the existing administrator/root, never as a delegated endpoint.
 No image, credential, database, firewall, DNS or unrelated route is modified.
@@ -22,7 +22,7 @@ SITES = ROOT / "sites"
 CANDIDATE = ROOT / "DEV-26-candidate"
 BACKUPS = ROOT / "DEV-26-backups"
 PRODUCER = Path("/etc/tuinstra-backup/producer.json")
-NAMES = tuple(x + ".caddy" for x in ("wodiq-site", "site-openairco", "site-marcel", "site-tuinstra"))
+NAMES = tuple(x + ".caddy" for x in ("wodiq-site", "site-marcel", "site-tuinstra"))
 
 
 def secure(path, directory=False):

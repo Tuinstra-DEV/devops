@@ -9,7 +9,6 @@ all:
           production_app_names:
             - site-tuinstra
             - site-marcel
-            - site-openairco
             - wodiq-site
             - umami
           production_admin_public_key_file: /Users/marceltuinstra/.ssh/id_ed25519_marcel.pub

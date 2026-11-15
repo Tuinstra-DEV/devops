@@ -6,8 +6,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-HOSTS = ("wodiq.nl", "www.wodiq.nl", "openairco.tuinstra.dev",
-         "marcel.tuinstra.dev", "tuinstra.dev")
+HOSTS = ("wodiq.nl", "www.wodiq.nl", "marcel.tuinstra.dev", "tuinstra.dev")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
