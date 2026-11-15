@@ -1,0 +1,104 @@
+name: Gate native MariaDB proof
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: Native MariaDB migration proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Verify the Gate caller
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: test "$REPOSITORY" = Tuinstra-DEV/gate
+
+      - name: Checkout the selected revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: '8.3'
+          extensions: ctype, iconv, pdo_mysql
+          tools: composer:v2
+          coverage: none
+        env:
+          fail-fast: 'true'
+
+      - name: Verify PHP and MariaDB driver
+        run: |
+          php -r 'exit(PHP_MAJOR_VERSION === 8 && PHP_MINOR_VERSION === 3 && extension_loaded("pdo_mysql") ? 0 : 1);'
+
+      - name: Locate Composer download cache
+        id: composer-cache
+        working-directory: backend
+        run: echo "path=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.path }}
+          key: gate-mariadb-${{ runner.os }}-${{ runner.arch }}-php83-${{ hashFiles('backend/composer.lock') }}
+
+      - name: Install the locked test dependencies
+        working-directory: backend
+        run: |
+          composer install --prefer-dist --no-interaction --no-progress --no-scripts
+          cp .env.example .env
+
+      - name: Verify migrations and constraints in an isolated MariaDB fixture
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fixture_dir=$(mktemp -d "$RUNNER_TEMP/gmd.XXXXXX")
+          container=''
+          cleanup() {
+            if [[ -n "$container" ]]; then
+              docker rm -fv "$container" >/dev/null
+            fi
+            rm -rf -- "$fixture_dir"
+          }
+          trap cleanup EXIT
+          # Only the temporary socket directory is writable by the image user.
+          mkdir -m 0777 "$fixture_dir/socket"
+          export GATE_MIGRATION_TEST_SOCKET="$fixture_dir/socket/mysql.sock"
+          export MARIADB_ROOT_PASSWORD="ci-$(openssl rand -hex 24)"
+
+          # Gate's existing production-pinned image previously passed this native proof.
+          container=$(docker run --detach --network none \
+            --tmpfs /bitnami/mariadb:rw,size=512m,uid=1001,gid=1001,mode=0700 \
+            --mount "type=bind,source=$fixture_dir/socket,target=/opt/bitnami/mariadb/tmp" \
+            --env MARIADB_ROOT_PASSWORD --env MARIADB_DATABASE=gate_migration_fixture \
+            bitnami/mariadb@sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9)
+
+          ready=false
+          for ((attempt=0; attempt<45; attempt++)); do
+            # Wait for the final daemon, rather than the entrypoint's temporary init server.
+            if [[ -S "$GATE_MIGRATION_TEST_SOCKET" ]] &&
+              docker exec "$container" sh -c 'grep -Eq "^(mariadbd|mysqld)$" /proc/1/comm' &&
+              php -r 'try { new PDO("mysql:unix_socket=".getenv("GATE_MIGRATION_TEST_SOCKET").";dbname=gate_migration_fixture", "root", getenv("MARIADB_ROOT_PASSWORD")); } catch (PDOException) { exit(1); }'; then
+              ready=true
+              break
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then
+            echo '::error::The isolated MariaDB fixture did not become ready.'
+            exit 1
+          fi
+
+          APP_ENV=test vendor/bin/phpunit \
+            --no-coverage --fail-on-skipped --fail-on-empty-test-suite \
+            tests/Integration/HealQaMariaDbMigrationTest.php

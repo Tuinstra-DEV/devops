@@ -1,0 +1,98 @@
+name: Site Frontend CI
+
+on:
+  workflow_call:
+    inputs:
+      post-build-scripts:
+        description: Comma-separated npm script names required after the site build
+        type: string
+        default: ''
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      ASTRO_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Check out the event revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Select site checks
+        id: changes
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+          if [[ "$GITHUB_EVENT_NAME" == pull_request && -n "${GITHUB_BASE_REF:-}" && "$GITHUB_BASE_REF" != main ]] &&
+             git diff --no-ext-diff --no-renames --name-only -z HEAD^1 HEAD 2>/dev/null | python3 -c '
+          import sys
+
+          raw = sys.stdin.buffer.read()
+          if not raw or not raw.endswith(b"\0"):
+              raise SystemExit(1)
+          try:
+              paths = raw[:-1].decode("utf-8").split("\0")
+          except UnicodeDecodeError:
+              raise SystemExit(1)
+          root_docs = {"README.md", "AGENTS.md", "CHANGELOG.md", "LICENSE.md"}
+          for path in paths:
+              safe = all(part not in {"", ".", ".."} for part in path.split("/"))
+              allowed = path in root_docs or (
+                  path.startswith("docs/") and path.endswith(".md") and len(path) > len("docs/.md")
+              )
+              if not safe or not allowed:
+                  raise SystemExit(1)
+          '; then
+            echo 'run-checks=false' >> "$GITHUB_OUTPUT"
+            echo 'Verified documentation-only changes.'
+          else
+            echo 'run-checks=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: steps.changes.outputs.run-checks == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        if: steps.changes.outputs.run-checks == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.changes.outputs.run-checks == 'true'
+        run: npm run lint --if-present
+
+      - name: Typecheck
+        if: steps.changes.outputs.run-checks == 'true'
+        run: npm run typecheck --if-present
+
+      - name: Build
+        if: steps.changes.outputs.run-checks == 'true'
+        run: npm run build
+
+      - name: Run post-build checks
+        if: steps.changes.outputs.run-checks == 'true' && inputs.post-build-scripts != ''
+        shell: bash
+        env:
+          POST_BUILD_SCRIPTS: ${{ inputs.post-build-scripts }}
+        run: |
+          script_name='[[:alnum:]_][[:alnum:]:_-]*'
+          if [[ ! "$POST_BUILD_SCRIPTS" =~ ^$script_name(,$script_name)*$ ]]; then
+            echo 'Post-build checks must be a comma-separated list of npm script names.' >&2
+            exit 1
+          fi
+          IFS=, read -r -a scripts <<< "$POST_BUILD_SCRIPTS"
+          for script in "${scripts[@]}"; do
+            npm run "$script"
+          done
