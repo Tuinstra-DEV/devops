@@ -38,7 +38,7 @@ def request(**changes: object) -> dict[str, object]:
         "profile_version": "2026.09.12.3",
         "profile_content_hash": "b" * 64,
         "source_sha": "c" * 40,
-        "procedure": "baseline_umami_restore",
+        "procedure": "baseline",
     }
     value.update(changes)
     return value
@@ -161,21 +161,7 @@ prod01 : ok=47 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
         self.assertEqual((1, 0, 0), (changed, failed, unreachable))
         self.assertEqual(["production_host_baseline : Configure Docker"], tasks)
 
-    def test_umami_procedure_aggregates_baseline_then_restore_scaffolding(self) -> None:
-        results = [
-            {"successful": True, "exit_code": 0, "changed_count": 2, "failed_count": 0, "unreachable_count": 0, "changed_tasks": ["baseline"], "stdout_hash": "a" * 64, "stderr_hash": "b" * 64, "output_truncated": False},
-            {"successful": True, "exit_code": 0, "changed_count": 1, "failed_count": 0, "unreachable_count": 0, "changed_tasks": ["umami"], "stdout_hash": "c" * 64, "stderr_hash": "d" * 64, "output_truncated": False},
-        ]
-        with mock.patch.object(EXECUTOR, "run_command", side_effect=results) as runner:
-            result = EXECUTOR.run_phase(request(), {"limit": "prod01"}, (pathlib.Path("wrapper"), pathlib.Path("inventory"), pathlib.Path("vars")), "check")
-
-        self.assertEqual(["configure", "configure-umami-restore"], [call.args[4] for call in runner.call_args_list])
-        self.assertTrue(all(call.args[5] for call in runner.call_args_list))
-        self.assertEqual(3, result["changed_count"])
-        self.assertEqual(["baseline", "umami"], result["changed_tasks"])
-        self.assertEqual(2, result["steps_completed"])
-
-    def test_baseline_procedure_never_selects_umami_role(self) -> None:
+    def test_baseline_procedure_runs_only_the_baseline_command(self) -> None:
         result = {"successful": True, "exit_code": 0, "changed_count": 0, "failed_count": 0, "unreachable_count": 0, "changed_tasks": [], "stdout_hash": "a" * 64, "stderr_hash": "b" * 64, "output_truncated": False}
         with mock.patch.object(EXECUTOR, "run_command", return_value=result) as runner:
             EXECUTOR.run_phase(request(procedure="baseline"), {"limit": "prod02"}, (pathlib.Path("wrapper"), pathlib.Path("inventory"), pathlib.Path("vars")), "verify")

@@ -34,12 +34,12 @@ Console-profielversie en de change-approval:
 ```bash
 scripts/install-production-profile-executor \
   tuinstra-prod-01 <source-sha> <profile-version> <profile-content-hash> \
-  baseline_umami_restore change-<approval-id>
+  baseline change-<approval-id>
 ```
 
-De vaste registry accepteert `tuinstra-prod-01/baseline_umami_restore`,
+De vaste registry accepteert `tuinstra-prod-01/baseline`,
 `tuinstra-prod-02/baseline` en de geïsoleerde
-`tuinstra-rehearsal-01/baseline_umami_restore`. Een andere host, procedure,
+`tuinstra-rehearsal-01/baseline`. Een andere host, procedure,
 inventory, pad of command kan niet via het netwerk worden gekozen.
 
 De installatie maakt een locked-password account, forced authorized key, een

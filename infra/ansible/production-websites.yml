@@ -54,12 +54,3 @@
       when:
         - not ansible_check_mode
         - production_websites_apply | bool
-
-    - name: Extend the installed encrypted backup profile without replacing host policy
-      ansible.builtin.command:
-        argv: [/usr/local/sbin/tuinstra-production-websites, backup-profile]
-      register: production_websites_backup_result
-      changed_when: (production_websites_backup_result.stdout | from_json).extended > 0
-      when:
-        - not ansible_check_mode
-        - production_websites_apply | bool
