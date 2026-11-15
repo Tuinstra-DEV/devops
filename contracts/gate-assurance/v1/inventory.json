@@ -628,25 +628,6 @@
         },
         "observability": null
       }
-    },
-    {
-      "repository": "Tuinstra-DEV/openairco-site",
-      "owner_project": "DEV",
-      "pr_security_required": true,
-      "observability_required": false,
-      "exclusion_reason": "Approved public-site exception for Sentry/Heal only",
-      "security_profiles": [
-        "javascript-typescript",
-        "containers"
-      ],
-      "components": [],
-      "rollout": {
-        "pr_security": {
-          "stage": "planned",
-          "evidence_refs": []
-        },
-        "observability": null
-      }
     }
   ]
 }

@@ -378,7 +378,6 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             ("Tuinstra-DEV/marcel-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/tuinstra-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/wodiq-site", "site-node", "medium", "", ("24", "", "")),
-            ("Tuinstra-DEV/openairco-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/wodiq-app", "wodiq-app-checks", "heavy", "", ("24", "", "")),
             ("Tuinstra-DEV/status", "status-quality", "heavy", "", ("", "", "")),
             ("Tuinstra-DEV/sudoku-tessera", "tessera-flutter", "heavy", "", ("24", "", "")),

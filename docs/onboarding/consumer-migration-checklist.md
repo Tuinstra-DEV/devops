@@ -210,11 +210,11 @@ make a check required. The Gate baseline workflow reports repository
 file/configuration presence only. It does not scan for security findings or
 prove end-to-end operation.
 
-### Gate PR Security: all 13 repositories
+### Gate PR Security: all 12 repositories
 
 The security rollout covers `gate`, `devops`, `notify`, `console`, `status`,
 `tracker`, `wodiq-app`, `wodiq-platform`, `openairco`, `marcel-site`,
-`tuinstra-site`, `wodiq-site`, and `openairco-site`. For each repository:
+`tuinstra-site`, and `wodiq-site`. For each repository:
 
 - Run a green pilot and a red pilot against ordinary and fork/bot pull requests
   before requiring `Gate PR Security` on `main` and `develop` where present.

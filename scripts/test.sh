@@ -44,7 +44,6 @@ if [[ -n "${DEPENDABOT_FLEET_ROOT:-}" ]]; then
     "marcel-site=${DEPENDABOT_FLEET_ROOT}/marcel-site" \
     "notify=${DEPENDABOT_FLEET_ROOT}/notify" \
     "openairco=${DEPENDABOT_FLEET_ROOT}/openairco" \
-    "openairco-site=${DEPENDABOT_FLEET_ROOT}/openairco-site" \
     "status=${DEPENDABOT_FLEET_ROOT}/status" \
     "tracker=${DEPENDABOT_FLEET_ROOT}/tracker" \
     "tuinstra-site=${DEPENDABOT_FLEET_ROOT}/tuinstra-site" \

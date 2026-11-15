@@ -21,9 +21,9 @@ Gate baseline evidence artifact.
 
 ### Gate PR Security
 
-The planned Gate PR Security requirement covers these 13 repositories: `gate`, `devops`,
+The planned Gate PR Security requirement covers these 12 repositories: `gate`, `devops`,
 `notify`, `console`, `status`, `tracker`, `wodiq-app`, `wodiq-platform`,
-`openairco`, `marcel-site`, `tuinstra-site`, `wodiq-site`, and `openairco-site`.
+`openairco`, `marcel-site`, `tuinstra-site`, and `wodiq-site`.
 It evaluates the exact base and head revisions with the same scanner versions,
 rules, and advisory snapshots. New or worsened high/critical findings block an
 ordinary pull request. Existing debt remains visible and is not reclassified as
