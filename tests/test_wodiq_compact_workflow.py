@@ -1,4 +1,4 @@
-"""WODIQ has one admitted route per fixed suite, with unchanged trust checks."""
+"""Immutable 604ad2b9 compact WODIQ contract; callers retain that admitted pin."""
 import json
 from pathlib import Path
 import re
@@ -10,7 +10,7 @@ from unittest.mock import patch
 from tests import test_trusted_verification_workflow as legacy
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / '.github/workflows/reusable-trusted-verification.yml'
+WORKFLOW = ROOT / 'tests/fixtures/wodiq-compact-at-604ad2b9.yml'
 
 
 class WodiqCompactTests(unittest.TestCase):
@@ -89,6 +89,20 @@ class WodiqCompactTests(unittest.TestCase):
             case.pr['head']['sha'] = legacy.BASE
             with self.assertRaises(SystemExit):
                 case.execute_identity()
+
+    def test_admitted_compact_604_workflow_remains_exact(self):
+        import hashlib
+        self.assertEqual(hashlib.sha256(WORKFLOW.read_bytes()).hexdigest(), '06a571ba0f7abfa419a8660eb838837116f08eda65d5c2c73f76862c9714108d')
+
+    def test_new_shared_revision_keeps_general_contract_and_rejects_compact_no_input_call(self):
+        # 604's no-input compact caller must retain 604, not silently use the
+        # restored general interface at the new coordinated rollout revision.
+        case = legacy.TrustedVerificationWorkflowTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        with self.assertRaises(SystemExit):
+            case.execute_contract(legacy.REPO, '', '', '')
+        self.assertEqual(legacy.WORKFLOW, ROOT / '.github/workflows/reusable-trusted-verification.yml')
 
     def test_previous_multi_project_workflow_fixture_remains_exact(self):
         import hashlib

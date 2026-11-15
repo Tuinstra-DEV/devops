@@ -120,6 +120,30 @@ class NotFound(RunnerError):
     pass
 
 
+def log_discovery_error(repo: str, stage: str, error: Exception, *,
+                        role: str | None = None, profile: str | None = None,
+                        run_id: Any = None, job_id: Any = None) -> None:
+    """Report a rejected candidate without exception text, headers or response data."""
+    status = None
+    cause: BaseException | None = error
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, urllib.error.HTTPError):
+            if type(cause.code) is int and 100 <= cause.code <= 599:
+                status = cause.code
+            break
+        cause = cause.__cause__ or cause.__context__
+    LOG.warning(
+        "candidate discovery skipped repo=%s role=%s profile=%s stage=%s "
+        "run_id=%s job_id=%s error=%s http_status=%s",
+        repo, role or "-", profile or "-", stage,
+        run_id if type(run_id) is int and run_id > 0 else "-",
+        job_id if type(job_id) is int and job_id > 0 else "-",
+        type(error).__name__, status if status is not None else "-",
+    )
+
+
 class RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Expose redirects to the caller so POST policy is explicit and testable."""
 
@@ -1221,30 +1245,47 @@ class GitHubClient:
         candidates = []
         for status in ("queued", "in_progress"):
             for run in listings.workflow_runs(self, repo, status):
-                if not isinstance(run, dict) or type(run.get("id")) is not int:
+                if not isinstance(run, dict) or type(run.get("id")) is not int or run["id"] < 1:
                     continue
-                matching = []
-                for job in listings.workflow_jobs(self, repo, run["id"]):
-                    if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
-                            type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
-                            type(job.get("run_attempt")) is not int or job.get("status") != "queued":
-                        continue
-                    head = role_source_head(job.get("labels"))
-                    execution = role_execution_sha(job.get("labels"))
-                    if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
-                            run["id"], run.get("run_attempt"), head, execution):
-                        matching.append((job, head, execution))
-                if not matching:
-                    continue
-                detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
-                if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
-                        for key in ("id", "run_attempt", "head_sha", "head_branch")):
-                    continue
-                for job, head, execution in matching:
-                    evidence = self._role_evidence(detail, repo, role, head, execution)
-                    if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
-                            job.get("head_sha") == evidence["source_sha"]:
-                        candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
+                try:
+                    candidates.extend(self._role_run_candidates(repo, role, run, listings))
+                except RateLimited:
+                    raise
+                except Exception as exc:
+                    log_discovery_error(repo, "role-run", exc, role=role, run_id=run["id"])
+        return candidates
+
+    def _role_run_candidates(self, repo: str, role: str, run: dict[str, Any],
+                             listings: WorkflowListSnapshot) -> list[dict[str, Any]]:
+        matching = []
+        for job in listings.workflow_jobs(self, repo, run["id"]):
+            if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
+                    type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
+                    type(job.get("run_attempt")) is not int or job.get("status") != "queued":
+                continue
+            head = role_source_head(job.get("labels"))
+            execution = role_execution_sha(job.get("labels"))
+            if head is not None and execution is not None and role_labels_match(job.get("labels"), repo, role,
+                    run["id"], run.get("run_attempt"), head, execution):
+                matching.append((job, head, execution))
+        if not matching:
+            return []
+        detail = self.request("GET", f"{self.repo_path(repo)}/actions/runs/{run['id']}")
+        if not isinstance(detail, dict) or any(detail.get(key) != run.get(key)
+                for key in ("id", "run_attempt", "head_sha", "head_branch")):
+            return []
+        candidates = []
+        for job, head, execution in matching:
+            try:
+                evidence = self._role_evidence(detail, repo, role, head, execution)
+                if evidence is not None and job["run_attempt"] == evidence["run_attempt"] and \
+                        job.get("head_sha") == evidence["source_sha"]:
+                    candidates.append({"repo": repo, **evidence, "job_id": job["id"], **queue_timestamp(job)})
+            except RateLimited:
+                raise
+            except Exception as exc:
+                log_discovery_error(repo, "role-evidence", exc, role=role,
+                                    run_id=run["id"], job_id=job["id"])
         return candidates
 
     def verify_role_job(self, candidate: dict[str, Any], job: dict[str, Any], *,
@@ -2638,11 +2679,23 @@ def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
         if role is not None:
             label = EXECUTION_ROLES[role]["label"]
         for repo in repos:
-            for candidate in source.candidate_jobs(repo, label):
-                if candidate.get("repo") != repo or \
+            try:
+                candidates = source.candidate_jobs(repo, label)
+                if not isinstance(candidates, list):
+                    raise RunnerError("dispatch candidate list is invalid")
+            except RateLimited:
+                raise
+            except Exception as exc:
+                log_discovery_error(repo, "candidate-list", exc, role=role, profile=profile)
+                continue
+            for candidate in candidates:
+                if not isinstance(candidate, dict) or candidate.get("repo") != repo or \
                         type(candidate.get("job_id")) is not int or candidate["job_id"] <= 0 or \
                         type(candidate.get("run_id")) is not int or candidate["run_id"] <= 0:
-                    raise RunnerError("dispatch candidate identity is invalid")
+                    log_discovery_error(repo, "candidate-identity",
+                                        RunnerError("dispatch candidate identity is invalid"),
+                                        role=role, profile=profile)
+                    continue
                 identity = (repo, candidate["job_id"])
                 if identity in seen:
                     continue

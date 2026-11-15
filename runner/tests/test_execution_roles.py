@@ -4,6 +4,7 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 import ci_runner_manager as manager
@@ -432,6 +433,104 @@ class ExecutionRoleTests(unittest.TestCase):
             with self.assertRaises(manager.RunnerError):
                 selected.generate_jit(repo, job, 42, label)
         client.generate_jit.assert_not_called()
+
+    def test_role_evidence_error_skips_only_affected_job_without_logging_payload(self):
+        denied = manager.RunnerError('fixture-sensitive response')
+        denied.__cause__ = urllib.error.HTTPError(
+            'https://api.github.test/fixture-sensitive', 403,
+            'fixture-sensitive response', {'Authorization': 'fixture-sensitive'}, None)
+        self.addCleanup(denied.__cause__.close)
+        for failure in (denied, ValueError('fixture-sensitive malformed JSON')):
+            with self.subTest(error=type(failure).__name__):
+                client = self.client()
+                later = {**self.job, 'id': 23}
+                branch_calls = []
+
+                def response(method, path, body=None):
+                    if '/jobs?' in path:
+                        return {'jobs': [self.job, later]}
+                    if '/branches/' in path:
+                        branch_calls.append(path)
+                        if len(branch_calls) == 1:
+                            raise failure
+                    return self.response(method, path, body)
+
+                with mock.patch.object(client, 'request', side_effect=response), \
+                        self.assertLogs(manager.LOG, level='WARNING') as logs:
+                    result = client.candidate_role_jobs(REPO, METADATA)
+                self.assertEqual([item['job_id'] for item in result], [23])
+                self.assertEqual(result[0]['source_sha'], self.run['head_sha'])
+                output = '\n'.join(logs.output)
+                self.assertIn(REPO, output)
+                self.assertIn('job_id=22', output)
+                self.assertIn(type(failure).__name__, output)
+                if failure is denied:
+                    self.assertIn('http_status=403', output)
+                self.assertNotIn('fixture-sensitive', output)
+
+    def test_role_run_read_error_does_not_hide_later_run_in_same_repository(self):
+        client = self.client()
+        later_run = {**self.run, 'id': 12}
+        later_job = {**self.job, 'id': 23, 'run_id': 12,
+                     'labels': [label.replace('ci-run-11-2', 'ci-run-12-2')
+                                for label in self.job['labels']]}
+
+        def response(method, path, body=None):
+            if path.endswith('status=queued&per_page=100'):
+                return {'workflow_runs': [self.run, later_run]}
+            if '/actions/runs/12/jobs?' in path:
+                return {'jobs': [later_job]}
+            if path.endswith('/actions/runs/11'):
+                raise manager.RunnerError('fixture-sensitive HTTP 403')
+            if path.endswith('/actions/runs/12'):
+                return later_run
+            return self.response(method, path, body)
+
+        with mock.patch.object(client, 'request', side_effect=response), \
+                self.assertLogs(manager.LOG, level='WARNING') as logs:
+            result = client.candidate_role_jobs(REPO, METADATA)
+        self.assertEqual([(item['run_id'], item['job_id']) for item in result], [(12, 23)])
+        self.assertIn('run_id=11', '\n'.join(logs.output))
+        self.assertNotIn('fixture-sensitive', '\n'.join(logs.output))
+
+    def test_fair_discovery_errors_leave_other_repositories_and_routes_available(self):
+        gate = 'Tuinstra-DEV/gate'
+        cfg = {**self.cfg, 'repositories': [REPO, gate]}
+        for broken in ('repository', 'trusted', 'role', 'identity'):
+            with self.subTest(broken=broken):
+                repo, org = mock.Mock(), mock.Mock()
+                healthy = {'repo': gate, 'run_id': 90, 'job_id': 90}
+                broken_identity = {'repo': REPO, 'run_id': True, 'job_id': -1}
+
+                def legacy(selected_repo, label):
+                    if selected_repo == gate:
+                        return [healthy]
+                    if broken == 'repository':
+                        raise manager.RunnerError('fixture-sensitive')
+                    return [None, broken_identity] if broken == 'identity' else []
+
+                repo.candidate_jobs.side_effect = legacy
+                org.candidate_trusted_jobs.return_value = []
+                org.candidate_role_jobs.return_value = []
+                if broken == 'trusted':
+                    org.candidate_trusted_jobs.side_effect = ValueError('fixture-sensitive')
+                elif broken == 'role':
+                    org.candidate_role_jobs.side_effect = manager.RunnerError('fixture-sensitive')
+                with mock.patch.object(manager, 'dispatch_once', return_value=True) as dispatch, \
+                        self.assertLogs(manager.LOG, level='WARNING') as logs:
+                    self.assertTrue(manager.dispatch_fair_once(cfg, repo, org))
+                self.assertEqual([call.args[1].candidate for call in dispatch.call_args_list], [healthy])
+                self.assertNotIn('fixture-sensitive', '\n'.join(logs.output))
+
+    def test_discovery_rate_limit_preserves_backoff_before_any_dispatch(self):
+        repo, org = mock.Mock(), mock.Mock()
+        repo.candidate_jobs.return_value = [{'repo': REPO, 'run_id': 90, 'job_id': 90}]
+        org.candidate_trusted_jobs.return_value = []
+        org.candidate_role_jobs.side_effect = manager.RateLimited(60)
+        with mock.patch.object(manager, 'dispatch_once') as dispatch:
+            with self.assertRaises(manager.RateLimited):
+                manager.dispatch_fair_once(self.cfg, repo, org)
+        dispatch.assert_not_called()
 
     def assigned_role_fixture(self):
         candidate = self.candidates()[0]
