@@ -46,6 +46,8 @@ MAX_CONCURRENCY = 1
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
 FOUR_POOL_CONCURRENCY = 4
+PARALLEL_POOL_CONCURRENCY = 5
+PARALLEL_POOL_LIMITS = {"heavy": 3, "medium": 2}
 POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 POOL_LIMITS = {"heavy": 2, "medium": 2}
 POOL_DISK_GIB = {"heavy": 24, "medium": 4}
@@ -168,18 +170,18 @@ def load_config(path: Path) -> dict[str, Any]:
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
     mode = cfg.get("pool_mode", "legacy")
-    if mode not in {"legacy", "four"}:
-        raise RunnerError("pool_mode must be legacy or four")
+    if mode not in {"legacy", "four", "parallel"}:
+        raise RunnerError("pool_mode must be legacy, four or parallel")
     exact_resources = {
-        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else FOUR_POOL_CONCURRENCY,
+        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else pool_concurrency(cfg),
         "runner_vcpus": RUNNER_VCPUS,
         "runner_memory_mib": RUNNER_MEMORY_MIB,
     }
-    if mode == "four":
+    if mode in {"four", "parallel"}:
         exact_resources.update({
             "medium_runner_vcpus": 2,
             "medium_runner_memory_mib": 3072,
-            "max_heavy": 2,
+            "max_heavy": 3 if mode == "parallel" else 2,
             "max_medium": 2,
             "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4,
@@ -213,7 +215,19 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def four_pool(cfg: dict[str, Any]) -> bool:
-    return cfg.get("pool_mode", "legacy") == "four"
+    return cfg.get("pool_mode", "legacy") in {"four", "parallel"}
+
+
+def pool_limits(cfg: dict[str, Any]) -> dict[str, int]:
+    return PARALLEL_POOL_LIMITS if cfg.get("pool_mode") == "parallel" else POOL_LIMITS
+
+
+def pool_concurrency(cfg: dict[str, Any]) -> int:
+    return PARALLEL_POOL_CONCURRENCY if cfg.get("pool_mode") == "parallel" else FOUR_POOL_CONCURRENCY
+
+
+def pool_cpu_limit(cfg: dict[str, Any]) -> int:
+    return 14 if cfg.get("pool_mode") == "parallel" else 12
 
 
 def org_routing_enabled(cfg: dict[str, Any]) -> bool:
@@ -229,12 +243,12 @@ def configured_trusted_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     if single == multiple:
         raise RunnerError("organization workflow requires exactly one reference policy")
     refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
-    if not isinstance(refs, list) or not 1 <= len(refs) <= 5 or \
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 6 or \
             any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
                 re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
                 for ref in refs) or len(set(refs)) != len(refs):
         raise RunnerError("organization workflows must be distinct exact commit references")
-    if len(refs) in (4, 5):
+    if len(refs) in (4, 5, 6):
         metadata = configured_org_execution_roles(cfg).get("metadata-preflight")
         if metadata is None or refs[-1] != metadata["workflow_ref"]:
             raise RunnerError("last trusted workflow must explicitly share the enabled metadata role pin")
@@ -468,13 +482,13 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
             active_vcpus += cpu
             active_memory += memory
             unresident_mib += max(0, memory - rss)
-        if any(counts[kind] > POOL_LIMITS[kind] for kind in POOL_LIMITS) or \
-                len(active) > FOUR_POOL_CONCURRENCY or active_vcpus > 12:
+        if any(counts[kind] > pool_limits(cfg)[kind] for kind in POOL_LIMITS) or \
+                len(active) > pool_concurrency(cfg) or active_vcpus > pool_cpu_limit(cfg):
             return ["active runner resources exceed pool policy"]
-        if len(active) >= FOUR_POOL_CONCURRENCY or counts[profile] >= POOL_LIMITS[profile]:
+        if len(active) >= pool_concurrency(cfg) or counts[profile] >= pool_limits(cfg)[profile]:
             errors.append(f"{profile} runner slots are occupied")
-        if active_vcpus + requested_vcpus > 12 or (os.cpu_count() or 0) < 12:
-            errors.append("host cannot fit 12 configured runner vCPUs")
+        if active_vcpus + requested_vcpus > pool_cpu_limit(cfg) or (os.cpu_count() or 0) < (16 if cfg.get("pool_mode") == "parallel" else 12):
+            errors.append(f"host cannot fit {pool_cpu_limit(cfg)} configured runner vCPUs")
         reserve_mib = int(cfg["host_memory_reserve_mib"])
         if memory_total_mib() < active_memory + requested_memory + reserve_mib:
             errors.append("host memory cannot fit projected runners and reserve")
@@ -1740,7 +1754,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             for state_lease, item in state_by_lease.items()
         ):
             raise RunnerError("runner lifecycle state requires reconciliation")
-        concurrency = FOUR_POOL_CONCURRENCY if four_pool(cfg) else \
+        concurrency = pool_concurrency(cfg) if four_pool(cfg) else \
             configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
             LOG.info("admission denied reason=runner_slot_exhausted active=%s", len(state_by_lease))
@@ -2260,8 +2274,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
         if any(state.get("profile", "heavy") not in POOL_LIMITS for state in states):
             raise RunnerError("runner lifecycle state has an unknown profile")
         active_profile = sum(state.get("profile", "heavy") == profile for state in states)
-        available_slots = min(FOUR_POOL_CONCURRENCY - len(states),
-                              POOL_LIMITS[profile] - active_profile)
+        available_slots = min(pool_concurrency(cfg) - len(states),
+                              pool_limits(cfg)[profile] - active_profile)
     else:
         concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         available_slots = concurrency - len(states)
@@ -2606,6 +2620,26 @@ class SelectedCandidateClient:
         self.client.delete_runner(repo, runner_id)
 
 
+def fair_candidate_queue(queue: list[tuple], active: list[dict[str, Any]]) -> list[tuple]:
+    """Order only: distribute available slots across runs, without granting admission."""
+    counts: dict[tuple, int] = {}
+    for state in active:
+        identity = (state.get("repo"), state.get("actual_run_id", state.get("trigger_run_id", state.get("run_id"))))
+        counts[identity] = counts.get(identity, 0) + 1
+    pending, ordered = list(queue), []
+    while pending:
+        def priority(row):
+            candidate = row[-1].candidate
+            return (counts.get((candidate["repo"], candidate["run_id"]), 0), row[0])
+        row = min(pending, key=priority)
+        pending.remove(row)
+        candidate = row[-1].candidate
+        identity = (candidate["repo"], candidate["run_id"])
+        counts[identity] = counts.get(identity, 0) + 1
+        ordered.append(row)
+    return ordered
+
+
 def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
                        org_client: GitHubClient | None) -> bool:
     """Merge eligible queues before allocating slots, instead of preferring a repo.
@@ -2653,7 +2687,9 @@ def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
                 queue.append((order, scope, profile, role,
                               SelectedCandidateClient(source, candidate, label)))
     launched = False
-    for _, scope, profile, role, selected in sorted(queue, key=lambda entry: entry[0]):
+    ordered = fair_candidate_queue(queue, StateStore(Path(cfg["state_dir"])).leases()) \
+        if cfg.get("pool_mode") == "parallel" else sorted(queue, key=lambda entry: entry[0])
+    for _, scope, profile, role, selected in ordered:
         options = {"execution_role": role} if role is not None else {}
         try:
             launched = dispatch_once(cfg, selected, profile=profile, scope=scope, **options) or launched

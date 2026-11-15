@@ -4,8 +4,8 @@ audit_log = "/mnt/hdd1000-01/ci-audit/manager.log"
 helper_socket = "/run/ci-runner-host-helper.sock"
 overlay_root = "{{ runner_overlay_root }}"
 max_concurrency = {{ runner_max_concurrency | int }}
-{% if runner_pool_mode == 'four' %}
-pool_mode = "four"
+{% if runner_pool_mode in ['four', 'parallel'] %}
+pool_mode = "{{ runner_pool_mode }}"
 medium_runner_label = "trusted-medium"
 medium_runner_vcpus = {{ runner_medium_vcpus | int }}
 medium_runner_memory_mib = {{ runner_medium_memory_mib | int }}

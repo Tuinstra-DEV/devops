@@ -40,6 +40,7 @@ MEMORY_MIB = 6144
 DISK_GIB = "120G"
 PROFILE_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 PROFILE_LIMITS = {"heavy": 2, "medium": 2}
+PARALLEL_PROFILE_LIMITS = {"heavy": 3, "medium": 2}
 PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
 EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
                         "medium": frozenset({4})}
@@ -184,11 +185,11 @@ def policy_mode_from_mapping(cfg: dict[str, Any]) -> str:
                      "medium_disk_reservation_gib"}
         if forbidden.intersection(cfg):
             raise ProtocolError("legacy policy has four-pool keys")
-    elif mode == "four":
+    elif mode in {"four", "parallel"}:
         expected.update({
-            "max_concurrency": 4, "medium_runner_label": "trusted-medium",
+            "max_concurrency": 5 if mode == "parallel" else 4, "medium_runner_label": "trusted-medium",
             "medium_runner_vcpus": 2, "medium_runner_memory_mib": 3072,
-            "max_heavy": 2, "max_medium": 2,
+            "max_heavy": 3 if mode == "parallel" else 2, "max_medium": 2,
             "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop",
         })
@@ -213,25 +214,28 @@ def active_pool_mode() -> str:
 
 def enforce_launch_mode(profile: str | None) -> None:
     mode = active_pool_mode()
-    if mode == "four" and (not isinstance(profile, str)
+    if mode in {"four", "parallel"} and (not isinstance(profile, str)
                            or profile not in PROFILE_RESOURCES):
         raise ProtocolError("four-pool launch requires a bounded profile")
     if mode == "legacy" and profile is not None:
         raise ProtocolError("legacy launch rejects bounded profiles")
 
 
-def profile_has_slot(counts: dict[str, int], profile: str) -> bool:
-    if profile not in PROFILE_LIMITS or set(counts) - set(PROFILE_LIMITS):
+def profile_has_slot(counts: dict[str, int], profile: str, mode: str = "four") -> bool:
+    if mode not in {"four", "parallel"}:
+        return False
+    limits = PARALLEL_PROFILE_LIMITS if mode == "parallel" else PROFILE_LIMITS
+    if profile not in limits or set(counts) - set(limits):
         return False
     if any(not isinstance(count, int) or count < 0 for count in counts.values()):
         return False
     projected = dict(counts)
     projected[profile] = projected.get(profile, 0) + 1
     return all(projected.get(kind, 0) <= maximum
-               for kind, maximum in PROFILE_LIMITS.items()) and sum(
+               for kind, maximum in limits.items()) and sum(
                    projected.get(kind, 0) * PROFILE_RESOURCES[kind][0]
-                   for kind in PROFILE_LIMITS
-               ) <= 12 and sum(projected.values()) <= MAX_CONCURRENCY
+                   for kind in limits
+               ) <= (14 if mode == "parallel" else 12) and sum(projected.values()) <= (5 if mode == "parallel" else MAX_CONCURRENCY)
 
 
 def reservation_fits(free_bytes: int, profile: str) -> bool:
@@ -594,7 +598,7 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
             if not (existing_directory / "profile").is_file():
                 raise RuntimeError("bounded pool requires all legacy domains to drain")
             counts[recorded_profile(existing_lease)] += 1
-        if not profile_has_slot(counts, profile):
+        if not profile_has_slot(counts, profile, active_pool_mode()):
             raise RuntimeError("all sanctuary CI profile slots are occupied")
     if name(lease) in runner_domains:
         raise RuntimeError("sanctuary CI domain already exists")

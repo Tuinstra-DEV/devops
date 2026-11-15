@@ -57,7 +57,14 @@ class WodiqCompactTests(unittest.TestCase):
         self.assertIn('fetch-depth: 0', source)
         for key in ['core', 'runtime-build', 'api', 'management', 'worker']:
             block = source.split(f'  wodiq-{key}:\n', 1)[1].split('\n  wodiq-', 1)[0]
-            self.assertRegex(block, r"runs-on: .*fromJSON\(needs.preflight.outputs.(?:medium|heavy)-runner\)")
+            if key == 'api':
+                self.assertIn("matrix.profile == 'medium'", block)
+                self.assertIn('CI_API_SHARD: ${{ matrix.shard }}', block)
+                self.assertIn('fail-fast: false', block)
+                self.assertEqual(re.findall(r'- shard: ([a-z]+)', block), ['contracts', 'lifecycle', 'http'])
+                self.assertNotIn('continue-on-error', block)
+            else:
+                self.assertRegex(block, r"runs-on: .*fromJSON\(needs.preflight.outputs.(?:medium|heavy)-runner\)")
             self.assertIn("if: needs.preflight.outputs.trusted == 'true'", block)
             self.assertIn("if: needs.preflight.outputs.trusted == 'false'", block)
             self.assertIn('trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc', block)
