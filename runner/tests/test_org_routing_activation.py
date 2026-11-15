@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from runner.tests.legacy_sources import legacy_source
 import subprocess
 import sys
 import tempfile
@@ -44,7 +45,7 @@ class OrgActivationTests(unittest.TestCase):
         self.stage = root / "stage"
         self.stage.mkdir()
         self.stage_manager = self.stage / "ci_runner_manager.py"
-        self.stage_manager.write_bytes((ROOT / "runner/manager/ci_runner_manager.py").read_bytes())
+        self.stage_manager.write_bytes(legacy_source("manager"))
         self.manager = root / "manager"
         self.manager.write_bytes(b"old manager")
         self.manager.chmod(0o755)
@@ -52,7 +53,7 @@ class OrgActivationTests(unittest.TestCase):
         self.config.write_bytes(four_pool_config())
         self.config.chmod(0o640)
         self.helper = root / "helper"
-        self.helper.write_bytes((ROOT / "runner/host-helper/ci_runner_host_helper.py").read_bytes())
+        self.helper.write_bytes(legacy_source("helper"))
         self.helper.chmod(0o755)
         self.unit = root / "unit"
         self.unit.write_bytes((ROOT / "runner/systemd/ci-runner-manager.service").read_bytes())
@@ -73,7 +74,7 @@ class OrgActivationTests(unittest.TestCase):
         )
         self.workflow_sha = "a" * 40
 
-    def test_pinned_source_and_manifest_match_checkout(self):
+    def test_pinned_source_and_manifest_match_legacy_bundle(self):
         self.assertEqual(activation.sha(self.stage_manager.read_bytes()), activation.NEW_MANAGER_SHA)
         self.assertEqual(activation.sha(self.helper.read_bytes()), activation.HELPER_SHA)
         self.assertEqual(activation.sha(self.unit.read_bytes()), activation.UNIT_SHA)

@@ -91,3 +91,5 @@ npm ci --ignore-scripts --no-audit --no-fund --prefix .github/actions/gate-obser
 node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs
 
 python3 -B scripts/test-catalog-scope-retry.py
+
+python3 -B -m unittest tests.test_wodiq_ci_parallel_activation

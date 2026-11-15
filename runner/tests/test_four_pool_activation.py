@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from runner.tests.legacy_sources import legacy_source
 import subprocess
 import tempfile
 import tomllib
@@ -52,13 +53,13 @@ class FourPoolActivationTests(unittest.TestCase):
             dropin=self.dropin, backup_root=self.backup_root,
         )
         self.config.write_bytes((ROOT / "runner/config/manager.toml").read_bytes())
-        self.manager.write_bytes((ROOT / "runner/manager/ci_runner_manager.py").read_bytes())
-        self.helper.write_bytes((ROOT / "runner/host-helper/ci_runner_host_helper.py").read_bytes())
+        self.manager.write_bytes(legacy_source("manager"))
+        self.helper.write_bytes(legacy_source("helper"))
         self.unit.write_bytes((ROOT / "runner/systemd/ci-runner-manager.service").read_bytes())
         for file in (self.config, self.manager, self.helper, self.unit):
             file.chmod(0o640)
 
-    def test_reviewed_binary_hashes_match_this_checkout(self):
+    def test_reviewed_binary_hashes_match_immutable_legacy_sources(self):
         self.assertEqual(activation.digest(self.manager.read_bytes()),
                          activation.MANAGER_SHA256)
         self.assertEqual(activation.digest(self.helper.read_bytes()),

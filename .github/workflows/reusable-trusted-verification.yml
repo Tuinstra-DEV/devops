@@ -331,10 +331,20 @@ jobs:
           gate-frontend-output: 'false'
 
   wodiq-api:
-    name: wodiq-api verification
+    name: wodiq-api verification (${{ matrix.shard }})
     needs: [preflight, wodiq-runtime-build]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.wodiq-runtime-build.result == 'success' && needs.wodiq-runtime-build.outputs.verified == 'true' && needs.wodiq-runtime-build.outputs.route == needs.preflight.outputs.trusted }}
-    runs-on: ${{ fromJSON(needs.preflight.outputs.heavy-runner) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: contracts
+            profile: medium
+          - shard: lifecycle
+            profile: heavy
+          - shard: http
+            profile: heavy
+    runs-on: ${{ fromJSON(matrix.profile == 'medium' && needs.preflight.outputs.medium-runner || needs.preflight.outputs.heavy-runner) }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -342,6 +352,7 @@ jobs:
       verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
       route: ${{ needs.preflight.outputs.trusted }}
     env:
+      CI_API_SHARD: ${{ matrix.shard }}
       CI_PLAN: ${{ needs.preflight.outputs.plan }}
       CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
       CI_RUN_ID: ${{ github.run_id }}
