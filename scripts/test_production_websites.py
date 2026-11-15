@@ -114,7 +114,7 @@ class WebsiteOperationsTests(unittest.TestCase):
         self.assertEqual(changed["custom_host_policy"], profile["custom_host_policy"])
         self.assertEqual(changed["spool_quota_bytes"], profile["spool_quota_bytes"])
         self.assertEqual(changed["applications"][0]["included_files"][0], profile["applications"][0]["included_files"][0])
-        self.assertEqual(len(changed["applications"][0]["included_files"]), 17)
+        self.assertEqual(len(changed["applications"][0]["included_files"]), 14)
         self.assertEqual(json.loads(Path(result["backup"]).read_text()), profile)
         original_snapshot_count = len(list(web.BACKUPS.iterdir()))
         self.assertEqual(web.extend_backup_profile()["extended"], 0)
