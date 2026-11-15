@@ -22,6 +22,22 @@ assert SPEC.loader
 SPEC.loader.exec_module(backup)
 
 
+def fake_object_copy(argv, kwargs, contents, *, mutate=None, extra=None):
+    """Behaves like `mc cp --recursive local/<bucket>/ /objects/`: every object at its key under the mount."""
+    mount = argv[argv.index("--volume") + 1]
+    host, _, target = mount.rpartition(":")
+    assert target == "/objects", mount
+    assert argv[-2:] == ["local/tracker-attachments/", "/objects/"], argv
+    for index, (key, data) in enumerate(contents.items()):
+        data = data if mutate is None else mutate(index, data)
+        if data is not None:
+            Path(host, key).parent.mkdir(parents=True, exist_ok=True)
+            Path(host, key).write_bytes(data)
+    for key, data in (extra or {}).items():
+        Path(host, key).write_bytes(data)
+    return mock.Mock(stdout=b"")
+
+
 class BackupTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -338,9 +354,8 @@ class BackupTests(unittest.TestCase):
             if argv[:2] == ["docker", "run"] and "ls" in argv:
                 return mock.Mock(stdout=(json.dumps({"status": "success", "type": "file",
                     "key": "nested/report.txt", "size": len(b"safe attachment\n")}) + "\n").encode())
-            if argv[:2] == ["docker", "run"] and "cat" in argv:
-                kwargs["stdout"].write(b"safe attachment\n")
-                return mock.Mock(stdout=None)
+            if argv[:2] == ["docker", "run"] and "cp" in argv:
+                return fake_object_copy(argv, kwargs, {"nested/report.txt": b"safe attachment\n"})
             if "exec" in argv and "MINIO_ROOT_USER" in argv[-1]:
                 return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
             if "exec" in argv and "pg_dump --version" in argv[-1]:
@@ -377,6 +392,77 @@ class BackupTests(unittest.TestCase):
         self.assertFalse(any("fixture-password" in argument for call in calls for argument in call))
         self.assertFalse(any("S3_BUCKET" in argument for call in calls for argument in call
                              if "exec" in call))
+
+    def object_copy_app_run(self, contents, calls, *, mutate=None, extra=None):
+        listing = "".join(json.dumps({"status": "success", "type": "file", "key": key, "size": len(data)}) + "\n"
+                          for key, data in contents.items()).encode()
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["docker", "compose"] and "ps" in argv:
+                return mock.Mock(stdout=("d" * 64 + "\n").encode())
+            if "exec" in argv:
+                return mock.Mock(stdout=b"fixture-user\nfixture-password\n")
+            if argv[:2] == ["docker", "run"] and "ls" in argv:
+                return mock.Mock(stdout=listing)
+            if argv[:2] == ["docker", "run"] and "cp" in argv:
+                return fake_object_copy(argv, kwargs, contents, mutate=mutate, extra=extra)
+            raise AssertionError(argv)
+        return fake_run
+
+    @staticmethod
+    def inventory_for(contents):
+        return [{"status": "available", "object_key": key, "deletion_object_key": None,
+                 "declared_size": len(data), "declared_sha256": hashlib.sha256(data).hexdigest()}
+                for key, data in contents.items()]
+
+    def test_tracker_objects_are_copied_by_one_client_container(self):
+        contents = {f"a/{index}/report {index}.txt": f"attachment {index}\n".encode() for index in range(25)}
+        calls = []
+        payload = self.root / "payload"
+        payload.mkdir()
+        with mock.patch.object(backup, "run", side_effect=self.object_copy_app_run(contents, calls)):
+            backup.tracker_object_manifest(self.tracker_app(), payload, self.inventory_for(contents))
+        copies = [call for call in calls if call[:2] == ["docker", "run"] and "cp" in call]
+        self.assertEqual(len(copies), 1)
+        # one mc process for the whole bucket: no object key on any command line
+        self.assertFalse(any("report" in argument for call in calls for argument in call))
+        manifest = json.loads((payload / "files/object-manifest.json").read_text())
+        self.assertEqual(manifest["object_count"], 25)
+        self.assertEqual({item["key"]: item["sha256"] for item in manifest["objects"]},
+                         {key: hashlib.sha256(data).hexdigest() for key, data in contents.items()})
+        self.assertEqual(list(payload.parent.glob(".tracker-objects-*")), [])
+
+    def test_tracker_object_copy_rejects_a_changed_size(self):
+        contents = {"a/report.txt": b"safe attachment\n", "b/other.txt": b"other\n"}
+        payload = self.root / "payload"
+        payload.mkdir()
+        run = self.object_copy_app_run(contents, [], mutate=lambda index, data: data + b"!" if index == 1 else data)
+        with mock.patch.object(backup, "run", side_effect=run), \
+             self.assertRaisesRegex(backup.BackupError, "size changed"):
+            backup.tracker_object_manifest(self.tracker_app(), payload, self.inventory_for(contents))
+        self.assertEqual(list(payload.parent.glob(".tracker-objects-*")), [])
+
+    def test_tracker_object_copy_rejects_a_missing_copy(self):
+        contents = {"a/report.txt": b"safe attachment\n", "b/other.txt": b"other\n"}
+        payload = self.root / "payload"
+        payload.mkdir()
+        run = self.object_copy_app_run(contents, [], mutate=lambda index, data: None if index == 0 else data)
+        with mock.patch.object(backup, "run", side_effect=run), \
+             self.assertRaisesRegex(backup.BackupError, "incomplete"):
+            backup.tracker_object_manifest(self.tracker_app(), payload, self.inventory_for(contents))
+
+    def test_tracker_object_copy_rejects_an_unlisted_file(self):
+        contents = {"a/report.txt": b"safe attachment\n"}
+        payload = self.root / "payload"
+        payload.mkdir()
+        run = self.object_copy_app_run(contents, [], extra={"unlisted.bin": b"x"})
+        with mock.patch.object(backup, "run", side_effect=run), \
+             self.assertRaisesRegex(backup.BackupError, "incomplete"):
+            backup.tracker_object_manifest(self.tracker_app(), payload, self.inventory_for(contents))
+
+    def test_tracker_object_copy_is_one_recursive_mc_copy(self):
+        self.assertEqual(backup.TRACKER_OBJECT_COPY_COMMAND, ["cp", "--recursive", "--quiet"])
 
     def test_tracker_empty_inventory_is_valid_when_only_withdrawn_records_remain(self):
         app = self.tracker_app()

@@ -855,21 +855,7 @@ def tracker_object_manifest(app: dict[str, Any], payload: Path,
         total_bytes = sum(item["bytes"] for item in entries)
         if total_bytes > 10 * 1024 * 1024 * 1024:
             raise BackupError("Tracker object manifest exceeds its size quota")
-        objects: list[dict[str, Any]] = []
-        for item in entries:
-            temporary_fd, temporary_name = tempfile.mkstemp(prefix=".tracker-object-", dir=payload.parent)
-            os.chmod(temporary_name, 0o600)
-            try:
-                with os.fdopen(temporary_fd, "wb") as handle:
-                    run(["docker", "run", "--rm", "--network", f"container:{minio_id}",
-                         "--env-file", env_name, client_image, "cat",
-                         f"local/{bucket}/{item['key']}"], stdout=handle)
-                temporary = Path(temporary_name)
-                if temporary.stat().st_size != item["bytes"]:
-                    raise BackupError("Tracker object size changed during export")
-                objects.append({"key": item["key"], "bytes": item["bytes"], "sha256": sha256(temporary)})
-            finally:
-                Path(temporary_name).unlink(missing_ok=True)
+        objects = _copy_tracker_objects(minio_id, env_name, client_image, bucket, entries, payload.parent)
     finally:
         Path(env_name).unlink(missing_ok=True)
     _reconcile_tracker_objects(attachment_inventory, objects)
@@ -878,6 +864,37 @@ def tracker_object_manifest(app: dict[str, Any], payload: Path,
     atomic_json(destination, manifest, 0o600)
     return {"name": "files/object-manifest.json", "sha256": sha256(destination),
             "bytes": destination.stat().st_size}
+
+
+# One mc process copies the whole bucket into the mounted /objects, keeping each key as its relative path
+# (keys are validated: no backslash, absolute path, "." or ".." parts). Every file is then checked against
+# the listing, so nothing unlisted or missing gets past.
+TRACKER_OBJECT_COPY_COMMAND = ["cp", "--recursive", "--quiet"]
+
+
+def _copy_tracker_objects(minio_id: str, env_name: str, client_image: str, bucket: str,
+                          entries: list[dict[str, Any]], work: Path) -> list[dict[str, Any]]:
+    """Hashes every listed object. One client container copies them all into a private directory (one
+    container per object kept Tracker quiesced for minutes); sizes and digests are checked here."""
+    if not entries:
+        return []
+    with tempfile.TemporaryDirectory(prefix=".tracker-objects-", dir=work) as temporary:
+        copies = Path(temporary)
+        os.chmod(copies, 0o700)
+        run(["docker", "run", "--rm", "--network", f"container:{minio_id}", "--env-file", env_name,
+             "--volume", f"{copies}:/objects", client_image, *TRACKER_OBJECT_COPY_COMMAND,
+             f"local/{bucket}/", "/objects/"])
+        copied = {path.relative_to(copies).as_posix() for path in copies.rglob("*")
+                  if path.is_symlink() or not path.is_dir()}
+        if copied != {item["key"] for item in entries}:
+            raise BackupError("Tracker object copy is incomplete")
+        objects: list[dict[str, Any]] = []
+        for item in entries:
+            copy = copies / item["key"]
+            if copy.is_symlink() or not copy.is_file() or copy.stat().st_size != item["bytes"]:
+                raise BackupError("Tracker object size changed during export")
+            objects.append({"key": item["key"], "bytes": item["bytes"], "sha256": sha256(copy)})
+        return objects
 
 
 @contextlib.contextmanager
