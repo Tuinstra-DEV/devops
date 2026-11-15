@@ -5,7 +5,7 @@
   become: true
   vars:
     production_websites_apply: false
-    production_website_names: [wodiq-site, site-openairco, site-marcel, site-tuinstra]
+    production_website_names: [wodiq-site, site-marcel, site-tuinstra]
   tasks:
     - name: Require the named existing administrative connection
       ansible.builtin.assert:
@@ -31,7 +31,7 @@
         group: root
         mode: '0700'
 
-    - name: Stage only the four reviewed public routes
+    - name: Stage only the three reviewed public routes
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../caddy/public-websites/{{ item }}.caddy"
         dest: "/var/www/_platform/caddy/DEV-26-candidate/{{ item }}.caddy"
