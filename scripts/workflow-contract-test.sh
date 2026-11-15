@@ -121,4 +121,38 @@ done
 grep -Eq 'subject-digest:.*steps.build.outputs.digest' "$release_workflow" || fail "provenance is not bound to the immutable digest"
 grep -Eq 'image-ref=.*@.*IMAGE_DIGEST' "$release_workflow" || fail "immutable image-ref output missing"
 
+ruby <<'RUBY' || fail "strict PostgreSQL migration verification is invalid"
+require "open3"
+require "tmpdir"
+require "yaml"
+
+workflow = YAML.safe_load_file(".github/workflows/reusable-php-test.yml")
+input = workflow.fetch(true).fetch("workflow_call").fetch("inputs").fetch("strict-migrations")
+raise "migration verification must be opt-in" unless input.values_at("type", "default") == ["boolean", false]
+
+jobs = workflow.fetch("jobs")
+steps = jobs.fetch("test-postgres").fetch("steps")
+strict = steps.find { |step| step["name"] == "Verify migrations on a fresh PostgreSQL database" }
+legacy = steps.find { |step| step["name"] == "Run migrations" }
+fixture = steps.find { |step| step["name"] == "Prepare the PostgreSQL fixture database" }
+raise "strict migration verification must use a separate database" unless strict.fetch("env").fetch("DATABASE_URL").include?("/test_db_migrations?")
+raise "strict verification and fixture setup must be opt-in" unless [strict, fixture].all? { |step| step.fetch("if") == '${{ inputs.strict-migrations }}' }
+raise "strict migrations and fixture setup must precede PHPUnit" unless steps.index(strict) < steps.index(fixture) && steps.index(fixture) < steps.index { |step| step["name"].start_with?("Run PHPUnit") }
+raise "fixture database must use the job's database URL" if fixture.fetch("env", {}).key?("DATABASE_URL")
+raise "legacy migrations must stay available for other consumers" unless legacy.fetch("if") == '${{ inputs.run-migrations && !inputs.strict-migrations }}'
+
+commands = %w[doctrine:database:create doctrine:migrations:migrate doctrine:migrations:up-to-date]
+Dir.mktmpdir do |dir|
+  stub = File.join(dir, "php")
+  File.write(stub, "#!/bin/sh\nprintf '%s\\n' \"$2\"\n[ \"$2\" != \"$FAIL_AT\" ]\n")
+  File.chmod(0o755, stub)
+  [nil, *commands].each do |failure|
+    env = { "PATH" => "#{dir}:#{ENV.fetch('PATH')}", "FAIL_AT" => failure.to_s }
+    output, result = Open3.capture2e(env, "bash", "-c", strict.fetch("run"))
+    expected = failure ? commands.take(commands.index(failure) + 1) : commands
+    raise "unexpected commands or status for #{failure.inspect}: #{output}" unless output.lines.map(&:strip) == expected && result.success? == failure.nil?
+  end
+end
+RUBY
+
 echo "workflow contract test passed"
