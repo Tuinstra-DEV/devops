@@ -83,40 +83,12 @@ isolated containers, not a deliberate public downgrade for test evidence.
 
 ## Backup and empty-host recovery
 
-The existing encrypted Umami export now includes sixteen explicit host recovery
-inputs: Caddy global/Compose config, the two existing fixed deploy helpers, and
-each website's route, immutable Compose pin and private registry config. The
-export remains age-encrypted for the existing offsite recovery destination;
-secrets are never written into public receipts or logs. There is no new adapter,
-recipient, routine or independently restorable website database claim. Static
-website content is the immutable registry image. Caddy certificates can be
-reissued through the same confirmed DNS/TLS route after recovery.
-
-Activation merges these inputs into the **installed** producer profile rather
-than replacing it with the repository seed. Existing Status configuration,
-host locks, quotas and other fields are preserved. Missing/unsafe inputs or
-conflicting logical names stop the update; repeat application is a no-op. The
-old producer is retained privately in the same recovery directory.
-
-After activation, run the existing offsite backup and isolated restore proof:
-
-```bash
-ssh -o StrictHostKeyChecking=yes mtuinstra@sanctuary.tuinstra.dev \
-  'sudo /usr/local/sbin/tuinstra-backup-admin run umami'
-ssh -o StrictHostKeyChecking=yes mtuinstra@sanctuary.tuinstra.dev \
-  'sudo /usr/local/sbin/tuinstra-backup-admin restore-test umami latest'
-```
-
-Use the actual installed wrapper path if it differs; do not bypass its sudo
-contract. Record the fresh receipt/snapshot and complete checksum validation.
-Old DEV-30 restores prove Umami recovery but do not prove these new host inputs.
-For empty-host website recovery, provision the accepted host baseline, securely
-materialize the verified bundle using the existing restore contract, restore
-only these explicit paths with original private registry permissions, reinstall
-the operator helper from the reviewed source, and validate Caddy before starting
-the three exact pinned stacks. Do not expand backup sudo permissions or copy
-decrypted secrets into the workspace. Verify TLS, assets, navigation, CTAs,
-headers and exact runtime pins. Test each website's pinned recovery independently.
+There is currently no backup. The Sanctuary backup engine, its Umami export
+(which also carried the host recovery inputs for these websites) and the
+`backup-profile` action of `scripts/production-websites.py` were removed on
+15 November 2026. Recovering an empty host means provisioning the accepted host
+baseline, recreating the Caddy routes and Compose pins from this repository and
+pulling the pinned website images; private registry config must be re-created.
 
 ## Capacity and operating envelope
 
@@ -166,10 +138,9 @@ make test
 ```
 
 The native probe executes the exact pinned Caddy with no external network/ports,
-checks308 plus preserved path/query for all five hosts, and rejects an invalid
+checks308 plus preserved path/query for all four hosts, and rejects an invalid
 candidate. Filesystem tests cover validation failure, rejected reload recovery,
-unrelated route preservation, stale rollback and non-destructive/idempotent
-backup-profile merging. They simulate the Docker boundary; they are not fresh
+unrelated route preservation and stale rollback. They simulate the Docker boundary; they are not fresh
 production or root-ownership tests.
 
 Record separately: release/source/provider/domain matrix; actual per-site

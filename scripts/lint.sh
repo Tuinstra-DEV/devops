@@ -73,24 +73,8 @@ python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'
 bash -n scripts/install-production-profile-executor scripts/production-profile-bridge scripts/production-profile-executor-contract-test.sh
 bash -n scripts/production-host-rehearsal-test.sh
-python3 -c 'compile(open("backup/tuinstra_backup.py", encoding="utf-8").read(), "backup/tuinstra_backup.py", "exec")'
-python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
-python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
-python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
-python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
 python3 -c 'compile(open("scripts/verify-install-inputs.py", encoding="utf-8").read(), "scripts/verify-install-inputs.py", "exec")'
 python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("scripts/production-websites.py", "scripts/verify-public-websites.py", "scripts/test-production-websites-native.py", "scripts/test_production_websites.py")]'
-python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
-python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
-python3 -c 'compile(open("scripts/test_isolated_restore_native.py", encoding="utf-8").read(), "scripts/test_isolated_restore_native.py", "exec")'
-bash -n backup/restore-umami
-bash -n backup/restore-tracker
-bash -n scripts/test_tracker_restore_native.sh
-bash -n backup/tuinstra-backup-admin
-bash -n scripts/install-sanctuary-backups
-bash -n scripts/restic-retention-integration-test.sh
-bash -n scripts/restore-network-isolation-integration-test.sh
-bash -n scripts/production-backup-contract-test.sh
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 ruby scripts/dependency-update-policy-test.rb
 
@@ -117,8 +101,6 @@ python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-diagnose-v
 
 python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.py"); compile(p.read_text(),str(p),"exec")'
 
-python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("backup/restore-wodiq", "scripts/install-wodiq-producer", "scripts/test_wodiq_backup.py")]'
 
-python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("scripts/reuse-publisher-runtime.py", "scripts/add-wodiq-catalog-scope.py", "scripts/test-catalog-scope-retry.py")]'
 
 python3 -c 'from pathlib import Path; p=Path("scripts/activate-wodiq-ci-parallel.py"); compile(p.read_text(),str(p),"exec")'
