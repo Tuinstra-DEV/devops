@@ -134,6 +134,29 @@ live service defect. Any missing/unverifiable **manager** context still blocks.
 The existing Mac Terminal wrapper above transfers the corrected local probe
 and fresh snapshots before invoking it once. Return only its final JSON line.
 
+### Operator outcome: image prerequisite blocks the trial
+
+The operator returned the corrected check's JSON on 16 November 2026:
+`policy_verified=true` (six existing refs, eleven repositories), all six
+credential/API-read outcomes true, and `selected_image_sha256_verified=true`.
+The check then stopped at `selected_image_php` with
+`selected_image_pdo_mysql_missing`; `all_checks_green=false`.
+
+This verifies that the existing systemd-loaded credential is readable through
+the corrected route and already has the tested read permissions. No credential
+or permission change is needed for those reads. The hash-verified selected
+image's PHP 8.3 CLI does not expose both the PDO MySQL extension and mysql
+driver as required. It does not establish whether the package is absent or
+merely disabled. Docker was **not checked** because the PHP prerequisite failed.
+
+Stop before provider publication or runner admission. No new trial runs or
+performance comparison were executed, and no activation rollback is necessary.
+Read-only `gh` checks still show the original six group refs and both PRs open
+at their original remote heads in `manifest.json`. Any image repair/rebuild
+requires separate authorization; the one temporary admission trial does not
+authorize it. The existing approval remains conditional on all prerequisites
+passing, including a subsequent in-runner Docker check.
+
 Snapshots older than five minutes are rejected. After a later approved change,
 the same check with `--after --before-config <root-owned-TOML-backup>` verifies
 the exact new manager hash, seven refs, and that removing only the proposed role
