@@ -89,6 +89,12 @@ EXECUTION_ROLES = {
         "events": {"pull_request_target"},
         "actors": {(ORG_ACTOR, "User")},
     },
+    "gate-backend-pilot": {
+        "profile": "medium", "label": "ci-gate-backend-pilot",
+        "workflow": f"{ORG_NAME}/devops/.github/workflows/reusable-product-ci.yml",
+        "events": {"pull_request"},
+        "actors": {(ORG_ACTOR, "User")},
+    },
 }
 ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
 ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
@@ -280,6 +286,8 @@ def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
                 raise RunnerError("execution role repository or event policy is invalid")
         if not set(policy["repositories"]).issubset(cfg.get("org_repository_ids", {})):
             raise RunnerError("execution role repository is not in the selected group")
+        if role == "gate-backend-pilot" and policy["repositories"] != [f"{ORG_NAME}/gate"]:
+            raise RunnerError("Gate backend pilot must select only Gate")
         actors = policy["actors"]
         if not isinstance(actors, list) or not actors or len(actors) > len(spec["actors"]):
             raise RunnerError("execution role actors must be explicitly selected")
@@ -348,10 +356,12 @@ def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
         if not isinstance(pr_head_sha, str) or re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None:
             return False
         required.add("ci-pr-head-" + pr_head_sha)
-    if role == "pr-security-producer":
+    if role in {"pr-security-producer", "gate-backend-pilot"}:
         if not pr_head_sha or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
             return False
         required.add("ci-execution-sha-" + execution_sha)
+        if role == "gate-backend-pilot" and repo != f"{ORG_NAME}/gate":
+            return False
     elif execution_sha:
         # Target metadata is deliberately unsupported; ordinary PR/push role
         # jobs cannot smuggle an execution-controller assertion into labels.
@@ -1113,6 +1123,11 @@ class GitHubClient:
         if len(matching) != 1 or matching[0].get("path") != ref or \
                 matching[0].get("sha") != ref.rsplit("@", 1)[1]:
             return None
+        if role == "gate-backend-pilot" and (repo != f"{ORG_NAME}/gate" or
+                run.get("event") != "pull_request" or
+                run.get("head_branch") != "chore/DEV-54-compact-ci-pilot" or
+                len(refs) != 1):
+            return None
         branch = run.get("head_branch")
         if not isinstance(branch, str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
@@ -1180,6 +1195,9 @@ class GitHubClient:
         if event == "pull_request_target":
             if role != "pr-security-producer" or execution_sha != default_sha:
                 return None
+        elif role == "gate-backend-pilot":
+            if not isinstance(execution_sha, str) or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
+                return None
         elif execution_sha != "":
             return None
         pr_sha = ""
@@ -1204,6 +1222,8 @@ class GitHubClient:
                         part["repo"].get("private") is not True or part["repo"].get("fork") is not False:
                     return None
             base_ref = pr["base"].get("ref")
+            if role == "gate-backend-pilot" and base_ref != "develop":
+                return None
             base_sha = default_sha if base_ref == default else self._protected_branch_sha(repo, base_ref)
             if base_sha is None or pr["base"].get("sha") != base_sha:
                 return None
@@ -1218,6 +1238,17 @@ class GitHubClient:
                         return None
             if sha != pr_sha or run.get("head_branch") != pr["head"].get("ref"):
                 return None
+            if role == "gate-backend-pilot":
+                if number != 444 or base_ref != "develop" or not self._trusted_pull_request(
+                        pr, repo, sha, "chore/DEV-54-compact-ci-pilot", number) or \
+                        pr.get("merge_commit_sha") != execution_sha:
+                    return None
+                merge = self.request("GET", f"{self.repo_path(repo)}/git/commits/{execution_sha}")
+                parents = merge.get("parents") if isinstance(merge, dict) else None
+                if not isinstance(merge, dict) or merge.get("sha") != execution_sha or not isinstance(parents, list) or \
+                        len(parents) != 2 or any(not isinstance(p, dict) for p in parents) or \
+                        {p.get("sha") for p in parents} != {pr_sha, base_sha}:
+                    return None
         elif source_head:
             return None
         if event not in {"pull_request", "pull_request_target"} and (sha != default_sha or run.get("head_branch") != default):
@@ -1242,6 +1273,8 @@ class GitHubClient:
                     if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
                             type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
                             type(job.get("run_attempt")) is not int or job.get("status") != "queued":
+                        continue
+                    if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
                         continue
                     head = role_source_head(job.get("labels"))
                     execution = role_execution_sha(job.get("labels"))
@@ -1275,6 +1308,8 @@ class GitHubClient:
                 not role_labels_match(job.get("labels"), repo, role, candidate["run_id"],
                                       candidate["run_attempt"], candidate["pr_head_sha"], candidate["execution_sha"]):
             raise error("execution role job identity changed")
+        if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
+            raise error("Gate backend pilot job name changed")
         path = f"{self.repo_path(repo)}/actions/runs/{candidate['run_id']}"
         if not current:
             path += f"/attempts/{candidate['run_attempt']}"
