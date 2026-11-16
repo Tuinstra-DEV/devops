@@ -30,15 +30,68 @@ settings have **not** been read or inferred as verified fact. The prepared
 fresh group/repository snapshots. It prints selected verification results only,
 never the config or credentials. Any mismatch aborts the proposal unchanged.
 
-Read-only operator check (fresh snapshots from the authorized local gh session;
-copy only the public policy snapshots and this proposal to Sanctuary):
+## Prepared operator verification
+
+Run this exact command in the existing operator's Mac Terminal. It refreshes
+both snapshots through the existing `gh` session, transfers the checker and
+policy evidence, then uses the existing SSH/sudo authentication interactively.
+Any sudo authentication stays in Terminal. No new access is requested.
 
 ```bash
-GH_PAGER=cat gh api orgs/Tuinstra-DEV/actions/runner-groups/4 > /tmp/dev54-group-state.json
-GH_PAGER=cat gh api orgs/Tuinstra-DEV/actions/runner-groups/4/repositories > /tmp/dev54-repositories-state.json
-# On Sanctuary, using the existing operator privilege; no credentials are read:
-sudo python3 read_effective.py --group-state /tmp/dev54-group-state.json --repositories-state /tmp/dev54-repositories-state.json
+bash "/Users/marceltuinstra/Documents/Codex/2026-11-15/new-chat-3/work/ci-rollout/devops-compact-pilot/docs/runner/proposals/dev54-gate-backend/run-operator-check.sh"
 ```
+
+The fixed Sanctuary directory is
+`/home/mtuinstra/dev54-operator-check-20261116/` (mode 0700). The full
+`operator_check.py` imports the policy checker at
+`/home/mtuinstra/dev54-operator-check-20261116/read_effective.py`, with snapshots
+`group-state.json` and `repositories-state.json` in that same directory.
+For reference, the policy-only invocation on Sanctuary is:
+
+```bash
+sudo /usr/bin/python3 -B /home/mtuinstra/dev54-operator-check-20261116/read_effective.py --group-state /home/mtuinstra/dev54-operator-check-20261116/group-state.json --repositories-state /home/mtuinstra/dev54-operator-check-20261116/repositories-state.json
+```
+
+That policy-only command is **not** sufficient runtime/credential evidence;
+use the Mac wrapper for the complete check. Return only its final JSON line
+(`all_checks_green`, individual verification outcomes, and any
+`blocked_stage`/`blocker`/HTTP status). Never return a password, token, sudo
+transcript, credential file, or `manager.toml` contents. A failure exits with
+status 1 and stops before publication or activation. Inconclusive prerequisites
+are blockers, not permission to repair the image, credentials or guest agent.
+
+The complete read-only checker:
+
+- Verifies the deployed manager hash and service binding, parses the protected
+  TOML in memory, and compares effective admission with both snapshots.
+- Uses only the existing manager credential in memory for GitHub **GET** of PR
+  #444, protected develop, exact merge parents, run/jobs, group and repositories.
+  No credential permissions are added. HTTP failures return only a bounded
+  endpoint code/status, never response bodies or credentials. This proves the
+  reads needed by the new trust checks; it does not attempt a mutating JIT call.
+- Pins the deployed host-helper hash and selected sealed base image via
+  `operator-manifest.json`, then verifies the full image SHA-256. Executes PHP
+  **inside that image**, as `ci-runner`, via `guestfish --ro`; requires PHP 8.3,
+  `pdo_mysql` with the PDO mysql driver, and the existing PDO SQLite driver.
+  A host PHP/module check cannot satisfy this prerequisite.
+- Finds an already-running Sanctuary runner whose disk backing image is that
+  exact base. Through its already-connected QEMU guest agent, executes only
+  `docker info` as `ci-runner` **in the runner guest**, requiring the existing
+  overlay2 daemon. Host Docker, unrelated images, and an installed-but-unusable
+  Docker CLI do not count. It never boots/registers a VM, starts an agent or
+  daemon, installs packages, or changes a running job. No suitable guest or
+  disconnected agent is an explicit blocker.
+
+Read-only observations on 16 November 2026: the selector points to
+`/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2`;
+its complete content hash matches that filename. The unprivileged offline PHP
+probe could not start libguestfs (`supermin` exited 1); this does **not** prove
+that PDO MySQL is missing. The observed runner from this base had a disconnected
+QEMU guest agent (`Guest agent is not responding: QEMU guest agent is not
+connected`), so Docker runtime readiness is currently unverified. The complete
+operator command rechecks current state and fails closed on either problem.
+No image, agent, credential or admission change is authorized to repair these
+prerequisites within this trial.
 
 Snapshots older than five minutes are rejected. After a later approved change,
 the same check with `--after --before-config <root-owned-TOML-backup>` verifies
@@ -111,9 +164,10 @@ evidence cannot grant a role.
 The trusted path reuses baked PHP 8.3 and the same Gate adapter. It adds a hard
 PDO MySQL requirement when MariaDB is selected, without sudo or installation.
 The repository's image recipe lists SQLite but does not install PHP 8.3 MySQL.
-The active sealed image cannot be verified from the unreadable config. Therefore
-`guest-readiness.sh` must pass on that image as the existing runner user before
-activation. **If MySQL/Docker readiness is absent, stop; this decision does not
+The selected sealed image is now identified as documented above; runtime
+prerequisites still require the complete operator check. `guest-readiness.sh`
+also documents the in-guest requirements but must never be run on the host as
+substitute evidence. **If MySQL/Docker readiness is absent, stop; this decision does not
 authorize an image rebuild, package installation or expanded privilege.**
 
 The manager's existing host credential must already allow read-only GET of
@@ -142,6 +196,10 @@ or paste credentials, or silently expand token permissions. A 403 is a blocker.
   missing group ref and an unrelated config/capacity change, preserved inputs
   and did not disclose a synthetic redaction sentinel. This is not a read of
   the protected live TOML.
+- Eight operator-check tests cover GET-only credential use and sanitized HTTP
+  failures, candidate drift, API-origin rejection, full selected-image binding,
+  read-only in-image PHP, runner-guest-only Docker, and non-disclosure of config
+  or arbitrary error contents. The Terminal wrapper passes `bash -n`.
 - Existing platform limits: Linux-only findmnt skip on macOS; optional Packer
   format and cross-repository fleet checks remain unavailable/unconfigured.
   No live CI or Sanctuary execution is claimed by local tests.
