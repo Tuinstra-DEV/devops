@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -15,6 +16,8 @@ import tomllib
 import xml.etree.ElementTree as ET
 
 from read_effective import inspect
+
+SYSTEMD_CREDENTIAL_DIRECTORY = Path('/run/credentials/ci-runner-manager.service')
 
 PHP = '''echo json_encode([
 "php_version" => PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION,
@@ -52,16 +55,84 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def manager_environment(pid):
+    # Never print, copy into our environment, or return this service environment
+    # to the operator. The caller selects only CREDENTIALS_DIRECTORY in memory.
+    return (Path('/proc') / pid / 'environ').read_bytes()
+
+
+def loaded_manager_credential(cfg, module):
+    path = SYSTEMD_CREDENTIAL_DIRECTORY / 'org_github_token'
+    if cfg.get('org_github_token_file') != str(path):
+        raise Blocked('credential_service_binding_differs')
+    # Diagnose file reachability before the reader's context-sensitive mode
+    # check. No fallback to /etc source files, chmod, copies or other credentials.
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise Blocked('credential_service_binding_differs')
+        with path.open('rb'):
+            pass
+    except OSError:
+        raise Blocked('credential_file_unreachable') from None
+    try:
+        binding = json.loads(command(['busctl', '--json=short', 'get-property',
+            'org.freedesktop.systemd1', '/org/freedesktop/systemd1/unit/ci_2drunner_2dmanager_2eservice',
+            'org.freedesktop.systemd1.Service', 'LoadCredential']))
+    except Exception:
+        raise Blocked('credential_service_binding_unavailable') from None
+    expected = [['github_token', '/etc/ci-runner/github.token'],
+                ['org_github_token', '/etc/ci-runner/org-github.token']]
+    if binding.get('type') != 'a(ss)' or sorted(binding.get('data', [])) != sorted(expected):
+        raise Blocked('credential_service_binding_differs')
+    pid_args = ['systemctl', 'show', 'ci-runner-manager.service', '-p', 'MainPID', '--value']
+    try:
+        pid = command(pid_args).strip()
+        if not re.fullmatch(r'[1-9][0-9]*', pid):
+            raise ValueError('inactive service')
+        environment = manager_environment(pid)
+    except Exception:
+        raise Blocked('credential_service_context_unavailable') from None
+    directories = [entry.partition(b'=')[2] for entry in environment.split(b'\0')
+                   if entry.startswith(b'CREDENTIALS_DIRECTORY=')]
+    if not directories:
+        raise Blocked('credential_service_context_missing')
+    if directories != [os.fsencode(SYSTEMD_CREDENTIAL_DIRECTORY)]:
+        raise Blocked('credential_service_context_differs')
+    # Reproduce only the verified active service's credential boundary in this
+    # probe process, just for the unchanged manager reader. sudo normally drops
+    # this variable. Never inherit the rest of the service environment.
+    previous = os.environ.get('CREDENTIALS_DIRECTORY')
+    try:
+        os.environ['CREDENTIALS_DIRECTORY'] = os.fsdecode(directories[0])
+        try:
+            token = module.read_token(path)
+        except OSError:
+            raise Blocked('credential_file_unreachable') from None
+        except Exception:
+            raise Blocked('credential_reader_rejected') from None
+    finally:
+        if previous is None:
+            os.environ.pop('CREDENTIALS_DIRECTORY', None)
+        else:
+            os.environ['CREDENTIALS_DIRECTORY'] = previous
+    try:
+        if command(pid_args).strip() != pid:
+            raise Blocked('credential_service_context_changed')
+    except Blocked:
+        raise Blocked('credential_service_context_changed') from None
+    return token
+
+
 def credential_checks(cfg, manifest, module):
     if cfg.get('github_api_url', 'https://api.github.com').rstrip('/') != 'https://api.github.com':
         raise Blocked('github_api_origin_differs')
     # Use only the existing manager credential in memory. No gh auth output,
     # token printing, Environment output, shell tracing, or new permission grant.
+    token = loaded_manager_credential(cfg, module)
     try:
-        token = module.read_token(Path(cfg['org_github_token_file']))
         client = module.GitHubClient(token)
     except Exception:
-        raise Blocked('existing_manager_credential_unreadable') from None
+        raise Blocked('credential_value_rejected') from None
     results = {}
 
     def get(name, path):

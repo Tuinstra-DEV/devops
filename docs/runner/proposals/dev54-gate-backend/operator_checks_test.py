@@ -14,6 +14,112 @@ import operator_check as checks
 
 
 class OperatorChecksTests(unittest.TestCase):
+    def credential_context(self, root):
+        directory = root / 'credentials'
+        directory.mkdir(mode=0o700)
+        path = directory / 'org_github_token'
+        path.write_text('synthetic-private-sentinel\n')
+        path.chmod(0o440)
+        bindings = {'type': 'a(ss)', 'data': [
+            ['github_token', '/etc/ci-runner/github.token'],
+            ['org_github_token', '/etc/ci-runner/org-github.token']]}
+
+        def systemd(args, **kwargs):
+            if args[0] == 'busctl': return json.dumps(bindings)
+            self.assertEqual(args, ['systemctl', 'show', 'ci-runner-manager.service', '-p', 'MainPID', '--value'])
+            return '123\n'
+
+        def environment(pid):
+            self.assertEqual(pid, '123')
+            return b'UNRELATED_PRIVATE=synthetic-environment-sentinel\0CREDENTIALS_DIRECTORY=' + bytes(directory) + b'\0'
+
+        return path, systemd, environment
+
+    def test_loaded_credential_uses_real_reader_and_only_restores_verified_service_context(self):
+        # Exercise the actual deployed reader, whose fingerprint policy is checked
+        # by read_effective before the live operator ever gets here.
+        # This reader is identical to the fingerprint-verified deployed reader.
+        manager_path = Path(__file__).resolve().parents[4] / 'runner/manager/ci_runner_manager.py'
+        spec = importlib.util.spec_from_file_location('credential_reader_test', manager_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            path, systemd, environment = self.credential_context(Path(directory))
+            with mock.patch.dict(checks.os.environ, {}, clear=True):
+                with self.assertRaises(module.RunnerError):
+                    module.read_token(path)
+                with mock.patch.object(checks, 'SYSTEMD_CREDENTIAL_DIRECTORY', path.parent), \
+                        mock.patch.object(checks, 'command', side_effect=systemd), \
+                        mock.patch.object(checks, 'manager_environment', side_effect=environment):
+                    before = path.stat()
+                    self.assertEqual(checks.loaded_manager_credential({'org_github_token_file': str(path)}, module),
+                                     'synthetic-private-sentinel')
+                    self.assertNotIn('CREDENTIALS_DIRECTORY', checks.os.environ)
+                    self.assertNotIn('UNRELATED_PRIVATE', checks.os.environ)
+                    self.assertEqual(path.stat().st_mode, before.st_mode)
+                    self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+
+    def test_credential_file_context_and_reader_failures_are_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, systemd, environment = self.credential_context(Path(directory))
+            module = mock.Mock()
+            with mock.patch.object(checks, 'SYSTEMD_CREDENTIAL_DIRECTORY', path.parent), \
+                    mock.patch.object(checks, 'command', side_effect=systemd), \
+                    mock.patch.object(checks, 'manager_environment', side_effect=environment) as env, \
+                    mock.patch.dict(checks.os.environ, {'CREDENTIALS_DIRECTORY': '/unrelated'}, clear=True):
+                with mock.patch.object(Path, 'open', side_effect=PermissionError('private sentinel')):
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.loaded_manager_credential({'org_github_token_file': str(path)}, module)
+                self.assertEqual(caught.exception.code, 'credential_file_unreachable')
+                module.read_token.assert_not_called()
+                env.return_value = b'PRIVATE=synthetic-private-sentinel\0'
+                env.side_effect = None
+                with self.assertRaises(checks.Blocked) as caught:
+                    checks.loaded_manager_credential({'org_github_token_file': str(path)}, module)
+                self.assertEqual(caught.exception.code, 'credential_service_context_missing')
+                module.read_token.assert_not_called()
+                env.side_effect = environment
+                module.read_token.side_effect = RuntimeError('synthetic-private-sentinel')
+                with self.assertRaises(checks.Blocked) as caught:
+                    checks.loaded_manager_credential({'org_github_token_file': str(path)}, module)
+                self.assertEqual(caught.exception.code, 'credential_reader_rejected')
+                self.assertEqual(checks.os.environ['CREDENTIALS_DIRECTORY'], '/unrelated')
+
+    def test_unverified_binding_context_or_service_restart_never_grants_a_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, systemd, environment = self.credential_context(Path(directory))
+            cfg = {'org_github_token_file': str(path)}
+            module = mock.Mock()
+            with mock.patch.object(checks, 'SYSTEMD_CREDENTIAL_DIRECTORY', path.parent):
+                with mock.patch.object(checks, 'command', return_value='{"type":"a(ss)","data":[]}'), \
+                        mock.patch.object(checks, 'manager_environment') as env:
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.loaded_manager_credential(cfg, module)
+                    self.assertEqual(caught.exception.code, 'credential_service_binding_differs')
+                    env.assert_not_called()
+                    module.read_token.assert_not_called()
+                with mock.patch.object(checks, 'command', side_effect=systemd), \
+                        mock.patch.object(checks, 'manager_environment', return_value=b'CREDENTIALS_DIRECTORY=/unrelated\0'):
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.loaded_manager_credential(cfg, module)
+                    self.assertEqual(caught.exception.code, 'credential_service_context_differs')
+                    module.read_token.assert_not_called()
+                with mock.patch.object(checks, 'command', side_effect=systemd), \
+                        mock.patch.object(checks, 'manager_environment', side_effect=PermissionError('private sentinel')):
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.loaded_manager_credential(cfg, module)
+                    self.assertEqual(caught.exception.code, 'credential_service_context_unavailable')
+                    module.read_token.assert_not_called()
+                binding = systemd(['busctl'])
+                with mock.patch.object(checks, 'command', side_effect=[binding, '123', '124']), \
+                        mock.patch.object(checks, 'manager_environment', side_effect=environment), \
+                        mock.patch.dict(checks.os.environ, {}, clear=True):
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.loaded_manager_credential(cfg, module)
+                    self.assertEqual(caught.exception.code, 'credential_service_context_changed')
+                    self.assertNotIn('CREDENTIALS_DIRECTORY', checks.os.environ)
+
     def credential_fixture(self):
         manifest = {'gate_remote_head': 'a' * 40, 'gate_base': 'b' * 40}
         client = mock.Mock()
@@ -32,7 +138,8 @@ class OperatorChecksTests(unittest.TestCase):
 
     def test_existing_credentials_are_used_for_get_only_and_never_returned(self):
         manifest, client, module = self.credential_fixture()
-        result = checks.credential_checks({'org_github_token_file': '/synthetic/credential'}, manifest, module)
+        with mock.patch.object(checks, 'loaded_manager_credential', return_value='synthetic-private-sentinel'):
+            result = checks.credential_checks({'org_github_token_file': '/synthetic/credential'}, manifest, module)
         self.assertTrue(all(result.values()))
         self.assertNotIn('synthetic-private-sentinel', json.dumps(result))
         self.assertEqual(client.request.call_count, 5)
@@ -41,13 +148,13 @@ class OperatorChecksTests(unittest.TestCase):
     def test_credential_403_and_candidate_drift_stop_without_disclosing_response(self):
         manifest, client, module = self.credential_fixture()
         client.request.side_effect = RuntimeError('HTTP 403 synthetic-private-sentinel')
-        with self.assertRaises(checks.Blocked) as caught:
+        with mock.patch.object(checks, 'loaded_manager_credential', return_value='synthetic-private-sentinel'), self.assertRaises(checks.Blocked) as caught:
             checks.credential_checks({'org_github_token_file': '/synthetic/credential'}, manifest, module)
         self.assertEqual(caught.exception.http_status, 403)
         self.assertEqual(caught.exception.code, 'credential_get_pull_request_failed')
         manifest, client, module = self.credential_fixture()
         manifest['gate_remote_head'] = 'd' * 40
-        with self.assertRaises(checks.Blocked) as caught:
+        with mock.patch.object(checks, 'loaded_manager_credential', return_value='synthetic-private-sentinel'), self.assertRaises(checks.Blocked) as caught:
             checks.credential_checks({'org_github_token_file': '/synthetic/credential'}, manifest, module)
         self.assertEqual(caught.exception.code, 'gate_candidate_differs')
         self.assertEqual(client.request.call_count, 1)

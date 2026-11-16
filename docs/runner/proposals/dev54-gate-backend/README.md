@@ -69,6 +69,14 @@ The complete read-only checker:
   No credential permissions are added. HTTP failures return only a bounded
   endpoint code/status, never response bodies or credentials. This proves the
   reads needed by the new trust checks; it does not attempt a mutating JIT call.
+  Before reading, it checks that the sudo probe can open the already-loaded
+  `/run/credentials/ci-runner-manager.service/org_github_token` file, verifies
+  the unchanged systemd `LoadCredential` bindings, and reads only the active
+  manager's `CREDENTIALS_DIRECTORY` value from its process environment in memory.
+  For the unchanged `read_token` call it temporarily supplies that verified
+  directory to this probe process, then restores the previous environment.
+  It does not copy other service variables, use the `/etc` token source as a
+  fallback, modify permissions, or change the running service or its reader.
 - Pins the deployed host-helper hash and selected sealed base image via
   `operator-manifest.json`, then verifies the full image SHA-256. Executes PHP
   **inside that image**, as `ci-runner`, via `guestfish --ro`; requires PHP 8.3,
@@ -92,6 +100,39 @@ connected`), so Docker runtime readiness is currently unverified. The complete
 operator command rechecks current state and fails closed on either problem.
 No image, agent, credential or admission change is authorized to repair these
 prerequisites within this trial.
+
+### Credential-probe diagnosis and correction
+
+The first operator execution returned `policy_verified=true` followed by
+`existing_manager_credential_unreadable`. The original probe combined file
+access, reader rejection and client construction into that single category.
+The deployed reader checks a credential file's group/other permission bits
+unless its parent matches `CREDENTIALS_DIRECTORY`; systemd-loaded credentials
+can be group-readable within that protected boundary. The standalone sudo
+probe did not supply that service variable. The deployed reader behavior and
+the failure without that context were reproduced locally; the matching live
+`LoadCredential` bindings were verified read-only. Current noninteractive sudo
+is unavailable, so **the original live failure is not yet proven to be only
+missing context**: the new operator check must establish file reachability.
+
+Credential failures now return fixed categories only (plus an HTTP status for
+an actual GitHub response); no exception message, file contents or service
+environment is serialized:
+
+| Category | Meaning |
+| --- | --- |
+| `credential_file_unreachable` | sudo could not stat/open/read the loaded runtime credential |
+| `credential_service_binding_unavailable` / `credential_service_binding_differs` | existing systemd route could not be verified or differs |
+| `credential_service_context_missing` | active manager environment lacks `CREDENTIALS_DIRECTORY` |
+| `credential_service_context_unavailable` / `credential_service_context_differs` / `credential_service_context_changed` | active service context cannot be verified, differs, or restarted during the read |
+| `credential_reader_rejected` | file is reachable and context verified, but the unchanged manager reader rejects it |
+| `credential_value_rejected` | unchanged GitHub client rejects the loaded value before any GET |
+| `credential_get_*_failed` / `credential_runner_group_read_failed` | a read request failed; `http_status` is included only when the server returned one |
+
+The absent sudo variable alone is corrected in the probe, not treated as a
+live service defect. Any missing/unverifiable **manager** context still blocks.
+The existing Mac Terminal wrapper above transfers the corrected local probe
+and fresh snapshots before invoking it once. Return only its final JSON line.
 
 Snapshots older than five minutes are rejected. After a later approved change,
 the same check with `--after --before-config <root-owned-TOML-backup>` verifies
@@ -196,10 +237,14 @@ or paste credentials, or silently expand token permissions. A 403 is a blocker.
   missing group ref and an unrelated config/capacity change, preserved inputs
   and did not disclose a synthetic redaction sentinel. This is not a read of
   the protected live TOML.
-- Eight operator-check tests cover GET-only credential use and sanitized HTTP
+- Eleven operator-check tests cover GET-only credential use and sanitized HTTP
   failures, candidate drift, API-origin rejection, full selected-image binding,
   read-only in-image PHP, runner-guest-only Docker, and non-disclosure of config
   or arbitrary error contents. The Terminal wrapper passes `bash -n`.
+  They also reproduce the real reader's 0440-file rejection without service
+  context, verify success with the validated existing context, preserve file
+  mode/mtime and prior environment, and reject inaccessible files, wrong
+  bindings, missing/unreadable/different context and a service PID change.
 - Existing platform limits: Linux-only findmnt skip on macOS; optional Packer
   format and cross-repository fleet checks remain unavailable/unconfigured.
   No live CI or Sanctuary execution is claimed by local tests.
