@@ -42,7 +42,7 @@ jobs:
 
       - name: Verify the compact backend trust boundary
         id: trust
-        uses: Tuinstra-DEV/devops/.github/actions/gate-compact-trust@7dd5c79f3deabbf569aa11e1aa7fe5898dfe1397
+        uses: Tuinstra-DEV/devops/.github/actions/gate-compact-trust@ac5ef4542cc6f8505f894a3db27f59f38fd1648e
 
       - name: Check out the exact event revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -186,7 +186,7 @@ jobs:
 
       - name: Run the admitted Gate backend on baked PHP
         if: matrix.key == 'gate-php' && needs.source.outputs.backend-trusted == 'true'
-        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7dd5c79f3deabbf569aa11e1aa7fe5898dfe1397
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@ac5ef4542cc6f8505f894a3db27f59f38fd1648e
         with:
           job-key: gate-php
           source-sha: ${{ github.sha }}
