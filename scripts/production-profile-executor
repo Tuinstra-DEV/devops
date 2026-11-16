@@ -99,7 +99,7 @@ def decode_request() -> dict[str, Any]:
     bounded_string(request["profile_version"], VERSION_PATTERN, "Profile version")
     bounded_string(request["profile_content_hash"], HASH_PATTERN, "Profile hash")
     bounded_string(request["source_sha"], SHA_PATTERN, "Source SHA")
-    if request["procedure"] not in {"baseline", "baseline_umami_restore"}:
+    if request["procedure"] != "baseline":
         raise Rejected("Profile procedure is unsupported.")
     if execution_operation == "apply":
         bounded_string(request["approved_check_result_hash"], HASH_PATTERN, "Approved check hash")
@@ -141,9 +141,9 @@ def load_policy(request: dict[str, Any]) -> dict[str, Any]:
         raise Rejected("Requested profile is not in the root-owned target allowlist.")
     bounded_string(policy["publication_id"], re.compile(r"change-[A-Za-z0-9-]{8,120}"), "Publication approval")
     fixed_targets = {
-        "tuinstra-prod-01": ("infra/ansible/production/local-prod01.yml", "prod01", "hosts/tuinstra-prod-01/vars.yml", "baseline_umami_restore"),
+        "tuinstra-prod-01": ("infra/ansible/production/local-prod01.yml", "prod01", "hosts/tuinstra-prod-01/vars.yml", "baseline"),
         "tuinstra-prod-02": ("infra/ansible/production/local-prod02.yml", "prod02", "hosts/tuinstra-prod-02/vars.yml", "baseline"),
-        "tuinstra-rehearsal-01": ("infra/ansible/rehearsal/local-inventory.yml", "rehearsal01", "hosts/tuinstra-rehearsal-01/vars.yml", "baseline_umami_restore"),
+        "tuinstra-rehearsal-01": ("infra/ansible/rehearsal/local-inventory.yml", "rehearsal01", "hosts/tuinstra-rehearsal-01/vars.yml", "baseline"),
     }
     selected = (policy["inventory"], policy["limit"], policy["vars"], policy["procedure"])
     if fixed_targets.get(request["host_slug"]) != selected:
@@ -344,8 +344,6 @@ def signal_group(group: int, selected_signal: signal.Signals) -> None:
 def run_phase(request: dict[str, Any], policy: dict[str, Any], paths: tuple[Path, Path, Path], phase: str) -> dict[str, Any]:
     check_mode = phase in {"check", "preflight", "idempotence"}
     commands = ["verify" if phase == "verify" else "configure"]
-    if request["procedure"] == "baseline_umami_restore":
-        commands.append("verify-umami-restore" if phase == "verify" else "configure-umami-restore")
     results: list[dict[str, Any]] = []
     for command in commands:
         result = run_command(request, policy, paths, phase, command, check_mode)

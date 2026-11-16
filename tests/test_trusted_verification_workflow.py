@@ -373,8 +373,6 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             ("Tuinstra-DEV/tracker", "tracker-frontend-static", "medium", "", ("24.18.0", "11.1.1", "")),
             ("Tuinstra-DEV/tracker", "tracker-container-api", "heavy", "", ("24.18.0", "", "")),
             ("Tuinstra-DEV/notify", "notify-quality", "heavy", "", ("", "", "")),
-            ("Tuinstra-DEV/console", "console-php-lint", "medium", "", ("", "", "8.4")),
-            ("Tuinstra-DEV/console", "console-php-postgres", "heavy", "", ("", "", "8.4")),
             ("Tuinstra-DEV/marcel-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/tuinstra-site", "site-node", "medium", "", ("24", "", "")),
             ("Tuinstra-DEV/wodiq-site", "site-node", "medium", "", ("24", "", "")),
@@ -431,7 +429,6 @@ class TrustedVerificationWorkflowTests(unittest.TestCase):
             ("Tuinstra-DEV/gate", "gate-frontend-static", "medium", '{"frontendTests":[],"frontendBuild":true}'),
             ("Tuinstra-DEV/tracker", "tracker-frontend-static", "medium", '{"path":"/tmp"}'),
             ("Tuinstra-DEV/notify", "notify-quality", "heavy", '{"service":"postgres"}'),
-            ("Tuinstra-DEV/console", "console-php-lint", "heavy", ""),
             ("Tuinstra-DEV/marcel-site", "site-docker", "heavy", ""),
             ("Tuinstra-DEV/wodiq-app", "wodiq-app-checks", "medium", ""),
             ("Tuinstra-DEV/status", "status-quality", "medium", ""),
@@ -685,11 +682,9 @@ else:
             ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "", "", True),
             ("Tuinstra-DEV/tracker", "tracker-backend-postgres", "8.4",
              "ctype, fileinfo, iconv, intl, mbstring, openssl, pdo_pgsql, zip", "8.4", "", "", True),
-            ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "", "", True),
             ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.4", "", "", False),
             ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "pdo_sqlite", "", False),
             ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "sqlite-driver", "", False),
-            ("Tuinstra-DEV/console", "console-php-postgres", "8.4", "intl, pdo_pgsql", "8.4", "intl", "", False),
             ("Tuinstra-DEV/gate", "gate-php", "8.3", "ctype, iconv, pdo_sqlite, sqlite3", "8.3", "", "3.0.0", False),
             ("Tuinstra-DEV/gate", "gate-php", "8.4", "ctype, iconv, pdo_sqlite, sqlite3", "8.4", "", "", False),
         )
@@ -748,7 +743,7 @@ else:
             script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                for repository in ("Tuinstra-DEV/gate", "Tuinstra-DEV/tracker", "Tuinstra-DEV/console"):
+                for repository in ("Tuinstra-DEV/gate", "Tuinstra-DEV/tracker"):
                     for environment in ("self-hosted", "github-hosted"):
                         output, export = root / "output", root / "export"
                         output.write_text("")

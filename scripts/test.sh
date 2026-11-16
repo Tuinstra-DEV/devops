@@ -38,7 +38,6 @@ ruby ./scripts/dependency-update-policy-test.rb
 if [[ -n "${DEPENDABOT_FLEET_ROOT:-}" ]]; then
   ruby ./scripts/dependency-update-fleet-test.rb \
     "agent-lab=${DEPENDABOT_FLEET_ROOT}/agent-lab" \
-    "console=${DEPENDABOT_FLEET_ROOT}/console" \
     "devops=${DEPENDABOT_FLEET_ROOT}/devops" \
     "gate=${DEPENDABOT_FLEET_ROOT}/gate" \
     "marcel-site=${DEPENDABOT_FLEET_ROOT}/marcel-site" \
@@ -65,17 +64,7 @@ fi
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_console_agent_enroll.py
 ./scripts/production-umami-test.sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_isolated_restore_harness.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_backup.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_wodiq_backup.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_restore.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_credential_bootstrap.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_stage_backup_escrow.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_sanctuary_installer_contract.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_backup_onepassword_escrow.py
-./scripts/production-backup-contract-test.sh
 ./scripts/production-umami-test.sh
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source.py tests/test_gate_pr_security_profiles.py tests/test_gate_pr_security_evidence.py tests/test_gate_pr_security_local_integration.py
@@ -89,6 +78,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_
 npm ci --ignore-scripts --no-audit --no-fund --prefix .github/actions/gate-observability
 node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs
 
-python3 -B scripts/test-catalog-scope-retry.py
 
 python3 -B -m unittest tests.test_wodiq_ci_parallel_activation

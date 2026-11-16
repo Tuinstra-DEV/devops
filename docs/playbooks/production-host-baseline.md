@@ -87,10 +87,8 @@ poort 80 is bedoeld. Back-ups zijn eveneens uitgesteld. Richt vóór een migrati
 versleutelde, applicatieconsistente back-ups in naar Sanctuary
 `/mnt/hdd1000-01`, leg retentie vast en bewijs een restore.
 
-Console-enrollment gebeurt afzonderlijk volgens
-[Console enrollment](../../infra/console-agent/README.md). De agent mag de
-onbeperkte Docker-socket niet mounten. Toekomstige Console-provisioning hoort
-niet in DEV-26.
+Console is op 15 november 2026 uitgefaseerd; hosts krijgen geen Console-agent
+meer.
 
 ## Lokale regressiecontrole
 

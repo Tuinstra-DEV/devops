@@ -10,7 +10,6 @@ The central reusable workflow accepts the original `profile`, `job-key`, and opt
 | gate | `gate-php` | `gate-frontend-static` | PHP 8.3 with ctype/iconv and Composer; Node 24 with pnpm 10.28.2; exact suite/test/build selection enums |
 | tracker | `tracker-frontend-static` | `tracker-backend-postgres`, `tracker-container-api`, `tracker-container-web`, `tracker-container-php-prod`, `tracker-container-nginx-prod` | PHP 8.4 with existing extensions and Composer; Node 24.18.0 with pnpm 11.1.1 for frontend; Docker Buildx for image checks |
 | notify | — | `notify-quality`, `notify-production-images` | Docker Buildx; image PHP remains inside the container |
-| console | `console-php-lint` | `console-php-postgres` | PHP 8.4, intl/pdo_pgsql and Composer; adapter manages PostgreSQL 16 |
 | marcel-site, tuinstra-site, wodiq-site | `site-node` | — | Node 24 and npm; each adapter preserves its existing CI command list |
 | wodiq-app | — | `wodiq-app-checks` | Node 24 and npm; adapter preserves typecheck, unit and build checks plus fixed test environment |
 | status | — | `status-quality` | Docker/Compose and Buildx; adapter preserves PHP/PostgreSQL and image checks inside Docker |
@@ -42,7 +41,6 @@ These are selected migration targets, not completed changes or measured memory p
 | gate | existing release images, release scan, browser, frontend static | PHP, API contract | immutable security producer, ARM scanner, policy, deploy |
 | tracker | PostgreSQL backend, verification Docker builds | frontend static | security, policy, publication, deploy |
 | notify | Docker quality and applicable image validation | none initially | routing/verdict and publication/deploy |
-| console | PostgreSQL PHP tests and release Docker verification | PHP lint | security/verdict and deploy |
 | wodiq-app | protected Docker verification after separate release review, Linux typecheck/unit build | none initially | certification and deploy |
 | marcel-site, tuinstra-site, wodiq-site | Docker verification | Node verification | Docker scan, release/deploy control |
 | status | Docker/PostgreSQL CI | none initially | scheduled host monitor |

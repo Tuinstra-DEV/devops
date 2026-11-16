@@ -70,13 +70,9 @@ administrator.
 
 ## Check, apply en bewijs
 
-De Console-worker gebruikt `ansible.profile_check` en daarna een aan precies dat
-bewijs gebonden `ansible.profile_apply`. Het vaste profiel
-`baseline_umami_restore` past eerst de hostbaseline toe en legt daarna alleen de
-inactieve Umami-herstelvoorwaarden klaar: de lege PostgreSQL-doelmap, Compose,
-beide beheerscripts en de Caddy-route. Het maakt geen secrets of
-applicatiecontainers en herlaadt Caddy niet. De restore-worker neemt pas na
-herstel en validatie verkeer over. De onderliggende vaste aanroepen zijn:
+De Console-worker gebruikte `ansible.profile_check` en daarna een aan precies dat
+bewijs gebonden `ansible.profile_apply` voor het vaste profiel `baseline`. Console
+en de Umami-herstelprocedure zijn op 15 november 2026 verwijderd. De onderliggende vaste aanroepen zijn:
 
 ```sh
 export ANSIBLE_PRIVATE_KEY_FILE=/protected/tuinstra-rehearsal-01/id_ed25519
@@ -85,18 +81,6 @@ scripts/production-host-baseline \
   --inventory infra/ansible/rehearsal/inventory.yml \
   --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \
   --as-admin bootstrap
-scripts/production-host-baseline \
-  --inventory infra/ansible/rehearsal/inventory.yml \
-  --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \
-  --as-admin --check configure-umami-restore
-scripts/production-host-baseline \
-  --inventory infra/ansible/rehearsal/inventory.yml \
-  --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \
-  --as-admin configure-umami-restore
-scripts/production-host-baseline \
-  --inventory infra/ansible/rehearsal/inventory.yml \
-  --limit rehearsal01 --extra-vars /protected/tuinstra-rehearsal-01/vars.yml \
-  --as-admin verify-umami-restore
 ```
 
 Controleer daarna dezelfde apply opnieuw: `changed` moet nul zijn. Bewijs verder
