@@ -93,6 +93,9 @@ class ProductCiTests(unittest.TestCase):
         self.assertIn('ini-values: ${{ inputs.php-ini-values }}', action)
         self.assertIn('coverage: none', action)
         self.assertIn('source-sha: ${{ github.sha }}', SOURCE)
+        self.assertIn("php-ini-values: ${{ matrix.key == 'gate-php'", SOURCE)
+        self.assertIn('opcache.validate_timestamps=1, opcache.revalidate_freq=0', SOURCE)
+        self.assertNotIn('opcache.jit=', SOURCE)
 
 
 if __name__ == '__main__':

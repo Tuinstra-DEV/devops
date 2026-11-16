@@ -157,12 +157,13 @@ jobs:
       matrix: ${{ fromJSON(needs.source.outputs.matrix) }}
     steps:
       - name: Run the selected quality and contract checks
-        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@4d723f3d1b1ab2421d48f6101fb2b79b82cfc32d
         env:
           CI_PLAN: ${{ toJSON(matrix.plan) }}
           CI_SOURCE_SHA: ${{ github.sha }}
           CI_RUN_ID: ${{ github.run_id }}
           CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
         with:
           job-key: ${{ matrix.key }}
           source-sha: ${{ github.sha }}
@@ -170,6 +171,7 @@ jobs:
           pnpm-version: ${{ matrix.pnpm }}
           php-version: ${{ matrix.php }}
           php-extensions: ${{ matrix.extensions }}
+          php-ini-values: ${{ matrix.key == 'gate-php' && 'opcache.enable_cli=1, opcache.memory_consumption=256, opcache.interned_strings_buffer=32, opcache.validate_timestamps=1, opcache.revalidate_freq=0' || '' }}
 
       - name: Verify native MariaDB migrations
         if: matrix.native
