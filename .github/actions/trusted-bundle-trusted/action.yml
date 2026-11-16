@@ -82,7 +82,7 @@ runs:
         PHP_VERSION: ${{ inputs.php-version }}
         PHP_EXTENSIONS: ${{ inputs.php-extensions }}
         JOB_KEY: ${{ inputs.job-key }}
-          GATE_NATIVE_MARIADB: ${{ inputs.gate-native-mariadb }}
+        GATE_NATIVE_MARIADB: ${{ inputs.gate-native-mariadb }}
       run: |
         set -euo pipefail
         GATE_NATIVE_MARIADB="${GATE_NATIVE_MARIADB:-false}"

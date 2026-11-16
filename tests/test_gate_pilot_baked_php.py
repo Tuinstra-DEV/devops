@@ -1,5 +1,6 @@
 """Execute the baked PHP guard: missing native driver must fail, never install."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,8 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class GatePilotBakedPhpTests(unittest.TestCase):
     def test_native_mysql_and_legacy_sqlite_contracts(self):
         source = (ROOT / '.github/actions/trusted-bundle-trusted/action.yml').read_text()
-        step = source.split('    - name: Select verified baked PHP and Composer without privileges', 1)[1]
-        script = textwrap.dedent(step.split('      run: |\n', 1)[1].split('    - name:', 1)[0])
+        document = json.loads(subprocess.check_output(['ruby', '-ryaml', '-rjson', '-e',
+            'puts JSON.generate(YAML.safe_load(File.read(ARGV[0]), aliases: true))',
+            str(ROOT / '.github/actions/trusted-bundle-trusted/action.yml')], text=True))
+        step = next(step for step in document['runs']['steps'] if step.get('name') == 'Select verified baked PHP and Composer without privileges')
+        self.assertEqual(step['env']['GATE_NATIVE_MARIADB'], '${{ inputs.gate-native-mariadb }}')
+        script = step['run']
         for forbidden in ['sudo ', 'apt-get ', 'curl ', 'coverage:']:
             self.assertNotIn(forbidden, script)
         with tempfile.TemporaryDirectory() as directory:
