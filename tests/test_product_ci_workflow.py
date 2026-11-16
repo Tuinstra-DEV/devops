@@ -87,6 +87,13 @@ class ProductCiTests(unittest.TestCase):
         self.assertNotIn('reusable-trusted-verification', SOURCE)
         self.assertNotIn('self-hosted', SOURCE)
 
+    def test_php_runtime_override_is_opt_in_and_preserves_fresh_source_validation(self):
+        action = (ROOT / '.github/actions/trusted-bundle-hosted/action.yml').read_text()
+        self.assertIn("  php-ini-values:\n    required: false\n    default: ''", action)
+        self.assertIn('ini-values: ${{ inputs.php-ini-values }}', action)
+        self.assertIn('coverage: none', action)
+        self.assertIn('source-sha: ${{ github.sha }}', SOURCE)
+
 
 if __name__ == '__main__':
     unittest.main()
