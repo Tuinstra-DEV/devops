@@ -37,8 +37,11 @@ php8.3 --version | grep -E '^PHP 8\.3\.' >/dev/null
 php8.4 --version | grep -E '^PHP 8\.4\.' >/dev/null
 # Fail the image build before a no-new-privileges job discovers a missing module.
 php8.3 -r '
-  foreach (["ctype", "iconv", "openssl", "pdo", "pdo_sqlite", "sqlite3", "Zend OPcache", "zip", "xdebug"] as $ext) {
+  foreach (["ctype", "iconv", "openssl", "pdo", "pdo_mysql", "pdo_sqlite", "sqlite3", "Zend OPcache", "zip", "xdebug"] as $ext) {
     if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); }
+  }
+  if (!in_array("mysql", PDO::getAvailableDrivers(), true)) {
+    fwrite(STDERR, "PHP 8.3 PDO MySQL driver unavailable\n"); exit(1);
   }
   try {
     $pdo = new PDO("sqlite::memory:");
@@ -88,6 +91,10 @@ php83_sqlite_manifest_version="$(sed -n 's/^php83_sqlite=//p' /etc/ci-runner-ima
 test -n "$php83_manifest_version"
 test "$php83_manifest_version" = "$php83_sqlite_manifest_version"
 test "$php83_sqlite_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-sqlite3)"
+php83_mysql_manifest_version="$(sed -n 's/^php83_mysql=//p' /etc/ci-runner-image-manifest)"
+test "$php83_manifest_version" = "$php83_mysql_manifest_version"
+test "$php83_mysql_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-mysql)"
+test "$php83_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-cli)"
 
 for package in "skopeo" "gh" "php8.3-xdebug" "qemu-user-static"; do
   case "$package" in

@@ -157,6 +157,12 @@ requires separate authorization; the one temporary admission trial does not
 authorize it. The existing approval remains conditional on all prerequisites
 passing, including a subsequent in-runner Docker check.
 
+Subsequent approval covers preparation, build and isolated image validation
+only. That work is recorded in [image-candidate.md](image-candidate.md): the
+minimal Packer/contract change is prepared, but the exact CLI-matched package
+has been removed from the original archive, blocking a valid candidate build.
+There is no new approved image digest or permission for a live selector switch.
+
 Snapshots older than five minutes are rejected. After a later approved change,
 the same check with `--after --before-config <root-owned-TOML-backup>` verifies
 the exact new manager hash, seven refs, and that removing only the proposed role
