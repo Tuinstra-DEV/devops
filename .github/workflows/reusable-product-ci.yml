@@ -15,10 +15,15 @@ jobs:
   source:
     name: Bronselectie
     runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
+      backend-trusted: ${{ steps.trust.outputs.trusted }}
     steps:
       - name: Verify the pilot caller and event
         shell: bash
@@ -34,6 +39,10 @@ jobs:
             pull_request:develop|push:|workflow_dispatch:) ;;
             *) echo '::error::The pilot only supports develop PRs and isolated branch runs.'; exit 1 ;;
           esac
+
+      - name: Verify the compact backend trust boundary
+        id: trust
+        uses: Tuinstra-DEV/devops/.github/actions/gate-compact-trust@7dd5c79f3deabbf569aa11e1aa7fe5898dfe1397
 
       - name: Check out the exact event revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -84,6 +93,7 @@ jobs:
         env:
           SELECTION: ${{ steps.selection.outputs.selection-json }}
           NATIVE_DATABASE: ${{ steps.native.outputs.selected }}
+          BACKEND_RUNNER: ${{ steps.trust.outputs.backend-runner }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -91,8 +101,8 @@ jobs:
           import os
 
           profiles = {
-              "gate-frontend-static": {"name": "Frontend CI", "node": "24", "pnpm": "10.28.2", "php": "", "extensions": ""},
-              "gate-php": {"name": "Backend CI", "node": "", "pnpm": "", "php": "8.3", "extensions": "ctype, iconv, pdo_sqlite, sqlite3"},
+              "gate-frontend-static": {"name": "Frontend CI", "runner": "ubuntu-24.04", "node": "24", "pnpm": "10.28.2", "php": "", "extensions": ""},
+              "gate-php": {"name": "Backend CI", "runner": json.loads(os.environ["BACKEND_RUNNER"]), "node": "", "pnpm": "", "php": "8.3", "extensions": "ctype, iconv, pdo_sqlite, sqlite3"},
           }
           selection = json.loads(os.environ["SELECTION"])
           native = os.environ["NATIVE_DATABASE"]
@@ -150,20 +160,21 @@ jobs:
     name: ${{ matrix.name }}
     needs: source
     if: needs.source.outputs.count != '0'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.source.outputs.matrix) }}
+    env:
+      CI_PLAN: ${{ toJSON(matrix.plan) }}
+      CI_SOURCE_SHA: ${{ github.sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
     steps:
       - name: Run the selected quality and contract checks
+        if: matrix.key != 'gate-php' || needs.source.outputs.backend-trusted != 'true'
         uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@4d723f3d1b1ab2421d48f6101fb2b79b82cfc32d
-        env:
-          CI_PLAN: ${{ toJSON(matrix.plan) }}
-          CI_SOURCE_SHA: ${{ github.sha }}
-          CI_RUN_ID: ${{ github.run_id }}
-          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
-          SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
         with:
           job-key: ${{ matrix.key }}
           source-sha: ${{ github.sha }}
@@ -172,6 +183,16 @@ jobs:
           php-version: ${{ matrix.php }}
           php-extensions: ${{ matrix.extensions }}
           php-ini-values: ${{ matrix.key == 'gate-php' && 'opcache.enable_cli=1, opcache.memory_consumption=256, opcache.interned_strings_buffer=32, opcache.validate_timestamps=1, opcache.revalidate_freq=0' || '' }}
+
+      - name: Run the admitted Gate backend on baked PHP
+        if: matrix.key == 'gate-php' && needs.source.outputs.backend-trusted == 'true'
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7dd5c79f3deabbf569aa11e1aa7fe5898dfe1397
+        with:
+          job-key: gate-php
+          source-sha: ${{ github.sha }}
+          php-version: '8.3'
+          php-extensions: ${{ matrix.extensions }}
+          gate-native-mariadb: ${{ matrix.native }}
 
       - name: Verify native MariaDB migrations
         if: matrix.native

@@ -14,7 +14,7 @@ SOURCE = (ROOT / '.github/workflows/reusable-product-ci.yml').read_text()
 
 
 class ProductCiTests(unittest.TestCase):
-    def matrix(self, keys, native='false', schema=1):
+    def matrix(self, keys, native='false', schema=1, runner='ubuntu-24.04'):
         script = textwrap.dedent(re.search(
             r"^          python3 - <<'PY'\n(.*?)^          PY$", SOURCE, re.M | re.S
         ).group(1))
@@ -26,6 +26,7 @@ class ProductCiTests(unittest.TestCase):
             result = subprocess.run(['python3', '-c', script], env=os.environ | {
                 'SELECTION': json.dumps(selection), 'NATIVE_DATABASE': native,
                 'GITHUB_OUTPUT': str(output),
+                'BACKEND_RUNNER': json.dumps(runner),
             }, capture_output=True, text=True)
             values = dict(line.split('=', 1) for line in output.read_text().splitlines()) if output.exists() else {}
         return result, values
@@ -96,6 +97,17 @@ class ProductCiTests(unittest.TestCase):
         self.assertIn("php-ini-values: ${{ matrix.key == 'gate-php'", SOURCE)
         self.assertIn('opcache.validate_timestamps=1, opcache.revalidate_freq=0', SOURCE)
         self.assertNotIn('opcache.jit=', SOURCE)
+
+    def test_only_backend_runner_changes_inside_the_same_matrix_job(self):
+        runner = {'group': 'sanctuary-trusted-verification', 'labels': ['self-hosted', 'ci-gate-backend-pilot']}
+        result, values = self.matrix(['gate-php', 'gate-frontend-static'], native='true', runner=runner)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backend, frontend = json.loads(values['matrix'])['include']
+        self.assertEqual(backend['runner'], runner)
+        self.assertEqual(frontend['runner'], 'ubuntu-24.04')
+        self.assertIn('runs-on: ${{ matrix.runner }}', SOURCE)
+        self.assertIn("if: matrix.key == 'gate-php' && needs.source.outputs.backend-trusted == 'true'", SOURCE)
+        self.assertIn("if: matrix.key != 'gate-php' || needs.source.outputs.backend-trusted != 'true'", SOURCE)
 
 
 if __name__ == '__main__':
