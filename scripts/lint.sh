@@ -69,6 +69,10 @@ ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
+python3 -c 'compile(open(".github/actions/tessera-selective-ci/tessera_scope.py", encoding="utf-8").read(), ".github/actions/tessera-selective-ci/tessera_scope.py", "exec")'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/tessera-selective-ci/action.yml"), aliases: true)'
+python3 -c 'compile(open(".github/actions/tessera-selective-ci/tessera_scope.py", encoding="utf-8").read(), ".github/actions/tessera-selective-ci/tessera_scope.py", "exec")'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/tessera-selective-ci/action.yml"), aliases: true)'
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'
 bash -n scripts/install-production-profile-executor scripts/production-profile-bridge scripts/production-profile-executor-contract-test.sh

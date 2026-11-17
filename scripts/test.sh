@@ -71,6 +71,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source
 ruby scripts/gate-pr-security-contract-test.rb
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py tests/test_notify_bundle_workflow.py tests/test_dev54_activation.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_tessera_scope_action.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_dev54_runner_diagnostics.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
