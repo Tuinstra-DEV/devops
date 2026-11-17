@@ -85,7 +85,36 @@ mechanism for SIGTERM followed by guest poweroff, but the destroyed guest's
 APT/journal records are unavailable, so it is not a proven historical cause.
 The readable host journal for 22:34–22:38 had no corresponding visible host
 APT/libvirt maintenance event; protected records were not read without sudo.
-This mechanism is being tested separately in an unregistered disposable VM.
+
+## Isolated needrestart A/B reproduction
+
+The suspected mechanism was reproduced in unregistered, transient 2-vCPU/4-GiB
+copy-on-write guests booted from the unchanged, hash-verified image
+`66eded13…b82bc4`. The runs used the existing signed Ubuntu Noble source and
+candidate package; they did not register a JIT runner or attach runner storage,
+sockets, or forwarded ports. A diagnostic-only guest stub replaced the runner
+command with a 30-minute sleep while preserving the original `ExecStopPost`
+poweroff. APT maintenance timers were masked only inside each diagnostic guest
+to keep background jobs from racing the controlled package transaction.
+
+| Attempt | Needrestart setting | Observed result |
+| --- | --- | --- |
+| 4, no guard | Default automatic apt-hook mode | A signed Ubuntu libc update caused needrestart to select `ci-runner-job.service`; systemd stopped the unit and its preserved `ExecStopPost` powered off the guest during the transaction. List mode had first confirmed the runner was selected without restarting it. |
+| 5, exact-unit guard | Added only `$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;` | Needrestart deferred the runner unit, which stayed active with PID 1643. Automatic restarts remained enabled for other selected services; the observed cron PID changed from 736 to 2752. The probe completed without `ExecStopPost` poweroff; its exit trap then powered the guest down normally. |
+
+The package transaction upgraded the libc family from `2.39-0ubuntu8.7` to
+`2.39-0ubuntu8.12`; other upgraded packages were `libc-bin`, `libc-dev-bin`,
+`libc-devtools`, `libc6-dev`, and `locales`. The A/B used the same source image,
+signed package source, package set, and transaction flow. This demonstrates a
+reproducible unsafe mechanism and that the narrow guard prevents it while
+leaving unrelated needrestart restarts enabled. The diagnostic overlays and
+raw logs remain outside the repository on Sanctuary and were not included in
+this document.
+
+This does **not** establish that unattended APT ran during either historical
+Tessera failure: those guests' logs and overlays were already removed. The
+exact trigger for the 17 November failures remains unknown. The isolated A/B
+supports the proposed image guard; it does not retroactively prove causality.
 
 The observer supports one separate `--phase followup` window after a long
 queue. Both windows have the same 45-minute maximum and exclusive output-file
