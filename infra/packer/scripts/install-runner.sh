@@ -120,6 +120,16 @@ sudo apt-get install --yes --no-install-recommends \
   "php8.4-mbstring=${PHP84_VERSION}" "php8.4-xml=${PHP84_VERSION}" "php8.4-zip=${PHP84_VERSION}" \
   "php8.4-intl=${PHP84_VERSION}" "php8.4-pgsql=${PHP84_VERSION}"
 
+# The JIT runner must not be restarted by unattended library updates: its
+# normal ExecStopPost powers off the one-shot VM. Keep all other service and
+# package restart behavior at the Ubuntu needrestart defaults.
+sudo install -d -o root -g root -m 0755 /etc/needrestart/conf.d
+sudo tee /etc/needrestart/conf.d/90-ci-runner-job.conf >/dev/null <<'NEEDRESTART'
+$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;
+NEEDRESTART
+sudo chown root:root /etc/needrestart/conf.d/90-ci-runner-job.conf
+sudo chmod 0644 /etc/needrestart/conf.d/90-ci-runner-job.conf
+
 # Image provisioning runs before the unprivileged no-new-privileges service.
 # No workflow may install handlers or run a privileged binfmt container.
 sudo systemctl restart systemd-binfmt.service

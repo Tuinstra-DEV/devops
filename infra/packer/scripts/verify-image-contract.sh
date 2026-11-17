@@ -67,6 +67,14 @@ trivy --version
 test -x /opt/actions-runner/run.sh
 test -x /usr/local/bin/run-jit-runner
 test "$(stat -c '%U:%G:%a' /opt/actions-runner)" = "root:root:755"
+needrestart_override=/etc/needrestart/conf.d/90-ci-runner-job.conf
+expected_needrestart_override='$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;'
+test -f "$needrestart_override"
+test "$(stat -c '%U:%G:%a' "$needrestart_override")" = "root:root:644"
+test "$(cat "$needrestart_override")" = "$expected_needrestart_override"
+grep -F 'needrestart/apt-pinvoke -m u' /etc/apt/apt.conf.d/99needrestart >/dev/null
+grep -Fx 'RuntimeMaxSec=7200' /etc/systemd/system/ci-runner-job.service >/dev/null
+grep -Fx 'ExecStopPost=+/usr/bin/systemctl poweroff' /etc/systemd/system/ci-runner-job.service >/dev/null
 for runtime_file in .runner .credentials .credentials_rsaparams .runner_migrated .credentials_migrated; do
   runtime_path="/opt/actions-runner/$runtime_file"
   if [[ -e "$runtime_path" || -L "$runtime_path" ]]; then
