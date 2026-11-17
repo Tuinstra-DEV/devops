@@ -1,0 +1,42 @@
+NOTE: This is only a simulation!
+      apt-get needs root privileges for real execution.
+      Keep also in mind that locking is deactivated,
+      so don't depend on the relevance to the real current situation!
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages were automatically installed and are no longer required:
+  at-spi2-common libasound2-data libasound2t64 libatk-bridge2.0-0t64
+  libatk1.0-0t64 libatspi2.0-0t64 libavahi-client3 libavahi-common-data
+  libavahi-common3 libcairo2 libcups2t64 libdatrie1 libgraphite2-3
+  libharfbuzz0b libpango-1.0-0 libthai-data libthai0 libxcb-render0
+  libxcomposite1 libxdamage1 libxfixes3 libxi6
+Use 'apt autoremove' to remove them.
+Suggested packages:
+  php-pear
+The following NEW packages will be installed:
+  php8.3-mysql
+The following packages will be upgraded:
+  php8.3-cli php8.3-common php8.3-curl php8.3-mbstring php8.3-opcache
+  php8.3-readline php8.3-sqlite3 php8.3-xml php8.3-zip
+9 upgraded, 1 newly installed, 0 to remove and 222 not upgraded.
+Inst php8.3-zip [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-xml [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-sqlite3 [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-readline [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-opcache [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-mbstring [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-curl [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-cli [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64]) []
+Inst php8.3-common [8.3.35-1+ubuntu24.04.1+deb.sury.org+1] (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Inst php8.3-mysql (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-zip (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-xml (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-sqlite3 (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-readline (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-opcache (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-mbstring (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-curl (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-cli (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-common (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
+Conf php8.3-mysql (8.3.36-1+ubuntu24.04.1+deb.sury.org+1 PPA for PHP:24.04/noble [amd64])
