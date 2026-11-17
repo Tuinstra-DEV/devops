@@ -1,0 +1,138 @@
+name: Tessera temporary hosted verification
+
+# DEV-54: isolated recovery path while Sanctuary runner shutdown is unresolved.
+# Restore the former workflow reference only after a healthy runner canary.
+on:
+  workflow_call:
+    inputs:
+      profile:
+        required: true
+        type: string
+      job-key:
+        required: true
+        type: string
+    outputs:
+      preflight-trusted:
+        description: This temporary route never grants Sanctuary trust
+        value: ${{ jobs.verification.outputs.trusted }}
+      trusted-proof:
+        description: No Sanctuary proof is produced
+        value: ${{ '' }}
+      hosted-proof:
+        description: True only after the unchanged fixed adapter succeeds
+        value: ${{ jobs.verification.outputs.verified }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev54-tessera-hosted-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  verification:
+    name: Hosted verification fallback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.source.outputs.trusted }}
+      verified: ${{ steps.proof.outputs.verified }}
+    env:
+      CI_SOURCE_SHA: ${{ github.sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Validate fixed Tessera PR contract
+        id: source
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          JOB_KEY: ${{ inputs.job-key }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          def require(ok):
+              if not ok:
+                  raise SystemExit("Unsupported Tessera hosted PR contract")
+
+          repo = "Tuinstra-DEV/sudoku-tessera"
+          require(os.environ.get("GITHUB_REPOSITORY") == repo and
+                  os.environ.get("GITHUB_EVENT_NAME") == "pull_request" and
+                  os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and
+                  os.environ.get("PROFILE") == "heavy" and
+                  os.environ.get("JOB_KEY") == "tessera-flutter")
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event.get("pull_request") or {}
+          number = pr.get("number")
+          require(type(number) is int and number > 0 and
+                  os.environ.get("GITHUB_REF") == f"refs/pull/{number}/merge" and
+                  (event.get("repository") or {}).get("full_name") == repo and
+                  ((pr.get("base") or {}).get("repo") or {}).get("full_name") == repo)
+          values = {"source-sha": os.environ.get("GITHUB_SHA"),
+                    "head-sha": (pr.get("head") or {}).get("sha"),
+                    "base-sha": (pr.get("base") or {}).get("sha")}
+          require(all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v) for v in values.values()))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("trusted=false\n")
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+      - name: Checkout exact event merge candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.source.outputs.source-sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify merge parents before running consumer code
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.source.outputs.head-sha }}
+          BASE_SHA: ${{ steps.source.outputs.base-sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | cut -d ' ' -f 2- | tr ' ' '\n' | sort)" = "$(printf '%s\n%s\n' "$BASE_SHA" "$HEAD_SHA" | sort)"
+      - name: Set up Tessera Node.js without npm cache
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - name: Set up Tessera Java 17
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Tessera Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: 'platform-tools'
+      - name: Install pinned Tessera Android platform
+        shell: bash
+        run: sdkmanager 'platforms;android-37.0'
+      - name: Set up pinned Tessera Flutter without post-job SDK cache upload
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: 3.47.1
+          channel: stable
+          cache: false
+      - name: Restore fixed Tessera Gradle dependency downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: tessera-${{ runner.os }}-${{ runner.arch }}-java17-android37-flutter3471-gradle-${{ hashFiles('app/pubspec.lock', 'app/android/gradle.properties', 'app/android/gradle/wrapper/gradle-wrapper.properties', 'app/android/settings.gradle.kts', 'app/android/build.gradle.kts', 'app/android/app/build.gradle.kts') }}
+      - name: Run unchanged fixed consumer adapter
+        shell: bash
+        run: bash .github/ci/sanctuary-ci --strict tessera-flutter
+      - name: Mark completed hosted verification
+        id: proof
+        shell: bash
+        run: echo 'verified=true' >> "$GITHUB_OUTPUT"
