@@ -69,6 +69,8 @@ ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
 bash -n docs/runner/proposals/dev54-gate-backend/run-gate-candidate-preflight.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-transaction.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-rollback.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'

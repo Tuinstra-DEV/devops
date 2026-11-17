@@ -1,7 +1,11 @@
 # DEV-54: exact compact Gate backend admission proposal
 
-**Prepared locally only. No push, PR edit/comment/merge, runner setting, host
-configuration, credential, VM image or production change has been made.**
+**Current status:** the operator's candidate preflight is green and provider
+commit `6a08dc5f3768a4ac6fc5f5da6fac69a744b07f99` is published on open PR #220.
+[Provider CI](https://github.com/Tuinstra-DEV/devops/actions/runs/44185417734)
+passed. The exact workflow pin below is published. The temporary live
+activation and Gate caller publication have not started. Earlier preparation
+and blocker sections below retain their original evidence and limits.
 
 ## Evidence and limits of the effective-policy check
 
@@ -356,6 +360,52 @@ it does not substitute host Docker. It changes no live files or settings.
 Return only the final JSON line (`all_checks_green`, verification results, or
 the bounded blocker/status). Do not return any sudo transcript, password,
 token, credential contents, or `manager.toml` contents.
+
+## Approved activation and automatic rollback
+
+The one-trial authorization has been given. The provider workflow pin is
+published and its CI is green; the read-only candidate preflight is green.
+The operator transaction below rechecks the active manager, current Gate
+candidate, group/repository selection, credential route, source and candidate
+hashes. It waits with the manager running until it sees zero leases, cleanup
+obligations and active domains. Only then does it stop the manager, recheck the
+window, and patch runner-group 4 plus the one manager role and image selector.
+It never stops the helper socket or kills a VM.
+
+Run this exact command in the existing operator's Mac Terminal:
+
+```bash
+bash "/Users/marceltuinstra/Documents/Codex/2026-11-15/new-chat-3/work/ci-rollout/devops-compact-pilot/docs/runner/proposals/dev54-gate-backend/run-gate-pilot-transaction.sh"
+```
+
+The command stays open while it watches exactly two new PR #444 runs: workflow
+419883688 (`CI (compact pilot)`) and workflow 298278418 (`Continuous
+Integration`), both attempt 1 on Gate head `4ddbadada67147dc8d2ecb81c061cc61b971f9ba`
+and merge parents `1ca529f02479c4e1d0a14353382a6a7dc9cc74f7` plus that head.
+It waits for both runs to become terminal and then for all Sanctuary leases and
+domains to drain. It automatically restores the six original runner-group refs,
+manager/config bytes and image selector. The built standalone image is moved
+to its sealed path without an extra copy when both paths share a filesystem, and
+is moved back to its original home path during rollback. Root-only transaction
+backups remain available.
+
+The operator and root can read sanitized progress without sudo:
+
+```bash
+ssh mtuinstra@sanctuary.tuinstra.dev \
+  'cat /home/mtuinstra/dev54-gate-pilot-transaction-20261117/status.json'
+```
+
+If the long-running terminal loses its process before the watcher completes,
+first verify the transaction is idle. Then use the fixed recovery entrypoint:
+
+```bash
+bash "/Users/marceltuinstra/Documents/Codex/2026-11-15/new-chat-3/work/ci-rollout/devops-compact-pilot/docs/runner/proposals/dev54-gate-backend/run-gate-pilot-rollback.sh"
+```
+
+It refuses to overwrite changed fingerprints or recover while a runner VM or
+lease is active. A timeout never stops another job; it records the failure and
+keeps waiting for a safe rollback window.
 
 ## One decision
 
