@@ -67,19 +67,22 @@ def main():
     parser.add_argument('--job', required=True)
     parser.add_argument('--duration', type=int, default=2700)
     parser.add_argument('--storage-only', action='store_true')
+    parser.add_argument('--phase', choices=('primary', 'followup'), default='primary')
     args = parser.parse_args()
     if not re.fullmatch(r'[1-9][0-9]{1,19}', args.job) or not 1 <= args.duration <= 2700:
         raise SystemExit('invalid diagnostic scope')
     domain = 'sanctuary-ci-gh-' + args.job
     directory = Path.home() / ('dev54-vm-watch-' + args.job)
-    directory.mkdir(mode=0o700, exist_ok=args.storage_only)
+    directory.mkdir(mode=0o700, exist_ok=args.storage_only or args.phase == 'followup')
     seen = False
     missing = 0
     last_state = None
     deadline = time.monotonic() + args.duration
     filename = 'storage-samples.jsonl' if args.storage_only else 'samples.jsonl'
+    if args.phase == 'followup':
+        filename = 'followup-' + filename
     with (directory / filename).open('x') as output:
-        print(json.dumps({'watch_ready': True, 'job_id': args.job}), flush=True)
+        print(json.dumps({'watch_ready': True, 'job_id': args.job, 'phase': args.phase}), flush=True)
         while time.monotonic() < deadline:
             row = {'utc': datetime.now(timezone.utc).isoformat(), 'storage': storage_stats(args.job)}
             if args.storage_only:

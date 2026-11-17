@@ -1,7 +1,10 @@
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import unittest
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +18,29 @@ watch_spec.loader.exec_module(watch)
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_followup_watch_preserves_primary_and_never_overwrites_a_phase(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            def observe(phase=None):
+                args = ['watch-vm.py', '--job', '134383118242', '--duration', '1']
+                if phase:
+                    args += ['--phase', phase]
+                with patch('sys.argv', args), patch.object(Path, 'home', return_value=home), \
+                        patch.object(watch.time, 'monotonic', side_effect=[0, 0, 2]), \
+                        patch.object(watch.time, 'sleep'), patch.object(watch, 'query', return_value=None), \
+                        patch.object(watch, 'storage_stats', return_value={'metadata_readable': False}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    watch.main()
+            observe()
+            directory = home / 'dev54-vm-watch-134383118242'
+            primary = (directory / 'samples.jsonl').read_bytes()
+            observe('followup')
+            self.assertEqual((directory / 'samples.jsonl').read_bytes(), primary)
+            followup = (directory / 'followup-samples.jsonl').read_bytes()
+            with self.assertRaises(FileExistsError):
+                observe('followup')
+            self.assertEqual((directory / 'followup-samples.jsonl').read_bytes(), followup)
+
     def test_storage_fault_classification_does_not_emit_log_contents(self):
         text = 'private-credential-sentinel\nwrite failed: No space left on device\nInput/output error\nterminating on signal 15 from secret-process-details'
         value = diagnostics.classify(text)
