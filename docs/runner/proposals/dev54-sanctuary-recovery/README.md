@@ -83,3 +83,23 @@ once per second. It rejects a changed/unmounted filesystem and never changes
 ownership, permissions, mounts or data. This complements the 120-GiB virtual
 disk capacity exposed by QEMU; virtual capacity is not the physical backing
 budget. Storage and libvirt observations remain separate evidence streams.
+
+## Canary result, 17 November
+
+[Attempt 3](https://github.com/Tuinstra-DEV/sudoku-tessera/actions/runs/43950356975/attempts/3)
+completed successfully on the unchanged source and existing Sanctuary policy.
+Job `134333682935` ran from 20:11:35 to 20:34:10 UTC (22:35). The fixed adapter
+passed at 20:30:46; the Flutter post-cache step passed from 20:30:48 to 20:34:04.
+`quality` passed at 20:34:16. This is complete successful verification, including
+cleanup, unlike the cancelled hosted experiment.
+
+The 701 libvirt samples reported running followed by normal shutoff/removal,
+with no paused-I/O or storage-full fault. Maximum observed disk physical size
+was 22,356,230,144 bytes. The separate bounded-volume samples recorded a minimum
+of 2,929,967,104 free bytes (about 2.73 GiB). Thus this attempt does not reproduce
+the previous failure and does not establish disk exhaustion as its cause.
+Cached inputs, concurrency and historical volume contents can differ between
+attempts; a passing rerun is not evidence that an infrastructure defect was
+repaired. No live repair, capacity increase, permission, selector, manager or
+runner-group change was performed. The old signal-15 logs remain insufficient
+to identify the cause of the two earlier failures.
