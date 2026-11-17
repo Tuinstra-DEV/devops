@@ -690,7 +690,7 @@ def attach_backend_job(client, workflow_id: int, run: dict) -> dict:
                 backend_job.get('runner_name') == expected_runner_name and
                 backend_job.get('runner_group_name') == 'sanctuary-trusted-verification' and
                 backend_job.get('runner_group_id') == 4 and isinstance(labels, list) and
-                {'self-hosted', 'trusted-medium', 'ci-gate-backend-pilot'}.issubset(labels))
+                {'self-hosted', 'ci-gate-backend-pilot', 'sanctuary-gate'}.issubset(labels))
         elif run.get('status') == 'completed' or backend_job.get('status') in {'completed', 'in_progress'}:
             run['backend_role_label_verified'] = False
         else:

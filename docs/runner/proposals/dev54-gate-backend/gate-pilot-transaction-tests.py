@@ -106,7 +106,7 @@ class WatchGitHub:
                                 runner_name='sanctuary-6101' if assigned else None,
                                 group_id=4 if assigned else None,
                                 group_name='sanctuary-trusted-verification' if assigned else None,
-                                labels=['self-hosted', 'trusted-medium', 'ci-gate-backend-pilot']
+                                labels=['self-hosted', 'ci-gate-backend-pilot', 'sanctuary-gate']
                                 if assigned else [])]
         return [baseline_job('completed' if self.round >= 4 else 'in_progress')]
 
@@ -278,7 +278,7 @@ class GatePilotTransactionTests(unittest.TestCase):
     def test_assigned_compact_job_requires_actual_sanctuary_runner_and_pilot_labels(self):
         job = compact_job(status='in_progress', runner_id=1825, runner_name='sanctuary-6101',
                           group_id=4, group_name='sanctuary-trusted-verification',
-                          labels=['self-hosted', 'trusted-medium', 'ci-gate-backend-pilot'])
+                          labels=['self-hosted', 'ci-gate-backend-pilot', 'sanctuary-gate'])
         client = FakeGitHub(compact_jobs=[job], baseline_jobs=[baseline_job('completed')])
         found = transaction.validate_pr_and_runs(client, 1, {419883688: 5000, 298278418: 5000})
         self.assertTrue(found[419883688]['backend_role_label_verified'])
