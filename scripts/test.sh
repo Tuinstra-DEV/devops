@@ -74,6 +74,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_wo
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_product_ci_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pilot_baked_php.py
+python3 -B docs/runner/proposals/dev54-gate-backend/operator_checks_test.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
 
 # The assurance action parses data only; never execute dependency install hooks.

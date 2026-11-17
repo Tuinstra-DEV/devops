@@ -21,6 +21,7 @@ SYSTEMD_CREDENTIAL_DIRECTORY = Path('/run/credentials/ci-runner-manager.service'
 
 PHP = '''echo json_encode([
 "php_version" => PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION,
+"php_version_full" => PHP_VERSION,
 "pdo_mysql" => extension_loaded("pdo_mysql") && in_array("mysql",PDO::getAvailableDrivers(),true),
 "pdo_sqlite" => extension_loaded("pdo_sqlite") && in_array("sqlite",PDO::getAvailableDrivers(),true)
 ]);'''
@@ -184,7 +185,7 @@ def active_image(package, helper=Path('/usr/local/libexec/ci-runner-host-helper'
     return image
 
 
-def image_php_check(image):
+def image_php_check(image, exact_version=None):
     # libguestfs --ro inspects the selected sealed image, not host PHP. Any
     # appliance scratch state is disposable; the image itself is never changed.
     probe = '/usr/sbin/runuser -u ci-runner -- /usr/bin/php8.3 -d opcache.enable_cli=0 -r ' + shlex.quote(PHP)
@@ -192,11 +193,71 @@ def image_php_check(image):
         result = json.loads(command(['guestfish', '--ro', '--format=qcow2', '-a', str(image), '-i', 'sh', probe], timeout=180))
     except Exception:
         raise Blocked('selected_image_php_probe_failed') from None
-    allowed = {key: result.get(key) for key in ['php_version', 'pdo_mysql', 'pdo_sqlite']}
+    allowed = {key: result.get(key) for key in ['php_version', 'php_version_full', 'pdo_mysql', 'pdo_sqlite']}
     if allowed['php_version'] != '8.3': raise Blocked('selected_image_php_version_differs')
     if allowed['pdo_mysql'] is not True: raise Blocked('selected_image_pdo_mysql_missing')
     if allowed['pdo_sqlite'] is not True: raise Blocked('selected_image_pdo_sqlite_missing')
+    if exact_version is not None and allowed['php_version_full'] != exact_version:
+        raise Blocked('candidate_image_php_patch_differs')
     return allowed
+
+
+def gate_candidate_image(package, selector=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2'),
+                         helper=Path('/usr/local/libexec/ci-runner-host-helper'),
+                         source_image=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2'),
+                         candidate_image=Path('/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2'),
+                         expected_candidate=Path('/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2'),
+                         expected_source=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2')):
+    """Bind read-only host preflight to the approved source and standalone candidate hashes."""
+    result = json.loads((package / 'image-family-update-result.json').read_text())
+    expected_helper = 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613'
+    expected_source_hash = '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4'
+    expected_candidate_hash = '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'
+    if sha256_file(helper) != expected_helper:
+        raise Blocked('active_image_selector_helper_changed')
+    if source_image != expected_source or selector.resolve(strict=True) != source_image or sha256_file(source_image) != expected_source_hash:
+        raise Blocked('active_runner_image_changed')
+    candidate = result.get('candidate', {})
+    if (result.get('status') != 'built_isolated_validation_passed_and_standalone_flattened' or
+            candidate.get('standalone_image_path') != str(expected_candidate) or candidate_image != expected_candidate or
+            candidate.get('standalone_image_sha256') != expected_candidate_hash or
+            candidate.get('standalone_image_backing_file') is not None or
+            sha256_file(candidate_image) != expected_candidate_hash):
+        raise Blocked('candidate_image_hash_or_manifest_differs')
+    vm = result.get('isolated_validation', {})
+    vm_info = vm.get('vm', {})
+    fixture = vm.get('pinned_mariadb_fixture', {})
+    phpunit = vm.get('backend_phpunit', {})
+    if (vm.get('source_gate_commit') != '188356ba01eb7796b5dc9a746eeabf34f95cf33f' or
+            vm.get('vm_exit_code') != 0 or vm_info.get('registered_as_runner') is not False or
+            vm_info.get('host_mounts_or_docker_socket') is not False or
+            vm_info.get('host_port_forwarding') is not False or
+            vm.get('pdo_mysql_and_sqlite_query_as_ci_runner') != 'passed' or
+            vm.get('docker_daemon_and_cli_as_ci_runner') !=
+                'passed; Docker 29.6.2 with overlay2 and containerd snapshotter disabled in VM overlay' or
+            vm.get('image_contract_as_ci_runner') != 'passed' or
+            candidate.get('validated_chain_comparison') != 'qemu-img compare reported Images are identical' or
+            candidate.get('qemu_img_check') != 'passed for package overlay, VM overlay, and standalone image' or
+            phpunit.get('status') != 'passed' or phpunit.get('runtime_php') != '8.3.36' or
+            phpunit.get('tests') != 1216 or phpunit.get('assertions') != 7567 or
+            phpunit.get('skipped') != 14 or phpunit.get('incomplete') != 1 or phpunit.get('warnings') != 1 or
+            fixture.get('image_digest') != 'sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9' or
+            fixture.get('status') != 'passed' or fixture.get('tests') != 12 or
+            fixture.get('assertions') != 99 or fixture.get('skipped') != 0):
+        raise Blocked('candidate_isolated_validation_evidence_differs')
+    return candidate_image, {
+        'sha256_verified': True,
+        'sha256': expected_candidate_hash,
+        'pdo_mysql_and_sqlite_vm_queries': 'passed',
+        'docker_overlay2_vm': 'passed',
+        'phpunit': '1216 tests / 7567 assertions; 14 skipped, 1 incomplete, 1 warning',
+        'mariadb': '12 tests / 99 assertions; 0 skipped',
+        'vm_exit_code': 0,
+    }
+
+
+def candidate_image_php_check(image):
+    return image_php_check(image, exact_version='8.3.36')
 
 
 def docker_guest_check(image):
@@ -248,10 +309,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--group-state', type=Path, required=True)
     parser.add_argument('--repositories-state', type=Path, required=True)
+    parser.add_argument('--gate-candidate-preflight', action='store_true')
     args = parser.parse_args()
     package = Path(__file__).parent
     result = {'all_checks_green': False, 'policy': 'not_checked', 'credential_read_access': 'not_checked',
               'selected_image_php': 'not_checked', 'runner_guest_docker': 'not_checked'}
+    if args.gate_candidate_preflight:
+        result['preflight_mode'] = 'candidate_before_activation'
+        result['candidate_image'] = 'not_checked'
+        result['isolated_vm_validation'] = 'not_checked'
+        result['active_image'] = 'not_checked'
     stage = 'policy'
     try:
         if os.geteuid() != 0: raise Blocked('existing_operator_sudo_required')
@@ -268,14 +335,31 @@ def main():
         manifest = json.loads((package / 'manifest.json').read_text())
         stage = 'credential_read_access'
         result[stage] = credential_checks(cfg, manifest, sys.modules['effective_manager'])
-        stage = 'selected_image_php'
-        image = active_image(package)
-        image_stat = (image.stat().st_size, image.stat().st_mtime_ns)
-        result['selected_image_sha256_verified'] = True
-        result[stage] = image_php_check(image)
-        stage = 'runner_guest_docker'
-        result[stage] = docker_guest_check(image)
-        if (active_image(package, verify_content=False) != image or
+        if args.gate_candidate_preflight:
+            stage = 'candidate_image'
+            image, vm_evidence = gate_candidate_image(package)
+            image_stat = (image.stat().st_size, image.stat().st_mtime_ns)
+            result['active_image'] = {
+                'sha256_verified': True,
+                'sha256': '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
+                'selector_unchanged': True,
+                'php_probe': 'not_run_on_old_source_image',
+            }
+            result['selected_image_php'] = 'not_run_on_old_source_image'
+            result['selected_image_sha256_verified'] = True
+            result[stage] = candidate_image_php_check(image)
+            result['isolated_vm_validation'] = vm_evidence
+            result['runner_guest_docker'] = 'verified_in_isolated_candidate_vm'
+        else:
+            stage = 'selected_image_php'
+            image = active_image(package)
+            image_stat = (image.stat().st_size, image.stat().st_mtime_ns)
+            result['selected_image_sha256_verified'] = True
+            result[stage] = image_php_check(image)
+            stage = 'runner_guest_docker'
+            result[stage] = docker_guest_check(image)
+        expected_active = Path(json.loads((package / 'operator-manifest.json').read_text())['active_image'])
+        if (active_image(package, verify_content=args.gate_candidate_preflight) != expected_active.resolve(strict=True) or
                 (image.stat().st_size, image.stat().st_mtime_ns) != image_stat or
                 hashlib.sha256(config.read_bytes()).hexdigest() != original_config_hash):
             raise Blocked('effective_state_changed_during_check')

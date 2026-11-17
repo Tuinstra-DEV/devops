@@ -182,7 +182,7 @@ class OperatorChecksTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 'selected_runner_image_hash_differs')
 
     def test_php_is_probed_in_readonly_image_and_missing_mysql_blocks(self):
-        result = json.dumps({'php_version': '8.3', 'pdo_mysql': False, 'pdo_sqlite': True})
+        result = json.dumps({'php_version': '8.3', 'php_version_full': '8.3.36', 'pdo_mysql': False, 'pdo_sqlite': True})
         with mock.patch.object(checks, 'command', return_value=result) as command:
             with self.assertRaises(checks.Blocked) as caught:
                 checks.image_php_check(Path('/synthetic/image.qcow2'))
@@ -192,6 +192,71 @@ class OperatorChecksTests(unittest.TestCase):
         self.assertIn('/synthetic/image.qcow2', args)
         self.assertIn('runuser -u ci-runner', args[-1])
         self.assertIn('/usr/bin/php8.3', args[-1])
+
+    def candidate_result(self):
+        # Exercise the recorded validation artifact's actual schema rather than
+        # duplicating it in a synthetic fixture that can silently drift.
+        return json.loads((Path(__file__).parent / 'image-family-update-result.json').read_text())
+
+    def test_candidate_preflight_binds_source_candidate_hash_and_vm_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            package = root / 'package'; package.mkdir()
+            source, candidate, helper = root / 'source.qcow2', root / 'candidate.qcow2', root / 'helper'
+            source.touch(); candidate.touch(); helper.touch()
+            selector = root / 'current'; selector.symlink_to(source)
+            result = self.candidate_result(); result['candidate']['standalone_image_path'] = str(candidate)
+            (package / 'image-family-update-result.json').write_text(json.dumps(result))
+            hashes = {helper: 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613',
+                      source: '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
+                      candidate: '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'}
+            with mock.patch.object(checks, 'sha256_file', side_effect=lambda path: hashes[Path(path)]):
+                image, evidence = checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
+            self.assertEqual(image, candidate)
+            self.assertTrue(evidence['sha256_verified'])
+            self.assertEqual(evidence['mariadb'], '12 tests / 99 assertions; 0 skipped')
+
+    def test_candidate_preflight_rejects_stale_validation_and_wrong_candidate_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); package = root / 'package'; package.mkdir()
+            source, candidate, helper = root / 'source', root / 'candidate', root / 'helper'
+            source.touch(); candidate.touch(); helper.touch(); selector = root / 'current'; selector.symlink_to(source)
+            hashes = {helper: 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613',
+                      source: '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
+                      candidate: '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'}
+            with mock.patch.object(checks, 'sha256_file', side_effect=lambda path: hashes[Path(path)]):
+                for field in ('vm_exit_code', 'registered_as_runner',
+                              'host_mounts_or_docker_socket', 'host_port_forwarding', 'missing_vm'):
+                    with self.subTest(field=field):
+                        result = self.candidate_result()
+                        vm = result['isolated_validation']
+                        if field == 'vm_exit_code':
+                            vm[field] = 1
+                        elif field == 'missing_vm':
+                            vm.pop('vm')
+                        else:
+                            vm['vm'][field] = True
+                        result['candidate']['standalone_image_path'] = str(candidate)
+                        (package / 'image-family-update-result.json').write_text(json.dumps(result))
+                        with self.assertRaises(checks.Blocked) as caught:
+                            checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
+                        self.assertEqual(caught.exception.code, 'candidate_isolated_validation_evidence_differs')
+                result = self.candidate_result()
+                result['candidate']['standalone_image_path'] = str(candidate)
+                (package / 'image-family-update-result.json').write_text(json.dumps(result))
+                hashes[candidate] = '0' * 64
+                with self.assertRaises(checks.Blocked) as caught:
+                    checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
+                self.assertEqual(caught.exception.code, 'candidate_image_hash_or_manifest_differs')
+
+    def test_candidate_php_check_requires_exact_pdo_patch_and_uses_ro_guestfish_only(self):
+        payload = json.dumps({'php_version': '8.3', 'php_version_full': '8.3.36',
+                              'pdo_mysql': True, 'pdo_sqlite': True})
+        with mock.patch.object(checks, 'command', return_value=payload) as command:
+            result = checks.candidate_image_php_check(Path('/synthetic/candidate.qcow2'))
+        self.assertEqual(result['php_version_full'], '8.3.36')
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0][:3], ['guestfish', '--ro', '--format=qcow2'])
 
     def test_docker_never_falls_back_to_host_or_unrelated_vm(self):
         xml = '<domain><devices><disk><backingStore><source file="/synthetic/image.qcow2"/></backingStore></disk><channel><target name="org.qemu.guest_agent.0" state="disconnected"/></channel></devices></domain>'

@@ -332,6 +332,31 @@ reset/force/amend. No tags, protections, other consumer pins or production
 artifacts are involved. If any before-state fingerprint differs, stop rather
 than overwriting concurrent changes.
 
+## Read-only preflight for the approved PHP 8.3.36 candidate
+
+The earlier blocker above describes the pre-build state. The exact candidate
+has since been built and passed the isolated VM validation recorded in
+`image-family-validation-summary.md` and
+`image-family-update-result.json`. The active selector remains on the original
+`66eded13…` image, whose PHP probe is intentionally not reported as passing.
+
+Run this preflight from the existing operator's Mac Terminal before publishing
+the pinned provider workflow or changing runner admission:
+
+```bash
+bash "/Users/marceltuinstra/Documents/Codex/2026-11-15/new-chat-3/work/ci-rollout/devops-compact-pilot/docs/runner/proposals/dev54-gate-backend/run-gate-candidate-preflight.sh"
+```
+
+It refreshes runner-group 4 and repository snapshots using the existing local
+`gh` session, then uses existing operator sudo to verify effective manager
+policy, read-only credential access, the still-selected source image, and the
+candidate's complete SHA-256 plus PDO MySQL/SQLite inside the image. It accepts
+Docker and MariaDB only from the separately validated, hash-bound isolated VM;
+it does not substitute host Docker. It changes no live files or settings.
+Return only the final JSON line (`all_checks_green`, verification results, or
+the bounded blocker/status). Do not return any sudo transcript, password,
+token, credential contents, or `manager.toml` contents.
+
 ## One decision
 
 Authorize **one conditional, isolated Backend CI canary** with exactly the
