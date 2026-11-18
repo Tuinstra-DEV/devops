@@ -1,0 +1,51 @@
+name: Tessera selective verification
+description: Select the fixed Tessera Ruby fixture or the unchanged full Flutter call scope
+
+outputs:
+  scope:
+    description: Fixed verified path scope, either ruby-lite or full
+    value: ${{ steps.scope.outputs.scope }}
+  preflight_trusted:
+    description: False only for the secretless hosted Ruby fixture route
+    value: ${{ steps.ruby-proof.outputs.preflight_trusted }}
+  trusted_proof:
+    description: The lightweight route never emits trusted proof
+    value: ${{ steps.ruby-proof.outputs.trusted_proof }}
+  hosted_proof:
+    description: True only after the exact Ruby fixture succeeds
+    value: ${{ steps.ruby-proof.outputs.hosted_proof }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify current Tessera PR and classify the exact diff
+      id: scope
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SCOPE_SCRIPT: ${{ github.action_path }}/tessera_scope.py
+      run: python3 "$SCOPE_SCRIPT"
+    - name: Set up Ruby 4 for the exact lightweight scope
+      if: ${{ steps.scope.outputs.scope == 'ruby-lite' }}
+      uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b
+      with:
+        ruby-version: '4.0'
+    - name: Install locked fastlane fixture dependencies
+      if: ${{ steps.scope.outputs.scope == 'ruby-lite' }}
+      shell: bash
+      run: |
+        gem install drb --version 2.2.3 --no-document
+        gem install prism --version 1.9.0 --no-document
+        gem install minitest --version 6.1.0 --no-document
+    - name: Test Fastfile IPA path contract
+      if: ${{ steps.scope.outputs.scope == 'ruby-lite' }}
+      shell: bash
+      run: ruby app/fastlane/test_fastfile_ipa_path.rb
+    - name: Mark completed hosted contract verification
+      if: ${{ steps.scope.outputs.scope == 'ruby-lite' }}
+      id: ruby-proof
+      shell: bash
+      run: |
+        echo 'preflight_trusted=false' >> "$GITHUB_OUTPUT"
+        echo 'trusted_proof=' >> "$GITHUB_OUTPUT"
+        echo 'hosted_proof=true' >> "$GITHUB_OUTPUT"
