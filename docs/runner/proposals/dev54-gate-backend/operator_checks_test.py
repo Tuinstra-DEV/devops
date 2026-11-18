@@ -196,7 +196,7 @@ class OperatorChecksTests(unittest.TestCase):
     def candidate_result(self):
         # Exercise the recorded validation artifact's actual schema rather than
         # duplicating it in a synthetic fixture that can silently drift.
-        return json.loads((Path(__file__).parent / 'image-family-update-result.json').read_text())
+        return json.loads((Path(__file__).parent / 'image-maintenance-update-result.json').read_text())
 
     def test_candidate_preflight_binds_source_candidate_hash_and_vm_proof(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -206,10 +206,10 @@ class OperatorChecksTests(unittest.TestCase):
             source.touch(); candidate.touch(); helper.touch()
             selector = root / 'current'; selector.symlink_to(source)
             result = self.candidate_result(); result['candidate']['standalone_image_path'] = str(candidate)
-            (package / 'image-family-update-result.json').write_text(json.dumps(result))
+            (package / 'image-maintenance-update-result.json').write_text(json.dumps(result))
             hashes = {helper: 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613',
                       source: '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
-                      candidate: '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'}
+                      candidate: '2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce'}
             with mock.patch.object(checks, 'sha256_file', side_effect=lambda path: hashes[Path(path)]):
                 image, evidence = checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
             self.assertEqual(image, candidate)
@@ -223,7 +223,7 @@ class OperatorChecksTests(unittest.TestCase):
             source.touch(); candidate.touch(); helper.touch(); selector = root / 'current'; selector.symlink_to(source)
             hashes = {helper: 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613',
                       source: '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
-                      candidate: '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'}
+                      candidate: '2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce'}
             with mock.patch.object(checks, 'sha256_file', side_effect=lambda path: hashes[Path(path)]):
                 for field in ('vm_exit_code', 'registered_as_runner',
                               'host_mounts_or_docker_socket', 'host_port_forwarding', 'missing_vm'):
@@ -237,17 +237,39 @@ class OperatorChecksTests(unittest.TestCase):
                         else:
                             vm['vm'][field] = True
                         result['candidate']['standalone_image_path'] = str(candidate)
-                        (package / 'image-family-update-result.json').write_text(json.dumps(result))
+                        (package / 'image-maintenance-update-result.json').write_text(json.dumps(result))
                         with self.assertRaises(checks.Blocked) as caught:
                             checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
                         self.assertEqual(caught.exception.code, 'candidate_isolated_validation_evidence_differs')
                 result = self.candidate_result()
                 result['candidate']['standalone_image_path'] = str(candidate)
-                (package / 'image-family-update-result.json').write_text(json.dumps(result))
+                (package / 'image-maintenance-update-result.json').write_text(json.dumps(result))
                 hashes[candidate] = '0' * 64
                 with self.assertRaises(checks.Blocked) as caught:
                     checks.gate_candidate_image(package, selector, helper, source, candidate, candidate, source)
                 self.assertEqual(caught.exception.code, 'candidate_image_hash_or_manifest_differs')
+
+    def test_candidate_maintenance_proof_rejects_unrelated_runtime_drift_or_wider_guard(self):
+        for field in ('package_inventory_changed', 'image_manifest_changed', 'other_runtime_versions_changed', 'guard'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source, candidate, helper = root / 'source', root / 'candidate', root / 'helper'
+                source.touch(); candidate.touch(); helper.touch()
+                selector = root / 'current'; selector.symlink_to(source)
+                result = self.candidate_result()
+                result['candidate']['standalone_image_path'] = str(candidate)
+                if field == 'guard':
+                    result['candidate']['needrestart_guard']['content'] = '$nrconf{restart} = "l";'
+                else:
+                    result['candidate']['relative_to_parent_candidate'][field] = True
+                (root / 'image-maintenance-update-result.json').write_text(json.dumps(result))
+                hashes = {helper: 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613',
+                          source: '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4',
+                          candidate: '2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce'}
+                with mock.patch.object(checks, 'sha256_file', side_effect=lambda path: hashes[Path(path)]):
+                    with self.assertRaises(checks.Blocked) as caught:
+                        checks.gate_candidate_image(root, selector, helper, source, candidate, candidate, source)
+                self.assertEqual(caught.exception.code, 'candidate_maintenance_evidence_differs')
 
     def test_candidate_php_check_requires_exact_pdo_patch_and_uses_ro_guestfish_only(self):
         payload = json.dumps({'php_version': '8.3', 'php_version_full': '8.3.36',

@@ -9,6 +9,7 @@
     "selector_changed": false
   },
   "parent_candidate": {
+    "validation_record": "image-family-update-result.json",
     "path": "/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2",
     "sha256_before": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
     "sha256_after": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
@@ -16,10 +17,8 @@
   },
   "candidate": {
     "build_route": "Minimal immutable derivative of the approved PHP 8.3.36 candidate via the existing libguestfs route. No full Packer rebuild and no package transaction were performed for this guard update.",
-    "package_overlay_path": "/home/mtuinstra/dev54-image-candidate-20261117-family/php83-family-overlay.qcow2",
-    "package_overlay_sha256": "e61b8ab5c8ba10ce2f0fa5309f9bc19c4041fdca46ec99527f1c7bfbaf037aae",
-    "backing_copy_sha256": "bc233338d16d80ac2c4f2f163778fe2ed690d1ab1cd2fa9fb2b691d56f43919d",
-    "validated_vm_overlay_sha256": "430602d7ea6fc049c33df00f5039237f9e3b1b9fd59a7df9dced53722f4bf287",
+    "validated_vm_overlay_path": "/tmp/dev54-needrestart-diagnostic-20261118/5583-guard-validation-qemu-phase3-overlay.qcow2",
+    "validated_vm_overlay_sha256": "1b05583acce3f8dba1b0cae02841bf330a97c0f11d2fd1b985e568189a3a35a4",
     "standalone_image_path": "/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2",
     "standalone_image_sha256": "2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce",
     "standalone_image_size_bytes": 8126070784,
@@ -28,7 +27,7 @@
     "standalone_image_copy": "Byte-identical no-reflink/no-sparse copy from the retained libvirt-qemu-owned sibling. Copy SHA matches; qemu-img check passed. The original libvirt-owned sibling remains at /home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone.qcow2.",
     "validated_chain_comparison": "qemu-img compare reported Images are identical",
     "qemu_img_check": "passed for package overlay, VM overlay, and standalone image",
-    "qemu_img_check_detail": "The final operator-owned standalone copy passed qemu-img check with no errors.",
+    "qemu_img_check_detail": "The final operator-owned standalone and stopped phase-3 VM overlay passed qemu-img check with no errors. The VM overlay hash was unchanged after checking. Its original backing lookup is preserved by a no-clobber symlink to the retained original standalone sibling; no overlay rebasing or repair was performed.",
     "package_transaction": {
       "from_version": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
       "to_version": "8.3.36-1+ubuntu24.04.1+deb.sury.org+1",
@@ -126,7 +125,6 @@
       "skipped": 0
     },
     "vm_exit_code": 0,
-    "pdo_mysql_and_sqlite_query_as_ci_runner": "passed",
     "serial_log_sha256_uncommitted": "d675b524e4636f1324d55c61b5c031f0ff7364cc3f9f09f708228e4a05e652f9",
     "seed_iso_sha256_uncommitted": "25d91306162c151e6824b32eef623e4acbc0e8facd7d2a309e19b1640ba30acd"
   },

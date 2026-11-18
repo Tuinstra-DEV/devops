@@ -1,16 +1,23 @@
 # DEV-54: exact compact Gate backend admission proposal
 
-**Current status:** activation is blocked pending validation of the combined
-PHP/MySQL and runner-maintenance candidate. The old PHP-only candidate must
-not be activated: an isolated reproduction showed that the default needrestart
-APT hook restarts `ci-runner-job.service`, whose existing `ExecStopPost` powers
-off its guest. A second isolated run deferred only that service restart and
-kept its PID active while other services restarted normally. This proves the
-unsafe mechanism; the historical failed guests' initiating APT events remain
-unavailable. The local activation entrypoints fail closed until the corrected
-candidate is pinned and validated. No live setting has changed.
+**Current status:** the combined PHP/MySQL and runner-maintenance candidate
+passed isolated Gate validation, including PHPUnit 1,216/7,567 and native
+MariaDB 12/99 with zero MariaDB skips. Its standalone SHA-256 is
+`2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce`.
+The operator-owned, read-only source is under
+`/home/mtuinstra/dev54-image-candidate-20261118-guard/`;
+`image-maintenance-update-result.json` binds the exact file and proof. The old
+PHP-only candidate is superseded. No live setting or Gate caller has changed.
 
-The operator's earlier PHP-only candidate preflight is green and provider
+An isolated reproduction showed that the default needrestart APT hook restarts
+`ci-runner-job.service`, whose existing `ExecStopPost` powers off its guest.
+The exact-unit drop-in kept its PID active while other services restarted
+normally. This proves the unsafe mechanism; the historical failed guests'
+initiating APT events remain unavailable. Only that drop-in and the existing
+image-contract script differ from the earlier PHP candidate; package inventory
+and image manifest are identical.
+
+The operator's earlier policy/credential preflight is green and provider
 commit `6a08dc5f3768a4ac6fc5f5da6fac69a744b07f99` is published on open PR #220.
 [Provider CI](https://github.com/Tuinstra-DEV/devops/actions/runs/44185417734)
 passed. The exact workflow pin below is published. The temporary live
@@ -346,12 +353,12 @@ reset/force/amend. No tags, protections, other consumer pins or production
 artifacts are involved. If any before-state fingerprint differs, stop rather
 than overwriting concurrent changes.
 
-## Read-only preflight for the approved PHP 8.3.36 candidate
+## Read-only preflight for the approved combined candidate
 
-The earlier blocker above describes the pre-build state. The exact candidate
-has since been built and passed the isolated VM validation recorded in
-`image-family-validation-summary.md` and
-`image-family-update-result.json`. The active selector remains on the original
+The earlier PHP-only build remains historical evidence in
+`image-family-validation-summary.md` and `image-family-update-result.json`.
+The current combined candidate passed the separate isolated validation in
+`image-maintenance-update-result.json`. The active selector remains on the original
 `66eded13…` image, whose PHP probe is intentionally not reported as passing.
 
 Run this preflight from the existing operator's Mac Terminal before publishing
@@ -374,8 +381,12 @@ token, credential contents, or `manager.toml` contents.
 ## Approved activation and automatic rollback
 
 The one-trial authorization has been given. The provider workflow pin is
-published and its CI is green; the read-only candidate preflight is green.
-The operator transaction below rechecks the active manager, current Gate
+published and its CI is green. The wrapper additionally requires the current
+local provider commit to match open PR #220's remote head with green provider
+checks before staging anything on Sanctuary. The operator transaction re-runs
+the existing credential GET probes and read-only combined-image/VM-proof checks
+before making any live mutation; a failed prerequisite stops the trial.
+It rechecks the active manager, current Gate
 candidate, group/repository selection, credential route, source and candidate
 hashes. It waits with the manager running until it sees zero leases, cleanup
 obligations and active domains. Only then does it stop the manager, recheck the

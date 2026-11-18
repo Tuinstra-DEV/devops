@@ -12,7 +12,7 @@ GH_PAGER=cat gh api orgs/Tuinstra-DEV/actions/runner-groups/4/repositories > "$s
 ssh "$operator_host" 'umask 077; mkdir -p /home/mtuinstra/dev54-gate-candidate-preflight-20261117; chmod 700 /home/mtuinstra/dev54-gate-candidate-preflight-20261117'
 scp -q "$proposal_dir/read_effective.py" "$proposal_dir/operator_check.py" "$proposal_dir/manifest.json" \
   "$proposal_dir/operator-manifest.json" "$proposal_dir/group-before.json" "$proposal_dir/repositories-before.json" \
-  "$proposal_dir/image-family-update-result.json" "$snapshot_dir/group-state.json" \
+  "$proposal_dir/image-maintenance-update-result.json" "$snapshot_dir/group-state.json" \
   "$snapshot_dir/repositories-state.json" "$operator_host:$operator_dir/"
 # This is deliberately read-only: it does not change a selector, image, service,
 # manager config, runner group, or PR. Only the existing operator sudo is used.

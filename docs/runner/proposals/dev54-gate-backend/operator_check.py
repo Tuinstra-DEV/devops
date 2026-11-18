@@ -205,14 +205,14 @@ def image_php_check(image, exact_version=None):
 def gate_candidate_image(package, selector=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2'),
                          helper=Path('/usr/local/libexec/ci-runner-host-helper'),
                          source_image=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2'),
-                         candidate_image=Path('/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2'),
-                         expected_candidate=Path('/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2'),
+                         candidate_image=Path('/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2'),
+                         expected_candidate=Path('/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2'),
                          expected_source=Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2')):
     """Bind read-only host preflight to the approved source and standalone candidate hashes."""
-    result = json.loads((package / 'image-family-update-result.json').read_text())
+    result = json.loads((package / 'image-maintenance-update-result.json').read_text())
     expected_helper = 'fef9343a46c4a67ddf1e12db43aa65c2bbb5256e35bbdac14c9cb8a9ad3f1613'
     expected_source_hash = '66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4'
-    expected_candidate_hash = '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'
+    expected_candidate_hash = '2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce'
     if sha256_file(helper) != expected_helper:
         raise Blocked('active_image_selector_helper_changed')
     if source_image != expected_source or selector.resolve(strict=True) != source_image or sha256_file(source_image) != expected_source_hash:
@@ -224,6 +224,12 @@ def gate_candidate_image(package, selector=Path('/var/lib/ci-runner/images/ubunt
             candidate.get('standalone_image_backing_file') is not None or
             sha256_file(candidate_image) != expected_candidate_hash):
         raise Blocked('candidate_image_hash_or_manifest_differs')
+    relative = candidate.get('relative_to_parent_candidate', {})
+    guard = candidate.get('needrestart_guard', {})
+    if (any(relative.get(key) is not False for key in
+            ('package_inventory_changed', 'image_manifest_changed', 'other_runtime_versions_changed')) or
+            guard.get('content') != r'$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;'):
+        raise Blocked('candidate_maintenance_evidence_differs')
     vm = result.get('isolated_validation', {})
     vm_info = vm.get('vm', {})
     fixture = vm.get('pinned_mariadb_fixture', {})
@@ -248,6 +254,7 @@ def gate_candidate_image(package, selector=Path('/var/lib/ci-runner/images/ubunt
     return candidate_image, {
         'sha256_verified': True,
         'sha256': expected_candidate_hash,
+        'needrestart_exact_unit_guard': True,
         'pdo_mysql_and_sqlite_vm_queries': 'passed',
         'docker_overlay2_vm': 'passed',
         'phpunit': '1216 tests / 7567 assertions; 14 skipped, 1 incomplete, 1 warning',

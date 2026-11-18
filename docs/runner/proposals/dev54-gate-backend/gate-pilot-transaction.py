@@ -28,8 +28,8 @@ CONFIG = Path('/etc/ci-runner/manager.toml')
 HELPER = Path('/usr/local/libexec/ci-runner-host-helper')
 SELECTOR = Path('/var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2')
 SOURCE_IMAGE = Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2')
-CANDIDATE_SOURCE = Path('/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2')
-CANDIDATE_HASH = '5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2'
+CANDIDATE_SOURCE = Path('/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2')
+CANDIDATE_HASH = '2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce'
 NEW_IMAGE = Path('/var/lib/ci-runner/images/ubuntu-24.04-runner-' + CANDIDATE_HASH + '.qcow2')
 OLD_MANAGER_HASH = '5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3'
 NEW_MANAGER_HASH = 'e9b2f1865fb915f80f01803a81d36476c637d8b655044f5c664b67acfc6f185c'
@@ -60,7 +60,8 @@ INPUT_HASHES = {
     'group-before.json': 'ccb331309e974d1e53d4c767e82299d934439263457eea617067ee50dcea6d6c',
     'group-after.json': 'd4db99eb68c55255d0fafe56544de71bba5ab13b15c00221144c0ad3d8c8b749',
     'repositories-before.json': 'fc3bdd6f5f7496b7b34cfadfeb72fd1dc39c70c72482c1f394ecc53f8c41d858',
-    'operator_check.py': '95be11ad634f11e651605dcac18d11cf847059506322599611d1454c206b6b62',
+    'operator_check.py': '66932bd68800c7969d03327d85b3087b5b79791d7b9dd8cb66aa2708d98be0c2',
+    'image-maintenance-update-result.json': '309cef6b0dbb650967b2f15dcdca22ab6b10f1088bb73ed922543fc3f875dc32',
     'read_effective.py': '6d4288e47fcf900fbf81a50b6cc35cd2abcca857a98d4260c7a466b13c2252bd',
 }
 MAX_WAIT_SECONDS = 3 * 60 * 60
@@ -325,9 +326,10 @@ def config_and_group_preflight(package: Path, old_module, new_module, config_byt
     return cfg, after_cfg
 
 
-def verify_candidate_readiness(package: Path, checker) -> None:
-    """Re-run the read-only candidate checks before any activation mutation."""
+def verify_operator_readiness(package: Path, checker, cfg: dict, old_module) -> None:
+    """Re-run existing credential GETs and candidate checks before mutations."""
     try:
+        checker.credential_checks(cfg, json.loads((package / 'manifest.json').read_text()), old_module)
         image, evidence = checker.gate_candidate_image(package)
         if image != CANDIDATE_SOURCE or evidence.get('sha256') != CANDIDATE_HASH:
             raise Blocked('candidate_preflight_target_differs')
@@ -1025,7 +1027,9 @@ def activate(package: Path) -> tuple[dict, Path, dict, object, object, str]:
                                                                expected_config_bytes=config_bytes,
                                                                service_active=True)
     verify_candidate_and_source()
-    verify_candidate_readiness(package, credential_checker)
+    verify_operator_readiness(package, credential_checker, cfg, old_module)
+    print(json.dumps({'phase': 'read_only_preflight_verified', 'all_checks_green': True,
+                      'candidate_image_sha256': CANDIDATE_HASH}, separators=(',', ':')), flush=True)
     # Do not pause admission or copy the image until an empty window is observed.
     backup, before = make_backup()
     source_info = CANDIDATE_SOURCE.stat()
