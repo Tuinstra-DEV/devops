@@ -1,5 +1,21 @@
 # DEV-54: exact compact Gate backend admission proposal
 
+**New comparison explicitly authorized on 18 November:**
+`run-gate-pilot-repeat.sh` uses a fresh r3 package and journal, retaining the
+completed earlier transaction. `gate-pilot-repeat.py` loads the unchanged
+`91c9cf3` rollback source only after verifying SHA-256 `918bdbed…944218b`.
+It binds pre-head `6aaeef3` and trial head `698d6a9`, reuses the exact original
+six-to-seven workflow admission and candidate image, and requires the prior
+journal to be rolled back. Before stopping admission or changing settings, a
+durable receipt proves full baseline metadata, readable hash-verified manager/
+config backups, matching original files and journal readback. Existing manager
+credential GET and read-only candidate PHP checks run again. Activation waits
+for the same verified empty runner window. Both trial runs are followed to
+completion and the corrected base automatically restores the host afterward.
+The caller must then be restored to the byte-identical pre-trial file with a
+normal commit; the non-required pilot workflow may remain paused through that
+rollback's ordinary CI to avoid another compact experiment, then return active.
+
 **Local follow-up after the completed rollback:** recovery now also recognizes
 the journal-bound old manager/config/image with an active old service and the
 exact pilot group still present. It drains/stops admission before resuming the
