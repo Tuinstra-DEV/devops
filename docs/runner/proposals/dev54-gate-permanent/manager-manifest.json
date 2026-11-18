@@ -3,7 +3,7 @@
   "source_sha256": "5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3",
   "target_sha256": "82d9abb407546ebefab4a68f944232cd791415f981ab205e558ed9b0dca3a66c",
   "patch_sha256": "0a58dd9f1eaf55a565a5d6cc4857350fcd7d8ed3819e68487bb4ef9528e474f0",
-  "workflow_pin": "09ca00db3bc8d3f5624b5473f3b2c651dfdf98f5",
+  "workflow_pin": "6970cbbf6cef3ae256d61d4805a8db464b9650a0",
   "unchanged": [
     "pool/capacity",
     "disk admission",
