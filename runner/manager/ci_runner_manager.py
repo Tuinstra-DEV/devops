@@ -97,6 +97,29 @@ EXECUTION_ROLES = {
     },
 }
 ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
+GATE_ROLES = {"gate-backend", "gate-release-browser"}
+GATE_CORE_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-ci.yml"
+GATE_BROWSER_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-browser.yml"
+for _role, _profile, _workflow, _job in (
+        ("gate-backend", "medium", GATE_CORE_WORKFLOW, "ci / Backend CI"),
+        ("gate-release-browser", "heavy", GATE_BROWSER_WORKFLOW, "browser / Release browser")):
+    EXECUTION_ROLES[_role] = {
+        "profile": _profile, "label": "ci-" + _role, "workflow": _workflow,
+        "events": {"pull_request"}, "actors": {("marcel-tuinstra", "User")},
+        "job_name": _job,
+    }
+
+
+def gate_role_references(refs, pin, release):
+    """Accept exactly the fixed core, plus the same-pin release browser only."""
+    expected = {GATE_CORE_WORKFLOW + "@" + pin}
+    if release:
+        expected.add(GATE_BROWSER_WORKFLOW + "@" + pin)
+    return isinstance(refs, list) and len(refs) == len(expected) and all(
+        isinstance(item, dict) and item.get("path") in expected and item.get("sha") == pin
+        for item in refs) and {item["path"] for item in refs} == expected
+
+
 ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
                    "run_attempt", "source_sha", "pr_head_sha", "base_sha", "base_ref",
                    "default_branch", "default_sha", "pr_number", "event", "head_branch", "execution_sha")
@@ -286,7 +309,7 @@ def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
                 raise RunnerError("execution role repository or event policy is invalid")
         if not set(policy["repositories"]).issubset(cfg.get("org_repository_ids", {})):
             raise RunnerError("execution role repository is not in the selected group")
-        if role == "gate-backend-pilot" and policy["repositories"] != [f"{ORG_NAME}/gate"]:
+        if (role == "gate-backend-pilot" or role in GATE_ROLES) and policy["repositories"] != [f"{ORG_NAME}/gate"]:
             raise RunnerError("Gate backend pilot must select only Gate")
         actors = policy["actors"]
         if not isinstance(actors, list) or not actors or len(actors) > len(spec["actors"]):
@@ -356,11 +379,11 @@ def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
         if not isinstance(pr_head_sha, str) or re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None:
             return False
         required.add("ci-pr-head-" + pr_head_sha)
-    if role in {"pr-security-producer", "gate-backend-pilot"}:
+    if role in {"pr-security-producer", "gate-backend-pilot"} | GATE_ROLES:
         if not pr_head_sha or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
             return False
         required.add("ci-execution-sha-" + execution_sha)
-        if role == "gate-backend-pilot" and repo != f"{ORG_NAME}/gate":
+        if (role == "gate-backend-pilot" or role in GATE_ROLES) and repo != f"{ORG_NAME}/gate":
             return False
     elif execution_sha:
         # Target metadata is deliberately unsupported; ordinary PR/push role
@@ -1128,6 +1151,9 @@ class GitHubClient:
                 run.get("head_branch") != "chore/DEV-54-compact-ci-pilot" or
                 len(refs) != 1):
             return None
+        if role in GATE_ROLES and not gate_role_references(
+                refs, ref.rsplit("@", 1)[1], len(refs) == 2):
+            return None
         branch = run.get("head_branch")
         if not isinstance(branch, str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
@@ -1195,7 +1221,7 @@ class GitHubClient:
         if event == "pull_request_target":
             if role != "pr-security-producer" or execution_sha != default_sha:
                 return None
-        elif role == "gate-backend-pilot":
+        elif role == "gate-backend-pilot" or role in GATE_ROLES:
             if not isinstance(execution_sha, str) or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
                 return None
         elif execution_sha != "":
@@ -1224,6 +1250,11 @@ class GitHubClient:
             base_ref = pr["base"].get("ref")
             if role == "gate-backend-pilot" and base_ref != "develop":
                 return None
+            if role in GATE_ROLES:
+                release = base_ref == "main" and run.get("head_branch") == "develop"
+                if (base_ref != "develop" and not release) or (role == "gate-release-browser" and not release) or not gate_role_references(
+                        run.get("referenced_workflows"), policy["workflow_ref"].rsplit("@", 1)[1], release):
+                    return None
             base_sha = default_sha if base_ref == default else self._protected_branch_sha(repo, base_ref)
             if base_sha is None or pr["base"].get("sha") != base_sha:
                 return None
@@ -1238,6 +1269,16 @@ class GitHubClient:
                         return None
             if sha != pr_sha or run.get("head_branch") != pr["head"].get("ref"):
                 return None
+            if role in GATE_ROLES:
+                if not self._trusted_pull_request(pr, repo, sha, run["head_branch"], number) or pr.get("merge_commit_sha") != execution_sha:
+                    return None
+                tip = self.request("GET", f"{self.repo_path(repo)}/git/ref/heads/" + urllib.parse.quote(run["head_branch"], safe="/"))
+                if not isinstance(tip, dict) or tip.get("ref") != "refs/heads/" + run["head_branch"] or (tip.get("object") or {}).get("type") != "commit" or (tip.get("object") or {}).get("sha") != pr_sha:
+                    return None
+                merge = self.request("GET", f"{self.repo_path(repo)}/git/commits/{execution_sha}")
+                parents = merge.get("parents") if isinstance(merge, dict) else None
+                if not isinstance(merge, dict) or merge.get("sha") != execution_sha or not isinstance(parents, list) or len(parents) != 2 or any(not isinstance(p, dict) for p in parents) or {p.get("sha") for p in parents} != {pr_sha, base_sha}:
+                    return None
             if role == "gate-backend-pilot":
                 if number != 444 or base_ref != "develop" or not self._trusted_pull_request(
                         pr, repo, sha, "chore/DEV-54-compact-ci-pilot", number) or \
@@ -1274,6 +1315,8 @@ class GitHubClient:
                             type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
                             type(job.get("run_attempt")) is not int or job.get("status") != "queued":
                         continue
+                    if role in GATE_ROLES and job.get("name") != EXECUTION_ROLES[role]["job_name"]:
+                        continue
                     if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
                         continue
                     head = role_source_head(job.get("labels"))
@@ -1308,6 +1351,8 @@ class GitHubClient:
                 not role_labels_match(job.get("labels"), repo, role, candidate["run_id"],
                                       candidate["run_attempt"], candidate["pr_head_sha"], candidate["execution_sha"]):
             raise error("execution role job identity changed")
+        if role in GATE_ROLES and job.get("name") != EXECUTION_ROLES[role]["job_name"]:
+            raise error("Gate execution role job name changed")
         if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
             raise error("Gate backend pilot job name changed")
         path = f"{self.repo_path(repo)}/actions/runs/{candidate['run_id']}"

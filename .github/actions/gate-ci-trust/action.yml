@@ -1,0 +1,23 @@
+name: Select the permanent Gate backend route
+description: Exact current owner PR admission; all other events use hosted
+inputs:
+  enabled:
+    description: Operator enables only after permanent image and both policies match
+    default: 'false'
+    required: false
+outputs:
+  backend-runner:
+    description: JSON runs-on value for Backend CI only
+    value: ${{ steps.route.outputs.backend-runner }}
+  trusted:
+    description: Exact current owner PR identity was verified
+    value: ${{ steps.route.outputs.trusted }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SANCTUARY_GATE_BACKEND_ENABLED: ${{ inputs.enabled }}
+      run: python3 "$GITHUB_ACTION_PATH/select_runner.py"
