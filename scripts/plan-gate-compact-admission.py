@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Render a reviewed admission plan; never writes runner settings or calls GitHub."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -13,8 +12,11 @@ import ci_runner_manager as manager  # noqa: E402
 
 
 def plan(group, repositories, pin):
+    deployment = json.loads((ROOT / 'docs/runner/proposals/dev54-gate-permanent/manager-manifest.json').read_text())
     if not re.fullmatch(r'[a-f0-9]{40}', pin):
         raise ValueError('Expected an immutable 40-character workflow commit')
+    if pin != deployment['workflow_pin']:
+        raise ValueError('Workflow pin differs from the reviewed permanent deployment')
     refs = group.get('selected_workflows')
     ids = [r['id'] for r in repositories['repositories']]
     if (group.get('id') != 4 or group.get('name') != 'sanctuary-trusted-verification' or
@@ -33,7 +35,10 @@ def plan(group, repositories, pin):
         roles[role] = {'workflow_ref': ref, 'repositories': ['Tuinstra-DEV/gate'],
                        'events': ['pull_request'], 'actors': [{'login': 'marcel-tuinstra', 'type': 'User'}]}
     proposed = {**group, 'selected_workflows': refs + [r['workflow_ref'] for r in roles.values()]}
-    return {'read_only_plan': True, 'manager_sha256': hashlib.sha256((ROOT / 'runner/manager/ci_runner_manager.py').read_bytes()).hexdigest(),
+    return {'read_only_plan': True, 'manager_sha256': deployment['target_sha256'],
+            'manager_before_sha256': deployment['source_sha256'],
+            'manager_patch': 'docs/runner/proposals/dev54-gate-permanent/manager-effective.patch',
+            'manager_patch_sha256': deployment['patch_sha256'],
             'workflow_pin': pin, 'runner_group_before': group, 'runner_group_after': proposed,
             'repository_ids_unchanged': ids, 'merge_into_existing_org_execution_roles': roles,
             'image': json.loads((ROOT / 'runner/policy/gate-compact-image.json').read_text()),

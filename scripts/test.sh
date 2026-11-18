@@ -74,6 +74,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_wo
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_product_ci_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_compact_workflow.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=runner/manager:runner/tests python3 -B -m unittest discover -s runner/tests -p test_gate_effective_patch.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pilot_baked_php.py
 python3 -B docs/runner/proposals/dev54-gate-backend/operator_checks_test.py
 python3 -B docs/runner/proposals/dev54-gate-backend/gate-pilot-transaction-tests.py

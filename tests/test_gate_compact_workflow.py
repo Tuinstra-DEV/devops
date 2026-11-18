@@ -76,7 +76,8 @@ class GateCompactTests(unittest.TestCase):
         group = {'id': 4, 'name': 'sanctuary-trusted-verification', 'visibility': 'selected',
                  'allows_public_repositories': False, 'restricted_to_workflows': True, 'selected_workflows': ['old@' + 'a' * 40]}
         repos = {'total_count': 1, 'repositories': [{'id': 1273386924, 'full_name': 'Tuinstra-DEV/gate'}]}
-        result = module.plan(group, repos, 'b' * 40)
+        pin = json.loads((ROOT / 'docs/runner/proposals/dev54-gate-permanent/manager-manifest.json').read_text())['workflow_pin']
+        result = module.plan(group, repos, pin)
         self.assertEqual(result['runner_group_before'], group)
         self.assertEqual(result['runner_group_after']['selected_workflows'][0], group['selected_workflows'][0])
         self.assertEqual(len(result['runner_group_after']['selected_workflows']), 3)

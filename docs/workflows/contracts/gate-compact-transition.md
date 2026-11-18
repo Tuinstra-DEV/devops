@@ -86,7 +86,18 @@ Voeg aan de **bestaande** managerconfig uitsluitend twee `org_execution_roles`
 toe, met die exacte afzonderlijke refs, repositories `["Tuinstra-DEV/gate"]`,
 events `["pull_request"]`, actors `[{login="marcel-tuinstra",type="User"}]`.
 Behoud alle huidige pool/queue/credential/repository- en trusted workflowinstellingen.
-Installeer de manager uit dezelfde gereviewde DevOps-publicatie.
+Installeer **niet** de volledige repo-manager: die bevat ook nog niet uitgerolde
+pool-/diskwijzigingen. Gebruik uitsluitend de gereviewde
+`docs/runner/proposals/dev54-gate-permanent/manager-effective.patch` tegen de
+actieve bronhash `5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3`.
+Doelhash: `f341b817c3dce2d230e55e7a1f4297f2765026357c8db963deda2bc9cdf9b9a7`.
+De manifest bindt deze patch aan workflowpin
+`09ca00db3bc8d3f5624b5473f3b2c651dfdf98f5`; alleen deze pin gebruiken.
+Een AST-contract bewijst dat alle code buiten de zes admissionfuncties en de
+twee nieuwe roldefinities/helper gelijk blijft, inclusief pools, disk, leases,
+credentiallezer en dispatch. Dezelfde zeven permanente admissiontests draaien
+ook op de effectief gepatchte manager. Bij een andere actuele bronhash: stop
+en rebase/review/test de minimale patch; nooit met fuzz of een brede kopie doorgaan.
 
 Image: verifieer hash en `qemu-img check`; installeer exact dit artifact
 root-owned/content-addressed/0444 onder `/var/lib/ci-runner/images/`, controleer
@@ -106,28 +117,32 @@ aparte heavy-admission naast backend-admission.
 1. Review beide open PR's en hun normale CI; controleer verse heads, groep,
    policies, image en snapshot van de twee Gate-rulesets. Geen live wijziging
    tijdens deze review. De Gate-PR bevat voorlopig oude én nieuwe CI.
-2. Merge DevOps #220 na groene provider-CI. Houd de in Gate gereviewde volledige
-   provider-SHA beschikbaar; niet vervangen door een bewegend main/tag of een
-   nieuwe SHA zonder nieuwe caller-validatie. Actions en manager zijn uit de
-   gereviewde commitlijn; de managerrollen zijn opt-in.
-3. In een leeg window: herstelmetadata en readback opslaan, kandidaat permanent
+2. Merge DevOps #220 na groene provider-CI **met een mergecommit**; deze methode
+   is beschikbaar en behoudt de gereviewde providercommit `09ca00d…` in main.
+   Gate blijft op die volledige pin; geen bewegend main/tag of nieuwe pin zonder
+   nieuwe caller-validatie. Gebruik voor deployment alleen de minimale patch.
+3. Merge Gate #444 als overlapversie onder de huidige negen vereisten, met de
+   enable-variabele nog false/ongewijzigd. Oude CI blijft volledig actief. Dit
+   brengt de nieuwe schedule op develop; schedulebewijs vóór deze merge eisen
+   zou een onuitvoerbare volgorde maken. Een nog niet toegelaten compacte release
+   faalt veilig; de oorspronkelijke releasechecks blijven intussen verplicht.
+4. In een leeg window: herstelmetadata en readback opslaan, kandidaat permanent
    installeren, manager en uitsluitend de twee rollen/groeprefs samen activeren,
    bestaande rechten gebruiken. Service/group/selector en gedeelde dispatch
    controleren. Zet daarna de Gate enable-variabele; oude CI blijft lopen.
-4. Bewijs de **nieuwe pin en checknamen**: trusted gewone PR (Backend Sanctuary),
+5. Bewijs de **nieuwe pin en checknamen**: trusted gewone PR (Backend Sanctuary),
    onbetrouwbare PR (hosted), selectieve/lege selectie (vier groene jobs), volledige
    schedule en trusted release inclusief beide browsers. Geen handmatige runs
    door deze implementatie; deze aanvullende bewijzen horen bij activatie na review.
-5. Voeg per ruleset de vier nieuwe Actions-checks toe, behoud eerst de oude
+6. Voeg per ruleset de vier nieuwe Actions-checks toe, behoud eerst de oude
    vereisten en de vier onafhankelijke vereisten. Op main ook
    `browser / Release browser` verplicht. Bewijs groen én dezelfde dekking op
    actuele PR-heads; daarna mogen de vijf oude CI-contexten uit de regels.
    Geen tijdelijk onbeschermde branch, geen admin bypass.
-6. Merge Gate #444 als overlapversie onder de geldende checks. Oude automatische
-   CI pas in de voorbereide vervolgcommit verwijderen nadat stap 5 aantoonbaar
+7. Oude automatische CI pas in de voorbereide vervolgcommit verwijderen nadat stap 6 aantoonbaar
    voltooid is. Het Gate-runbook bevat checkmapping, bewijsverifier en de
    afzonderlijk toepasbare retirementpatch. Deze patch is nu niet toegepast.
-7. Verifieer normale PR, schedule, release en gedeelde dispatch na de cutover.
+8. Verifieer normale PR, schedule, release en gedeelde dispatch na de cutover.
    WODIQ Site volgt pas daarna; andere repos/productie blijven buiten deze stap.
 
 ## Rollback van de definitieve overgang
