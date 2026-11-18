@@ -5,3 +5,5 @@ self-hosted-runner:
     - sanctuary-*
     - ci-metadata-preflight
     - ci-pr-security-producer
+    - ci-gate-backend
+    - ci-gate-release-browser

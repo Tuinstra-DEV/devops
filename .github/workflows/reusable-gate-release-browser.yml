@@ -1,0 +1,76 @@
+name: Gate release browser
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  browser:
+    name: Release browser
+    timeout-minutes: 15
+    runs-on:
+      group: sanctuary-trusted-verification
+      labels:
+        - self-hosted
+        - ci-gate-release-browser
+        - sanctuary-gate
+        - ci-run-${{ github.run_id }}-${{ github.run_attempt }}
+        - ci-pr-head-${{ github.event.pull_request.head.sha }}
+        - ci-execution-sha-${{ github.sha }}
+    steps:
+      - name: Require current-attempt compact quality before artifact access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY:$EVENT_NAME:$BASE_REF:$HEAD_REF" = Tuinstra-DEV/gate:pull_request:main:develop
+          gh api "repos/$REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/quality-jobs.json"
+          python3 - "$RUNNER_TEMP/quality-jobs.json" <<'PY'
+          import json, os, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          jobs = data['jobs']
+          if data['total_count'] != len(jobs):
+              raise SystemExit('Truncated release quality evidence')
+          for name in ('ci / Bronselectie', 'ci / Frontend CI', 'ci / Backend CI', 'ci / CI-verdict'):
+              found = [job for job in jobs if job['name'] == name]
+              if len(found) != 1 or found[0]['conclusion'] != 'success' or found[0]['run_attempt'] != int(os.environ['GITHUB_RUN_ATTEMPT']):
+                  raise SystemExit('Missing successful current-attempt quality job: ' + name)
+          PY
+      - name: Checkout the verified release merge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify baked Node and Chromium
+        run: |
+          set -euo pipefail
+          node --version | grep -E '^v24\.'
+          chromium --version
+      - name: Download immutable frontend output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: gate-frontend-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/.output
+      - name: Run visual smoke gate
+        working-directory: frontend
+        run: node scripts/visual-smoke.mjs
+      - name: Run authenticated visual gate
+        working-directory: frontend
+        run: node scripts/visual-authenticated.mjs
+      - name: Upload visual artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: compact-release-visual-gates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/test-results/visual-smoke
+            frontend/test-results/visual-authenticated
+          if-no-files-found: ignore
+          retention-days: 7
