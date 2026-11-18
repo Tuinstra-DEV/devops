@@ -856,6 +856,7 @@ def make_backup() -> tuple[Path, dict]:
     except Exception: raise Blocked('backup_directory_unavailable') from None
     original = source_fingerprints()
     manager_info = MANAGER.stat()
+    config_info = CONFIG.stat()
     for source, name in ((MANAGER, 'manager.before'), (CONFIG, 'manager.toml.before')):
         data = secure_regular(source, original['manager_sha256'] if source == MANAGER else original['config_sha256'])
         fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -870,9 +871,13 @@ def make_backup() -> tuple[Path, dict]:
         **original, 'selector_link': os.readlink(SELECTOR),
         'manager_uid': manager_info.st_uid, 'manager_gid': manager_info.st_gid,
         'manager_mode': stat.S_IMODE(manager_info.st_mode),
+        'config_uid': config_info.st_uid, 'config_gid': config_info.st_gid,
+        'config_mode': stat.S_IMODE(config_info.st_mode),
         'group_ref_count': 6, 'group_snapshot': 'group-before.json',
     })
-    return directory, original
+    # Use the exact protected snapshot persisted for crash recovery. The
+    # fingerprint-only return value omits ownership and mode needed to restore.
+    return directory, json.loads((directory / 'before.json').read_text())
 
 
 def atomic_selector(target: Path) -> None:
@@ -978,7 +983,8 @@ def verify_running_state(new: bool, backup: Path, manager_module) -> None:
 
 
 def restore_transaction(client, package: Path, backup: Path, before: dict,
-                         old_module, new_module, *, activation_failure: bool = False) -> None:
+                         old_module, new_module, *, activation_failure: bool = False,
+                         allow_original_group: bool = False) -> None:
     # Refuse to overwrite any concurrent edit. The only allowed live state is
     # the exact new manager/config/group/image fingerprint from this trial.
     active = source_fingerprints()
@@ -988,8 +994,13 @@ def restore_transaction(client, package: Path, backup: Path, before: dict,
             active['active_image_sha256'] != CANDIDATE_HASH or active['helper_sha256'] != HELPER_HASH):
         raise Blocked('rollback_fingerprint_changed')
     live_group, live_repos = read_group(client, {})
+    live_refs = live_group.get('selected_workflows', [])
+    valid_group_states = [backed_group_refs(backup, True)]
+    if allow_original_group:
+        valid_group_states.append(backed_group_refs(backup, False))
     if (not group_policy_matches(live_group) or
-            set(live_group.get('selected_workflows', [])) != set(backed_group_refs(backup, True))):
+            not any(len(live_refs) == len(refs) and set(live_refs) == set(refs)
+                    for refs in valid_group_states)):
         raise Blocked('rollback_group_fingerprint_changed')
     if repository_map(live_repos) != json.loads((backup / 'repositories-before.json').read_text()):
         raise Blocked('rollback_repository_fingerprint_changed')
@@ -1003,13 +1014,16 @@ def restore_transaction(client, package: Path, backup: Path, before: dict,
                 active['helper_sha256'] != HELPER_HASH):
             raise Blocked('rollback_fingerprint_changed_after_drain')
         group_after_drain, repos_after_drain = read_group(client, {})
+        drained_refs = group_after_drain.get('selected_workflows', [])
         if (not group_policy_matches(group_after_drain) or
-                set(group_after_drain.get('selected_workflows', [])) !=
-                set(backed_group_refs(backup, True)) or
+                not any(len(drained_refs) == len(refs) and set(drained_refs) == set(refs)
+                        for refs in valid_group_states) or
                 repository_map(repos_after_drain) !=
                 json.loads((backup / 'repositories-before.json').read_text())):
             raise Blocked('rollback_group_fingerprint_changed_after_drain')
-        patch_group(client, backed_group_refs(backup, False))
+        before_refs = backed_group_refs(backup, False)
+        if not (len(drained_refs) == len(before_refs) and set(drained_refs) == set(before_refs)):
+            patch_group(client, before_refs)
         restore_old_files(backup, before)
         restore_candidate_source(expected_after['candidate_promotion'],
                                 sealed_image_preexisting=expected_after.get('sealed_image_preexisting', False))
@@ -1388,6 +1402,27 @@ def finish_already_restored_rollback(client, state: dict, backup: Path, before: 
     return True
 
 
+def load_backup_before(backup: Path, journal_before: dict) -> dict:
+    """Load protected baseline metadata and ensure it matches the journal."""
+    try:
+        raw = secure_regular(backup / 'before.json')
+        persisted = json.loads(raw)
+    except Blocked:
+        raise
+    except Exception:
+        raise Blocked('rollback_baseline_unavailable') from None
+    required = {'manager_sha256', 'config_sha256', 'selector_target',
+                'manager_uid', 'manager_gid', 'manager_mode',
+                'config_uid', 'config_gid', 'config_mode'}
+    if not isinstance(persisted, dict) or not required.issubset(persisted):
+        raise Blocked('rollback_baseline_invalid')
+    if not isinstance(journal_before, dict) or any(
+            key not in persisted or persisted[key] != value
+            for key, value in journal_before.items()):
+        raise Blocked('rollback_baseline_journal_mismatch')
+    return persisted
+
+
 def rollback_only(package: Path) -> None:
     if os.geteuid() != 0 or not JOURNAL.is_file() or JOURNAL.is_symlink():
         raise Blocked('no_active_transaction_journal')
@@ -1397,7 +1432,7 @@ def rollback_only(package: Path) -> None:
         raise Blocked('transaction_journal_unsafe')
     state = json.loads(JOURNAL.read_text())
     backup = Path(state['backup'])
-    before = state['before']
+    before = load_backup_before(backup, state.get('before'))
     if state.get('phase') not in {'prepared', 'active_watching', 'active', 'rollback_pending'}:
         raise Blocked('transaction_not_active')
     if service_state()['ActiveState'] != 'active':
@@ -1410,7 +1445,8 @@ def rollback_only(package: Path) -> None:
     ensure_empty()
     if finish_already_restored_rollback(client, state, backup, before, current_manager):
         return
-    restore_transaction(client, package, backup, before, current_manager, current_manager)
+    restore_transaction(client, package, backup, before, current_manager, current_manager,
+                        allow_original_group=True)
 
 
 def rollback_stopped_transaction(package: Path, state: dict, backup: Path, before: dict) -> None:

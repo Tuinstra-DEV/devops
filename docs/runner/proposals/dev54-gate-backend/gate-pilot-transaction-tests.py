@@ -163,6 +163,123 @@ def baseline_job(status='queued'):
 
 
 class GatePilotTransactionTests(unittest.TestCase):
+    def test_recovery_hydrates_old_journal_and_rejects_conflicting_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup = Path(directory)
+            persisted = {'manager_sha256': 'a' * 64, 'config_sha256': 'b' * 64,
+                         'selector_target': '/original-image',
+                         'manager_uid': 0, 'manager_gid': 0, 'manager_mode': 0o755,
+                         'config_uid': 0, 'config_gid': 0, 'config_mode': 0o600}
+            (backup / 'before.json').write_text(json.dumps(persisted))
+            old_journal = {key: value for key, value in persisted.items()
+                           if not key.startswith('manager_') or key.endswith('sha256')}
+            with mock.patch.object(transaction, 'secure_regular',
+                                   side_effect=lambda path: path.read_bytes()):
+                self.assertEqual(transaction.load_backup_before(backup, old_journal), persisted)
+                for key, changed in [('config_sha256', 'c' * 64), ('selector_target', '/other')]:
+                    with self.subTest(key=key):
+                        with self.assertRaises(transaction.Blocked) as caught:
+                            transaction.load_backup_before(backup, {**old_journal, key: changed})
+                        self.assertEqual(caught.exception.code, 'rollback_baseline_journal_mismatch')
+
+    def test_make_backup_result_can_restore_old_files_with_persisted_metadata(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup_root = root / 'backups'
+            manager = root / 'manager.py'; manager.write_bytes(b'old manager bytes')
+            config = root / 'manager.toml'; config.write_bytes(b'old config bytes')
+            source_image = root / 'source.qcow2'; source_image.write_bytes(b'old image')
+            selector = root / 'ubuntu-24.04-runner.qcow2'; selector.symlink_to(source_image)
+            fingerprints = {'manager_sha256': hashlib.sha256(manager.read_bytes()).hexdigest(),
+                            'config_sha256': hashlib.sha256(config.read_bytes()).hexdigest(),
+                            'selector_target': str(source_image)}
+            real_lstat = Path.lstat
+            real_stat = Path.stat
+
+            def root_owned_directory(path):
+                return SimpleNamespace(st_mode=0o40700, st_uid=0, st_nlink=1)
+
+            def fake_lstat(path):
+                if path == backup_root:
+                    return root_owned_directory(path)
+                return real_lstat(path)
+
+            def fake_stat(path, *args, **kwargs):
+                if path == backup_root or path.parent == backup_root:
+                    return root_owned_directory(path)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(transaction, 'BACKUP_ROOT', backup_root), \
+                 mock.patch.object(transaction, 'MANAGER', manager), \
+                 mock.patch.object(transaction, 'CONFIG', config), \
+                 mock.patch.object(transaction, 'SELECTOR', selector), \
+                 mock.patch.object(transaction, 'source_fingerprints', return_value=fingerprints), \
+                 mock.patch.object(transaction, 'secure_regular', side_effect=lambda path, *_a, **_kw: path.read_bytes()), \
+                 mock.patch.object(transaction, 'read_input', side_effect=lambda name: (SCRIPT.parent / name).read_bytes()), \
+                 mock.patch.object(Path, 'lstat', new=fake_lstat), \
+                 mock.patch.object(Path, 'stat', new=fake_stat), \
+                 mock.patch.object(transaction, 'write_json', side_effect=lambda path, data, *_a, **_kw:
+                                   path.write_text(json.dumps(data))):
+                backup, before = transaction.make_backup()
+                required = {'manager_sha256', 'config_sha256', 'selector_target',
+                            'manager_uid', 'manager_gid', 'manager_mode'}
+                self.assertTrue(required.issubset(before))
+                manager.write_bytes(b'candidate manager bytes')
+                config.write_bytes(b'candidate config bytes')
+                with mock.patch.object(transaction, 'atomic_selector') as select:
+                    transaction.restore_old_files(backup, before)
+                select.assert_called_once_with(source_image)
+            self.assertEqual(manager.read_bytes(), b'old manager bytes')
+            self.assertEqual(config.read_bytes(), b'old config bytes')
+
+    def test_explicit_recovery_accepts_already_restored_group_and_skips_patch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / 'backup'; backup.mkdir()
+            before_refs = json.loads((SCRIPT.parent / 'group-before.json').read_text())['selected_workflows']
+            after_refs = json.loads((SCRIPT.parent / 'group-after.json').read_text())['selected_workflows']
+            repositories = json.loads((SCRIPT.parent / 'repositories-before.json').read_text())
+            (backup / 'group-before.json').write_text(json.dumps({'selected_workflows': before_refs}))
+            (backup / 'group-after.json').write_text(json.dumps({'selected_workflows': after_refs}))
+            (backup / 'repositories-before.json').write_text(json.dumps(repositories))
+            repo_api = {'total_count': len(repositories), 'repositories': [
+                {'full_name': name, 'id': repo_id, 'private': True}
+                for name, repo_id in repositories.items()]}
+            group = {'id': 4, 'name': 'sanctuary-trusted-verification', 'visibility': 'selected',
+                     'default': False, 'inherited': False, 'allows_public_repositories': False,
+                     'restricted_to_workflows': True, 'selected_workflows': list(reversed(before_refs))}
+            journal = root / 'transaction.json'
+            journal.write_text(json.dumps({'config_after_sha256': 'd' * 64,
+                                           'candidate_promotion': {'mode': 'preexisting'}}))
+            before = {'manager_sha256': transaction.OLD_MANAGER_HASH,
+                      'config_sha256': 'a' * 64, 'selector_target': str(transaction.SOURCE_IMAGE),
+                      'manager_uid': 0, 'manager_gid': 0, 'manager_mode': 0o755,
+                      'config_uid': 0, 'config_gid': 0, 'config_mode': 0o600}
+            active = {'manager_sha256': transaction.NEW_MANAGER_HASH,
+                      'selector_target': str(transaction.NEW_IMAGE), 'config_sha256': 'd' * 64,
+                      'active_image_sha256': transaction.CANDIDATE_HASH,
+                      'helper_sha256': transaction.HELPER_HASH}
+            api = SimpleNamespace(request=mock.Mock())
+            with mock.patch.object(transaction, 'JOURNAL', journal), \
+                 mock.patch.object(transaction, 'source_fingerprints', return_value=active), \
+                 mock.patch.object(transaction, 'read_group', return_value=(group, repo_api)), \
+                 mock.patch.object(transaction, 'stop_manager_when_empty'), \
+                 mock.patch.object(transaction, 'restore_old_files'), \
+                 mock.patch.object(transaction, 'restore_candidate_source'), \
+                 mock.patch.object(transaction, 'safe_command'), \
+                 mock.patch.object(transaction, 'wait_service'), \
+                 mock.patch.object(transaction, 'verify_running_state'), \
+                 mock.patch.object(transaction, 'write_json') as write_json, \
+                 mock.patch.object(transaction, 'patch_group') as patch_group:
+                with self.assertRaises(transaction.Blocked) as caught:
+                    transaction.restore_transaction(api, root, backup, before, object(), object())
+                self.assertEqual(caught.exception.code, 'rollback_group_fingerprint_changed')
+                transaction.restore_transaction(api, root, backup, before, object(), object(),
+                                                allow_original_group=True)
+            patch_group.assert_not_called()
+            self.assertEqual(write_json.call_args_list[-1].args[1]['phase'], 'rolled_back')
+
     def test_role_rendering_preserves_existing_values_and_supports_inline_tables(self):
         layouts = (
             b'org_execution_roles = { existing = { workflow_ref = "example}", actors = [{login="owner"}] } } # }\n',

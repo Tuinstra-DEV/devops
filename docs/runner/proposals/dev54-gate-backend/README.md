@@ -1,13 +1,34 @@
 # DEV-54: exact compact Gate backend admission proposal
 
-**Current status:** the combined PHP/MySQL and runner-maintenance candidate
+**18 November trial:** [compact run 44308904984](https://github.com/Tuinstra-DEV/gate/actions/runs/44308904984)
+ran four jobs, zero skipped jobs, four rounded hosted minutes and took 6:20.
+[Existing CI 44308905088](https://github.com/Tuinstra-DEV/gate/actions/runs/44308905088)
+on the same candidate took 7:51 and seven rounded hosted minutes. Both failed
+the frontend audit; failed-run timings cannot prove a successful full run's
+savings. Sanctuary Backend passed the same PHPUnit 1,216/7,567 and MariaDB
+12/99. Backend created-to-start delay was 109 seconds, including provisioning
+and scheduling rather than isolated queue time. Hold both PRs open for review.
+
+The caller rollback is commit `1f4752919fa359560ca569ddce8a6e9a4173850b`;
+its workflow blob exactly matches the original. The automatic host rollback
+restored the six original group refs, then hit missing manager metadata in
+the journal. Recovery reads the original root-protected `before.json`, checks
+it against the journal, and allows only the exact original or pilot group
+state. It retains config/image/helper fingerprints, empty-window checks,
+existing credential access and backup permissions. Use the fixed
+`run-gate-pilot-rollback.sh` through the existing operator Terminal; never
+reactivate or create another trial to recover this one. The original trial
+payload is retained beside the separately staged recovery script.
+
+**Candidate preparation evidence:** the combined PHP/MySQL and runner-maintenance candidate
 passed isolated Gate validation, including PHPUnit 1,216/7,567 and native
 MariaDB 12/99 with zero MariaDB skips. Its standalone SHA-256 is
 `2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce`.
 The operator-owned, read-only source is under
 `/home/mtuinstra/dev54-image-candidate-20261118-guard/`;
 `image-maintenance-update-result.json` binds the exact file and proof. The old
-PHP-only candidate is superseded. No live setting or Gate caller has changed.
+PHP-only candidate is superseded. The sections below record the preparation
+state before the temporary trial; they are not current activation status.
 
 An isolated reproduction showed that the default needrestart APT hook restarts
 `ci-runner-job.service`, whose existing `ExecStopPost` powers off its guest.
@@ -21,7 +42,7 @@ The operator's earlier policy/credential preflight is green and provider
 commit `6a08dc5f3768a4ac6fc5f5da6fac69a744b07f99` is published on open PR #220.
 [Provider CI](https://github.com/Tuinstra-DEV/devops/actions/runs/44185417734)
 passed. The exact workflow pin below is published. The temporary live
-activation and Gate caller publication have not started. Earlier preparation
+activation and Gate caller publication had not started at that point. Earlier preparation
 and blocker sections below retain their original evidence and limits.
 
 ## Evidence and limits of the effective-policy check
