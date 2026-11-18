@@ -1,5 +1,5 @@
 import importlib.util
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -163,6 +163,47 @@ def baseline_job(status='queued'):
 
 
 class GatePilotTransactionTests(unittest.TestCase):
+    def test_active_old_runtime_with_pilot_group_resumes_stopped_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / 'backup'; backup.mkdir()
+            before = {'config_sha256': 'a' * 64, 'selector_target': str(transaction.SOURCE_IMAGE)}
+            state = {'phase': 'active_watching', 'backup': str(backup), 'before': before}
+            journal = root / 'journal.json'; journal.write_text(json.dumps(state))
+            cfg = root / 'manager.toml'; cfg.write_text('')
+            client = WatchGitHub()
+            fingerprints = {'manager_sha256': transaction.OLD_MANAGER_HASH,
+                            'config_sha256': before['config_sha256'],
+                            'selector_target': str(transaction.SOURCE_IMAGE),
+                            'active_image_sha256': transaction.SOURCE_IMAGE.name.removeprefix(
+                                'ubuntu-24.04-runner-').removesuffix('.qcow2'),
+                            'helper_sha256': transaction.HELPER_HASH}
+            real_lstat = Path.lstat
+            def protected_journal(path):
+                if path == journal:
+                    return SimpleNamespace(st_uid=0, st_nlink=1, st_mode=0o100600)
+                return real_lstat(path)
+            for name in ('group-before.json', 'group-after.json', 'repositories-before.json'):
+                (backup / name).write_bytes((SCRIPT.parent / name).read_bytes())
+            events = []
+            with mock.patch.object(transaction, 'JOURNAL', journal), \
+                 mock.patch.object(transaction, 'CONFIG', cfg), \
+                 mock.patch.object(transaction.os, 'geteuid', return_value=0), \
+                 mock.patch.object(Path, 'lstat', new=protected_journal), \
+                 mock.patch.object(transaction, 'load_backup_before', return_value=before), \
+                 mock.patch.object(transaction, 'service_state', return_value={'ActiveState': 'active'}), \
+                 mock.patch.object(transaction, 'load_module', return_value=object()), \
+                 mock.patch.object(transaction, 'load_operator_checker', return_value=object()), \
+                 mock.patch.object(transaction, 'existing_manager_client', return_value=('unused', client)), \
+                 mock.patch.object(transaction, 'ensure_empty'), \
+                 mock.patch.object(transaction, 'source_fingerprints', return_value=fingerprints), \
+                 mock.patch.object(transaction, 'read_group', return_value=(client.group, client.repo_api)), \
+                 mock.patch.object(transaction, 'verify_restored_files', create=True), \
+                 mock.patch.object(transaction, 'stop_manager_when_empty', side_effect=lambda *_a: events.append('stop')), \
+                 mock.patch.object(transaction, 'rollback_stopped_transaction', side_effect=lambda *_a: events.append('recover')):
+                transaction.rollback_only(root)
+            self.assertEqual(events, ['stop', 'recover'])
+
     def test_recovery_hydrates_old_journal_and_rejects_conflicting_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             backup = Path(directory)
@@ -715,7 +756,9 @@ class GatePilotTransactionTests(unittest.TestCase):
             api_repositories = {'total_count': len(repositories), 'repositories': [
                 {'full_name': name, 'id': repo_id, 'private': True}
                 for name, repo_id in repositories.items()]}
-            group = {'selected_workflows': before_refs}
+            group = {'id': 4, 'name': 'sanctuary-trusted-verification', 'visibility': 'selected',
+                     'default': False, 'inherited': False, 'allows_public_repositories': False,
+                     'restricted_to_workflows': True, 'selected_workflows': before_refs}
             events = []
 
             class Checker:
@@ -829,6 +872,167 @@ class GatePilotTransactionTests(unittest.TestCase):
         self.assertFalse(transaction.terminal_runs_ready(partial_running, discovery_expired=True))
         partial_terminal = {419883688: {'status': 'completed', 'conclusion': 'failure'}}
         self.assertTrue(transaction.terminal_runs_ready(partial_terminal, discovery_expired=True))
+
+
+class RollbackInterruptionTests(unittest.TestCase):
+    def test_restore_checks_original_config_bytes_and_both_file_modes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = root / 'manager'; manager.write_bytes(b'original manager')
+            config = root / 'config'; config.write_bytes(b'original config')
+            before = {}
+            for path, key in ((manager, 'manager'), (config, 'config')):
+                info = path.stat()
+                before.update({key + '_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                               key + '_uid': info.st_uid, key + '_gid': info.st_gid,
+                               key + '_mode': transaction.stat.S_IMODE(info.st_mode)})
+            with mock.patch.object(transaction, 'MANAGER', manager), mock.patch.object(transaction, 'CONFIG', config):
+                transaction.verify_restored_files(before)
+                for path in (manager, config):
+                    original = path.read_bytes(); original_mode = transaction.stat.S_IMODE(path.stat().st_mode)
+                    path.write_bytes(b'unexpected bytes')
+                    with self.assertRaises(transaction.Blocked): transaction.verify_restored_files(before)
+                    path.write_bytes(original); path.chmod(original_mode ^ 0o040)
+                    with self.assertRaises(transaction.Blocked): transaction.verify_restored_files(before)
+                    path.chmod(original_mode)
+
+    def exercise_interruption(self, checkpoint, stopped_recovery, drift=None):
+        """Real bytes/symlinks/journal/image moves; fake only privilege, API and systemd."""
+        import hashlib
+        class Crash(BaseException): pass
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); backup = root / 'backup'; backup.mkdir()
+            manager = root / 'manager'; config = root / 'config'; helper = root / 'helper'
+            selector = root / 'selector'; journal = root / 'journal.json'; status = root / 'status.json'
+            client = WatchGitHub()
+            old_manager = b'# original manager'; new_manager = b'# pilot manager'
+            old_cfg = ('refs = ' + json.dumps(client.group_before['selected_workflows']) + '\n').encode()
+            new_cfg = ('refs = ' + json.dumps(client.group_after['selected_workflows']) + '\n').encode()
+            manager.write_bytes(old_manager); manager.chmod(0o755)
+            config.write_bytes(old_cfg); config.chmod(0o600); helper.write_bytes(b'unchanged helper')
+            old_image_hash = hashlib.sha256(b'original image').hexdigest()
+            candidate_hash = hashlib.sha256(b'candidate image').hexdigest()
+            old_image = root / ('ubuntu-24.04-runner-' + old_image_hash + '.qcow2')
+            old_image.write_bytes(b'original image')
+            new_image = root / ('ubuntu-24.04-runner-' + candidate_hash + '.qcow2')
+            source = root / 'candidate-source.qcow2'; source.write_bytes(b'candidate image'); source.chmod(0o640)
+            source_info = source.stat(); source.rename(new_image); new_image.chmod(0o444)
+            selector.symlink_to(new_image)
+            before = {'manager_sha256': hashlib.sha256(old_manager).hexdigest(),
+                      'config_sha256': hashlib.sha256(old_cfg).hexdigest(),
+                      'selector_target': str(old_image)}
+            for path, key in ((manager, 'manager'), (config, 'config')):
+                info = path.stat(); before.update({key + '_uid': info.st_uid, key + '_gid': info.st_gid,
+                                                  key + '_mode': transaction.stat.S_IMODE(info.st_mode)})
+            (backup / 'manager.before').write_bytes(old_manager)
+            (backup / 'manager.toml.before').write_bytes(old_cfg)
+            (backup / 'before.json').write_text(json.dumps(before))
+            for name in ('group-before.json', 'group-after.json', 'repositories-before.json'):
+                (backup / name).write_bytes((SCRIPT.parent / name).read_bytes())
+            promotion = {'mode': 'same_filesystem_move', 'source': str(source),
+                         'source_uid': source_info.st_uid, 'source_gid': source_info.st_gid,
+                         'source_mode': 0o640, 'source_size': source_info.st_size,
+                         'source_atime_ns': source_info.st_atime_ns, 'source_mtime_ns': source_info.st_mtime_ns}
+            state = {'phase': 'active_watching', 'backup': str(backup), 'before': before,
+                     'candidate_promotion': promotion, 'sealed_image_preexisting': False,
+                     'config_after_sha256': hashlib.sha256(new_cfg).hexdigest()}
+            journal.write_text(json.dumps(state)); journal.chmod(0o600)
+            manager.write_bytes(new_manager); config.write_bytes(new_cfg)
+            service = {'ActiveState': 'inactive' if stopped_recovery else 'active',
+                       'ExecMainStatus': '0', 'NRestarts': '0'}
+            module = SimpleNamespace(validate_org_config=lambda cfg: None,
+                                     configured_org_workflow_refs=lambda cfg: cfg['refs'])
+            armed = {'value': True}; hits = []
+            def after(point):
+                if armed['value'] and point == checkpoint:
+                    hits.append(point); raise Crash()
+            def command(args, **_kwargs):
+                if args[:2] == ['systemctl', 'start']:
+                    service['ActiveState'] = 'active'; after('service_start')
+                elif args[:2] == ['systemctl', 'stop']:
+                    service['ActiveState'] = 'inactive'; after('service_stop')
+                return ''
+            def regular(path, digest=None):
+                self.assertFalse(path.is_symlink())
+                data = path.read_bytes()
+                if digest: self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
+                return data
+            original_lstat = Path.lstat
+            def protected_journal(path):
+                info = original_lstat(path)
+                if path == journal: return SimpleNamespace(st_uid=0, st_nlink=1, st_mode=info.st_mode)
+                return info
+            real_write = transaction.atomic_write; real_select = transaction.atomic_selector
+            real_json = transaction.write_json; real_group = transaction.patch_group
+            def write(path, *args):
+                real_write(path, *args); after('manager' if path == manager else 'config')
+            def select(path): real_select(path); after('selector')
+            def write_json(path, value, *args):
+                real_json(path, value, *args)
+                after('journal' if path == journal else 'status')
+            def group(api, refs): real_group(api, refs); after('group')
+            def rename(src, dst):
+                self.assertFalse(dst.exists()); src.rename(dst); after('image_move')
+            patches = {
+                'MANAGER': manager, 'CONFIG': config, 'HELPER': helper, 'SELECTOR': selector,
+                'SOURCE_IMAGE': old_image, 'NEW_IMAGE': new_image, 'CANDIDATE_SOURCE': source,
+                'JOURNAL': journal, 'STATUS': status,
+                'OLD_MANAGER_HASH': hashlib.sha256(old_manager).hexdigest(),
+                'NEW_MANAGER_HASH': hashlib.sha256(new_manager).hexdigest(),
+                'HELPER_HASH': hashlib.sha256(helper.read_bytes()).hexdigest(), 'CANDIDATE_HASH': candidate_hash,
+            }
+            with ExitStack() as stack:
+                for key, value in patches.items(): stack.enter_context(mock.patch.object(transaction, key, value))
+                for key, value in {
+                    'safe_command': command, 'service_state': lambda: dict(service),
+                    'secure_regular': regular, 'load_module': lambda *_a: module,
+                    'load_operator_checker': lambda *_a: object(),
+                    'existing_manager_client': lambda *_a: ('unused', client),
+                    'ensure_empty': lambda: {}, 'rename_noreplace': rename,
+                    'atomic_write': write, 'atomic_selector': select, 'write_json': write_json,
+                    'patch_group': group,
+                    'verify_sealed_candidate': lambda path: self.assertEqual(transaction.sha256_file(path), candidate_hash),
+                }.items(): stack.enter_context(mock.patch.object(transaction, key, value))
+                stack.enter_context(mock.patch.object(Path, 'lstat', new=protected_journal))
+                stack.enter_context(mock.patch.object(transaction.os, 'geteuid', return_value=0))
+                # Model root ownership syscalls; file contents, modes, hashes and atomic replacements remain real.
+                stack.enter_context(mock.patch.object(transaction.os, 'fchown'))
+                stack.enter_context(mock.patch.object(transaction.os, 'chown'))
+                with self.assertRaises(Crash):
+                    if stopped_recovery: transaction.rollback_stopped_transaction(root, state, backup, before)
+                    else: transaction.restore_transaction(client, root, backup, before, module, module)
+                self.assertEqual(hits, [checkpoint]); armed['value'] = False
+                if drift:
+                    if drift == 'group': client.group['selected_workflows'].append('unreviewed/ref@' + 'f' * 40)
+                    else: client.repo_api['repositories'][0]['id'] += 1
+                    prior_journal = journal.read_bytes()
+                    with self.assertRaises(transaction.Blocked) as caught: transaction.rollback_only(root)
+                    self.assertEqual(caught.exception.code, 'recovery_' + drift + '_fingerprint_changed')
+                    self.assertEqual(journal.read_bytes(), prior_journal)
+                    self.assertEqual(service['ActiveState'], 'active')
+                    return
+                if json.loads(journal.read_text())['phase'] != 'rolled_back': transaction.rollback_only(root)
+                transaction.verify_running_state(False, backup, module)
+            self.assertEqual(manager.read_bytes(), old_manager); self.assertEqual(config.read_bytes(), old_cfg)
+            self.assertEqual(selector.resolve(), old_image)
+            self.assertEqual(set(client.group['selected_workflows']), set(client.group_before['selected_workflows']))
+            self.assertEqual(service['ActiveState'], 'active')
+            self.assertEqual(json.loads(journal.read_text())['phase'], 'rolled_back')
+            self.assertEqual(source.read_bytes(), b'candidate image'); self.assertFalse(new_image.exists())
+
+    def test_normal_rollback_resumes_after_each_durable_boundary(self):
+        for checkpoint in ('service_stop', 'group', 'manager', 'config', 'selector',
+                           'image_move', 'service_start', 'status', 'journal'):
+            with self.subTest(checkpoint=checkpoint): self.exercise_interruption(checkpoint, False)
+
+    def test_stopped_recovery_resumes_after_each_durable_boundary(self):
+        for checkpoint in ('manager', 'config', 'selector', 'image_move', 'service_start', 'group', 'journal'):
+            with self.subTest(checkpoint=checkpoint): self.exercise_interruption(checkpoint, True)
+
+    def test_recovery_preserves_external_group_and_repository_changes(self):
+        for drift in ('group', 'repository'):
+            with self.subTest(drift=drift): self.exercise_interruption('service_start', True, drift)
 
 
 if __name__ == '__main__':

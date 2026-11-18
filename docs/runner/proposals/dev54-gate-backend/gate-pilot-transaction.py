@@ -961,6 +961,17 @@ def group_policy_matches(group: dict) -> bool:
             all(isinstance(ref, str) for ref in group['selected_workflows']))
 
 
+def verify_restored_files(before: dict) -> None:
+    """Check original bytes and metadata before declaring recovery complete."""
+    for path, prefix in ((MANAGER, 'manager'), (CONFIG, 'config')):
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
+                (before[prefix + '_uid'], before[prefix + '_gid'], before[prefix + '_mode']) or
+                sha256_file(path) != before[prefix + '_sha256']):
+            raise Blocked('rollback_restored_file_fingerprint_differs')
+
+
 def verify_running_state(new: bool, backup: Path, manager_module) -> None:
     expected_hash = NEW_MANAGER_HASH if new else OLD_MANAGER_HASH
     expected_image = NEW_IMAGE if new else SOURCE_IMAGE
@@ -980,6 +991,8 @@ def verify_running_state(new: bool, backup: Path, manager_module) -> None:
     expected = set(backed_group_refs(backup, new))
     if set(refs) != expected or len(refs) != len(expected):
         raise Blocked('live_manager_workflow_refs_differ')
+    if not new:
+        verify_restored_files(load_backup_before(backup, {}))
 
 
 def restore_transaction(client, package: Path, backup: Path, before: dict,
@@ -1445,6 +1458,28 @@ def rollback_only(package: Path) -> None:
     ensure_empty()
     if finish_already_restored_rollback(client, state, backup, before, current_manager):
         return
+    active = source_fingerprints()
+    if (active['manager_sha256'] == OLD_MANAGER_HASH and
+            active['config_sha256'] == before['config_sha256'] and
+            active['selector_target'] == str(SOURCE_IMAGE) and
+            active['active_image_sha256'] == SOURCE_IMAGE.name.removeprefix(
+                'ubuntu-24.04-runner-').removesuffix('.qcow2') and
+            active['helper_sha256'] == HELPER_HASH):
+        # Recovery may have restarted the old service to regain its existing
+        # credential context, then died before restoring the GitHub group.
+        # Accept only journal-bound old bytes and either exact known ref set.
+        verify_restored_files(before)
+        group, repositories = read_group(client, {})
+        refs = group.get('selected_workflows', [])
+        known_refs = (backed_group_refs(backup, False), backed_group_refs(backup, True))
+        if (not group_policy_matches(group) or not any(
+                len(refs) == len(expected) and set(refs) == set(expected) for expected in known_refs)):
+            raise Blocked('recovery_group_fingerprint_changed')
+        if repository_map(repositories) != json.loads((backup / 'repositories-before.json').read_text()):
+            raise Blocked('recovery_repository_fingerprint_changed')
+        stop_manager_when_empty('rollback_waiting_for_idle')
+        rollback_stopped_transaction(package, state, backup, before)
+        return
     restore_transaction(client, package, backup, before, current_manager, current_manager,
                         allow_original_group=True)
 
@@ -1479,9 +1514,9 @@ def rollback_stopped_transaction(package: Path, state: dict, backup: Path, befor
     before_refs = backed_group_refs(backup, False)
     after_refs = backed_group_refs(backup, True)
     actual_refs = group.get('selected_workflows', [])
-    if set(actual_refs) == set(after_refs):
-        patch_group(client, before_refs)
-    elif set(actual_refs) != set(before_refs):
+    if (not group_policy_matches(group) or not any(
+            len(actual_refs) == len(refs) and set(actual_refs) == set(refs)
+            for refs in (before_refs, after_refs))):
         safe_command(['systemctl', 'stop', SERVICE])
         wait_service(False)
         raise Blocked('recovery_group_fingerprint_changed')
@@ -1489,7 +1524,15 @@ def rollback_stopped_transaction(package: Path, state: dict, backup: Path, befor
         safe_command(['systemctl', 'stop', SERVICE])
         wait_service(False)
         raise Blocked('recovery_repository_fingerprint_changed')
+    if set(actual_refs) == set(after_refs):
+        patch_group(client, before_refs)
     verify_running_state(False, backup, old_module)
+    final_group, final_repositories = read_group(client, {})
+    if (not group_policy_matches(final_group) or
+            len(final_group['selected_workflows']) != len(before_refs) or
+            set(final_group['selected_workflows']) != set(before_refs) or
+            repository_map(final_repositories) != json.loads((backup / 'repositories-before.json').read_text())):
+        raise Blocked('recovery_policy_readback_differs')
     state['phase'] = 'rolled_back'
     write_json(JOURNAL, state)
     write_json(STATUS, {'phase': 'rolled_back_after_interrupted_activation',

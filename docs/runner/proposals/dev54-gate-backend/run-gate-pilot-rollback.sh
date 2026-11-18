@@ -4,8 +4,8 @@ set -euo pipefail
 operator_host=mtuinstra@sanctuary.tuinstra.dev
 operator_dir=/home/mtuinstra/dev54-gate-pilot-transaction-20261118-r2
 proposal_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-recovery_name=gate-pilot-rollback-recovery-20261118.py
-expected_payload_hash=5bfafb6e13b00fdfa1d8e8fce8f1796982cbacc02c27201bda4176acb727fcf3
+recovery_name=gate-pilot-rollback-recovery-20261118-v2.py
+expected_payload_hash=918bdbed1676eceb72ca4d6fdb629c9c86b4dfff49d7a5adf294e543d944218b
 payload_hash="$(shasum -a 256 "$proposal_dir/gate-pilot-transaction.py" | awk '{print $1}')"
 if [[ "$payload_hash" != "$expected_payload_hash" ]]; then
   printf '%s\n' '{"phase":"blocked","blocker":"recovery_source_hash_differs"}' >&2

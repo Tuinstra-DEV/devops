@@ -1,5 +1,21 @@
 # DEV-54: exact compact Gate backend admission proposal
 
+**Local follow-up after the completed rollback:** recovery now also recognizes
+the journal-bound old manager/config/image with an active old service and the
+exact pilot group still present. It drains/stops admission before resuming the
+existing stopped recovery; arbitrary group/repository drift remains blocking.
+Completion checks original manager/config bytes, ownership and modes, plus the
+image-selector/hash and exact group/repository policy. Forty transaction tests
+pass locally and under the unprivileged Sanctuary account, including sixteen
+interruption points with real temporary files, atomic replacements, image moves,
+symlinks and journals. Systemd, GitHub and root ownership operations are modeled;
+no live fault injection, selector change or new trial was performed.
+
+The v2 recovery wrapper has a separate filename and exact payload hash, preserving
+the first trial/recovery payloads. The existing transaction is already rolled
+back; do not invoke it again or start another trial. Publication is held locally
+under the owner's instruction not to start new CI runs.
+
 **18 November trial:** [compact run 44308904984](https://github.com/Tuinstra-DEV/gate/actions/runs/44308904984)
 ran four jobs, zero skipped jobs, four rounded hosted minutes and took 6:20.
 [Existing CI 44308905088](https://github.com/Tuinstra-DEV/gate/actions/runs/44308905088)
