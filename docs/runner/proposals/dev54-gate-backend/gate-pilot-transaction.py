@@ -325,6 +325,17 @@ def config_and_group_preflight(package: Path, old_module, new_module, config_byt
     return cfg, after_cfg
 
 
+def verify_candidate_readiness(package: Path, checker) -> None:
+    """Re-run the read-only candidate checks before any activation mutation."""
+    try:
+        image, evidence = checker.gate_candidate_image(package)
+        if image != CANDIDATE_SOURCE or evidence.get('sha256') != CANDIDATE_HASH:
+            raise Blocked('candidate_preflight_target_differs')
+        checker.candidate_image_php_check(image)
+    except checker.Blocked as exc:
+        raise Blocked(exc.code, exc.http_status) from None
+
+
 def verify_candidate_and_source() -> None:
     secure_regular(HELPER, HELPER_HASH)
     link_info = SELECTOR.lstat()
@@ -1014,6 +1025,7 @@ def activate(package: Path) -> tuple[dict, Path, dict, object, object, str]:
                                                                expected_config_bytes=config_bytes,
                                                                service_active=True)
     verify_candidate_and_source()
+    verify_candidate_readiness(package, credential_checker)
     # Do not pause admission or copy the image until an empty window is observed.
     backup, before = make_backup()
     source_info = CANDIDATE_SOURCE.stat()

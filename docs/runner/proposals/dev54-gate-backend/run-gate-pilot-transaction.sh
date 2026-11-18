@@ -2,6 +2,10 @@
 # Prepare the hash-pinned manager source locally, then run one fixed operator
 # transaction. The sudo prompt stays in the existing operator's Terminal.
 set -euo pipefail
+# The PHP-only candidate is superseded by the isolated needrestart fix. Keep
+# every local entrypoint closed until the combined candidate has been verified.
+printf '%s\n' '{"phase":"blocked","blocker":"candidate_runner_service_auto_restart_reproduced"}' >&2
+exit 1
 proposal_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 operator_host=mtuinstra@sanctuary.tuinstra.dev
 operator_dir=/home/mtuinstra/dev54-gate-pilot-transaction-20261117

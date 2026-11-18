@@ -162,6 +162,26 @@ def baseline_job(status='queued'):
 
 
 class GatePilotTransactionTests(unittest.TestCase):
+    def test_candidate_readiness_requires_current_vm_proof_and_readonly_php_probe(self):
+        class ProbeBlocked(Exception):
+            code, http_status = 'candidate_isolated_validation_evidence_differs', None
+
+        checker = SimpleNamespace(
+            Blocked=ProbeBlocked,
+            gate_candidate_image=mock.Mock(return_value=(transaction.CANDIDATE_SOURCE,
+                                                        {'sha256': transaction.CANDIDATE_HASH})),
+            candidate_image_php_check=mock.Mock(return_value={'pdo_mysql': True}),
+        )
+        transaction.verify_candidate_readiness(transaction.PACKAGE, checker)
+        checker.gate_candidate_image.assert_called_once_with(transaction.PACKAGE)
+        checker.candidate_image_php_check.assert_called_once_with(transaction.CANDIDATE_SOURCE)
+        checker.gate_candidate_image.side_effect = ProbeBlocked()
+        checker.candidate_image_php_check.reset_mock()
+        with self.assertRaises(transaction.Blocked) as caught:
+            transaction.verify_candidate_readiness(transaction.PACKAGE, checker)
+        self.assertEqual(caught.exception.code, ProbeBlocked.code)
+        checker.candidate_image_php_check.assert_not_called()
+
     def run_watch_scenario(self, *, publish=True, fail_source=False, assign_runner=True,
                            idle_races=(), hup=False):
         client = WatchGitHub(publish=publish, fail_source=fail_source, assign_runner=assign_runner)

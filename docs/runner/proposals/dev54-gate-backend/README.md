@@ -1,6 +1,16 @@
 # DEV-54: exact compact Gate backend admission proposal
 
-**Current status:** the operator's candidate preflight is green and provider
+**Current status:** activation is blocked pending validation of the combined
+PHP/MySQL and runner-maintenance candidate. The old PHP-only candidate must
+not be activated: an isolated reproduction showed that the default needrestart
+APT hook restarts `ci-runner-job.service`, whose existing `ExecStopPost` powers
+off its guest. A second isolated run deferred only that service restart and
+kept its PID active while other services restarted normally. This proves the
+unsafe mechanism; the historical failed guests' initiating APT events remain
+unavailable. The local activation entrypoints fail closed until the corrected
+candidate is pinned and validated. No live setting has changed.
+
+The operator's earlier PHP-only candidate preflight is green and provider
 commit `6a08dc5f3768a4ac6fc5f5da6fac69a744b07f99` is published on open PR #220.
 [Provider CI](https://github.com/Tuinstra-DEV/devops/actions/runs/44185417734)
 passed. The exact workflow pin below is published. The temporary live
