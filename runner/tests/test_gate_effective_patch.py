@@ -40,7 +40,7 @@ class EffectiveGatePatchTests(unittest.TestCase):
                 tree = ast.parse(data)
                 body = []
                 for node in tree.body:
-                    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'GATE_ROLES', 'GATE_CORE_WORKFLOW', 'GATE_BROWSER_WORKFLOW'} for t in node.targets):
+                    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'GATE_ROLES', 'GATE_CORE_WORKFLOW', 'GATE_RELEASE_WORKFLOW'} for t in node.targets):
                         continue
                     if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple) and any(isinstance(t, ast.Name) and t.id == '_role' for t in node.target.elts):
                         continue

@@ -97,12 +97,13 @@ EXECUTION_ROLES = {
     },
 }
 ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
-GATE_ROLES = {"gate-backend", "gate-release-browser"}
+GATE_ROLES = {"gate-backend", "gate-release-build", "gate-release-verify"}
 GATE_CORE_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-ci.yml"
-GATE_BROWSER_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-browser.yml"
+GATE_RELEASE_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-ci.yml"
 for _role, _profile, _workflow, _job in (
         ("gate-backend", "medium", GATE_CORE_WORKFLOW, "ci / Backend CI"),
-        ("gate-release-browser", "heavy", GATE_BROWSER_WORKFLOW, "browser / Release browser")):
+        ("gate-release-build", "heavy", GATE_RELEASE_WORKFLOW, "release / Build kandidaat"),
+        ("gate-release-verify", "heavy", GATE_RELEASE_WORKFLOW, "release / Verifieer kandidaat")):
     EXECUTION_ROLES[_role] = {
         "profile": _profile, "label": "ci-" + _role, "workflow": _workflow,
         "events": {"pull_request"}, "actors": {("marcel-tuinstra", "User")},
@@ -111,13 +112,9 @@ for _role, _profile, _workflow, _job in (
 
 
 def gate_role_references(refs, pin, release):
-    """Accept exactly the fixed core, plus the same-pin release browser only."""
-    expected = {GATE_CORE_WORKFLOW + "@" + pin}
-    if release:
-        expected.add(GATE_BROWSER_WORKFLOW + "@" + pin)
-    return isinstance(refs, list) and len(refs) == len(expected) and all(
-        isinstance(item, dict) and item.get("path") in expected and item.get("sha") == pin
-        for item in refs) and {item["path"] for item in refs} == expected
+    """One reviewed immutable entrypoint; no nested generic bundle admission."""
+    path = (GATE_RELEASE_WORKFLOW if release else GATE_CORE_WORKFLOW) + "@" + pin
+    return isinstance(refs, list) and len(refs) == 1 and isinstance(refs[0], dict) and refs[0].get("path") == path and refs[0].get("sha") == pin
 
 
 ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
@@ -1152,7 +1149,7 @@ class GitHubClient:
                 len(refs) != 1):
             return None
         if role in GATE_ROLES and not gate_role_references(
-                refs, ref.rsplit("@", 1)[1], len(refs) == 2):
+                refs, ref.rsplit("@", 1)[1], role != "gate-backend"):
             return None
         branch = run.get("head_branch")
         if not isinstance(branch, str) or not re.fullmatch(
@@ -1252,7 +1249,7 @@ class GitHubClient:
                 return None
             if role in GATE_ROLES:
                 release = base_ref == "main" and run.get("head_branch") == "develop"
-                if (base_ref != "develop" and not release) or (role == "gate-release-browser" and not release) or not gate_role_references(
+                if (role == "gate-backend" and base_ref != "develop") or (role != "gate-backend" and not release) or not gate_role_references(
                         run.get("referenced_workflows"), policy["workflow_ref"].rsplit("@", 1)[1], release):
                     return None
             base_sha = default_sha if base_ref == default else self._protected_branch_sha(repo, base_ref)

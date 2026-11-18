@@ -28,13 +28,13 @@ def plan(group, repositories, pin):
     if any('/reusable-product-ci.yml@' in ref for ref in refs):
         raise ValueError('Temporary pilot admission must be rolled back first')
     roles = {}
-    for role in ('gate-backend', 'gate-release-browser'):
+    for role in ('gate-backend', 'gate-release-build', 'gate-release-verify'):
         ref = manager.EXECUTION_ROLES[role]['workflow'] + '@' + pin
         if ref in refs:
             raise ValueError('New admission is already present; obtain a fresh baseline')
         roles[role] = {'workflow_ref': ref, 'repositories': ['Tuinstra-DEV/gate'],
                        'events': ['pull_request'], 'actors': [{'login': 'marcel-tuinstra', 'type': 'User'}]}
-    proposed = {**group, 'selected_workflows': refs + [r['workflow_ref'] for r in roles.values()]}
+    proposed = {**group, 'selected_workflows': refs + list(dict.fromkeys(r['workflow_ref'] for r in roles.values()))}
     return {'read_only_plan': True, 'manager_sha256': deployment['target_sha256'],
             'manager_before_sha256': deployment['source_sha256'],
             'manager_patch': 'docs/runner/proposals/dev54-gate-permanent/manager-effective.patch',
@@ -42,7 +42,7 @@ def plan(group, repositories, pin):
             'workflow_pin': pin, 'runner_group_before': group, 'runner_group_after': proposed,
             'repository_ids_unchanged': ids, 'merge_into_existing_org_execution_roles': roles,
             'image': json.loads((ROOT / 'runner/policy/gate-compact-image.json').read_text()),
-            'enable_after_activation': {'SANCTUARY_GATE_BACKEND_ENABLED': 'true'},
+            'enable_after_activation': {'SANCTUARY_GATE_BACKEND_ENABLED': 'true', 'SANCTUARY_GATE_RELEASE_ENABLED': 'true', 'GATE_RELEASE_CI_PRIMARY': 'false until release proof and renewed deployment-symbol enrollment'},
             'rollback': 'disable the opt-in, drain; restore original manager/config bytes+metadata, selector and complete group snapshot; verify shared dispatch'}
 
 

@@ -1,8 +1,8 @@
 {
   "schema": "dev54.gate-permanent-manager/v1",
   "source_sha256": "5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3",
-  "target_sha256": "f341b817c3dce2d230e55e7a1f4297f2765026357c8db963deda2bc9cdf9b9a7",
-  "patch_sha256": "592f12e904f973f7e92a8862574f525dd40d30b764daf971a77e2e9461eef12f",
+  "target_sha256": "82d9abb407546ebefab4a68f944232cd791415f981ab205e558ed9b0dca3a66c",
+  "patch_sha256": "0a58dd9f1eaf55a565a5d6cc4857350fcd7d8ed3819e68487bb4ef9528e474f0",
   "workflow_pin": "09ca00db3bc8d3f5624b5473f3b2c651dfdf98f5",
   "unchanged": [
     "pool/capacity",

@@ -1,162 +1,133 @@
-# DEV-54: definitieve Gate CI, ter integratiereview
+# DEV-54 — Gate-selectie en Release CI voor integratiereview
 
-De geaccepteerde vergelijking is bestaand
-[44380385946](https://github.com/Tuinstra-DEV/gate/actions/runs/44380385946)
-tegen compact [44380385541](https://github.com/Tuinstra-DEV/gate/actions/runs/44380385541):
-7 naar 4 afgeronde hosted jobminuten, 8:18 naar 5:45, vier compacte jobs,
-geen overgeslagen compacte jobs. Dit is één sample; wachttijd omvat ook VM-boot.
+De geaccepteerde vergelijking blijft bestaand
+[44380385946](https://github.com/Tuinstra-DEV/gate/actions/runs/44380385946) tegen
+compact [44380385541](https://github.com/Tuinstra-DEV/gate/actions/runs/44380385541):
+7 → 4 afgeronde hosted minuten en 8:18 → 5:45, vier jobs, nul skips op die volledige
+selectie. De nieuwe selectie/releasecode is afzonderlijk lokaal getest; echte release-
+artifact-, Sentry- en promotievalidatie vereist de integratiereview en latere activatie.
 
-## Vast contract
+## Selectie zonder opvulwerk
 
-`reusable-gate-ci.yml`: Bronselectie → parallel Frontend CI en Backend CI →
-CI-verdict. De twee matrixleden blijven bestaan bij een lege selectie: een
-expliciete groene no-op binnen de job, geen overgeslagen job. Bronselectie doet
-classificatie, vaste testselectie, Dockerlint en CI/releasecontracttests.
-Frontend doet dezelfde audit, lint/format, typecheck, Vitest, volledige build
-wanneer geselecteerd, en API-types. Backend doet dezelfde kwaliteit/PHPUnit,
-schema-export en **MariaDB als stap**. CI-verdict weigert falende, ontbrekende,
-overgeslagen of geannuleerde geselecteerde uitvoering.
+Bronselectie maakt uitsluitend geselecteerde matrixleden aan. Docs-only: Bronselectie →
+CI-verdict (2 starts); frontend-only: één frontendtaak (3); backend-only: backend én
+frontend API-typen (4); volledige PR: beide taken (4). Backend behoudt MariaDB als stap.
+Bij lege selectie kan GitHub een skipped matrixsjabloon zonder runner tonen. Dit is
+geen opvuljob en geen geselecteerde taak. CI-verdict controleert vaste sleutels, exact
+verwacht aggregaat en de echte jobs van dezelfde run/poging/bron via actions:read.
+Een geselecteerde skipped/ontbrekende/dubbele/gefaalde taak kan nooit groen opleveren.
 
-Frontend blijft hosted. Alleen Backend gebruikt de optionele `gate-backend`
-medium-rol; runnerkeuze staat binnen dezelfde jobdefinitie. Toelating vereist
-de bestaande huidige menselijke owner, private same-repo/non-fork PR,
-oorspronkelijke én triggering actor, open actuele PR, protected default/base,
-actuele branchtip en de merge met exact head/base als ouders, exacte workflowpin,
-run/job/attempt/head/execution-labels en exacte jobnaam. Geen vaste PR of branch.
-Onbetrouwbare PR's naar develop blijven hosted met dezelfde adapter/tests en
-zonder secrets. Niet-PR-events krijgen geen nieuwe runnerrechten.
+`ci / Bronselectie` en `ci / CI-verdict` worden de universele developvereisten.
+`ci / Backend CI` en `ci / Frontend CI` zijn conditioneel. De bestaande vier onafhankelijke
+security/Heal/Protect-checks inclusief publisher-App-ID's blijven verplicht. De audit
+blijft verplicht binnen geselecteerde frontendkwaliteit; geen nieuwe uitzondering.
+Schedules/dispatch forceren volledig en blijven hosted (4 starts). Gewone onvertrouwde
+PR's behouden hosted met dezelfde vaste adapter, zonder secrets of trusted toelating.
 
-Schedules en workflow_dispatch gebruiken dezelfde vier jobs en forceren alle
-suites, API/schema, volledige frontendbuild en MariaDB. Backend is daarvoor
-bewust hosted: de nieuwe admission blijft PR-only. Dit is een expliciete
-wekelijkse uitzondering op het streven zware PHP-checks naar Sanctuary te
-brengen, zonder de toelating uit te breiden naar schedules/dispatch.
-
-Release PR's zijn uitsluitend trusted `develop` → protected `main`, met alle
-kwaliteit/suites/build/API/MariaDB geforceerd. Een aparte release-caller roept
-dezelfde vier jobs aan en daarna `reusable-gate-release-browser.yml`: één
-heavy `gate-release-browser`-rol voor de bestaande visuele én authenticated
-smoke. Deze rol mag geen gewone PR aan. Beide reusable workflowrefs moeten
-dezelfde providercommit hebben; geen willekeurig extra nested workflowref.
-De browser controleert vóór artifacttoegang alle vier groene jobs uit dezelfde
-run/attempt en gebruikt uitsluitend het frontendoutput-artifact daarvan.
-Bij onbetrouwbare release-intentie faalt bronselectie; geen hosted releasebypass.
-De bestaande containerbuild/promotion, Gate release-assurance, security, Heal
-en Protect-workflows veranderen niet.
-
-De generieke `reusable-trusted-verification` wordt nergens door de nieuwe
-core, schedule- of release-route aangeroepen. De bestaande adapters worden als
-gepinde composite actions binnen de vaste jobs hergebruikt; dat voegt geen
-bundle-jobgrafiek toe. De historische pilotbestanden blijven uitsluitend als
-reproduceerbaar bewijs/rollbackbron; geen tijdelijke pilotref wordt opnieuw
-toegelaten.
-
-## Permanente image en runnergroep: alleen een voorstel
-
-`runner/policy/gate-compact-image.json` bindt de getestte zelfstandige kandidaat
-`2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce`
-aan de Packer-route, PHP 8.3.36-familiepin en de bestaande MySQL/SQLite/Docker-
-en needrestartcontracten. PHP MySQL/SQLite/CLI blijven exact
-`8.3.36-1+ubuntu24.04.1+deb.sury.org+1`; overige runtimes gelijk.
-Dit is het geteste artifact, geen claim van bit-identieke toekomstige builds.
-Een herbouw krijgt een nieuwe hash en moet het hele imagecontract en geïsoleerde
-VM-validatie opnieuw doorlopen. Gebruik geen broad Ansible redeploy op de
-bestaande custom four-poolconfig: die baseline-template dekt deze live policy niet.
-
-Na review: bewaar manager/configbytes én uid/gid/mode, helperhash, selector en
-oude/new imagehash, volledige groep/repos en service/status in een root-only
-journal met hashgeverifieerde backups. Bewijs readback **vóór enige mutatie**,
-zoals de gecorrigeerde 91c9cf3-rollback. Bewaar herstelstappen idempotent en
-hervatbaar; start geen eenmalige pilottransactie opnieuw voor permanente rollen.
-
-`scripts/plan-gate-compact-admission.py` leest twee verse `gh api`-snapshots en
-de gereviewde providercommit en rendert uitsluitend een JSON-plan:
+Lokaal reproduceerbare telling:
 
 ```bash
-gh api orgs/Tuinstra-DEV/actions/runner-groups/4 > /tmp/dev54-group.json
-gh api 'orgs/Tuinstra-DEV/actions/runner-groups/4/repositories?per_page=100' > /tmp/dev54-repositories.json
-python3 scripts/plan-gate-compact-admission.py --group /tmp/dev54-group.json --repositories /tmp/dev54-repositories.json --workflow-sha PROVIDER_40_SHA
+python3 -B scripts/measure-gate-selection.py --gate-root /pad/naar/gate
 ```
 
-Groep 4 behoudt alle zes bestaande refs en elf repository-ID's; voeg uitsluitend
-`Tuinstra-DEV/devops/.github/workflows/reusable-gate-ci.yml@PROVIDER_40_SHA`
-en `Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-browser.yml@PROVIDER_40_SHA`
-toe. Geen public repositories, geen verandering van visibility/restricties.
-Voeg aan de **bestaande** managerconfig uitsluitend twee `org_execution_roles`
-toe, met die exacte afzonderlijke refs, repositories `["Tuinstra-DEV/gate"]`,
-events `["pull_request"]`, actors `[{login="marcel-tuinstra",type="User"}]`.
-Behoud alle huidige pool/queue/credential/repository- en trusted workflowinstellingen.
-Installeer **niet** de volledige repo-manager: die bevat ook nog niet uitgerolde
-pool-/diskwijzigingen. Gebruik uitsluitend de gereviewde
-`docs/runner/proposals/dev54-gate-permanent/manager-effective.patch` tegen de
-actieve bronhash `5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3`.
-Doelhash: `f341b817c3dce2d230e55e7a1f4297f2765026357c8db963deda2bc9cdf9b9a7`.
-De manifest bindt deze patch aan workflowpin
-`09ca00db3bc8d3f5624b5473f3b2c651dfdf98f5`; alleen deze pin gebruiken.
-Een AST-contract bewijst dat alle code buiten de zes admissionfuncties en de
-twee nieuwe roldefinities/helper gelijk blijft, inclusief pools, disk, leases,
-credentiallezer en dispatch. Dezelfde zeven permanente admissiontests draaien
-ook op de effectief gepatchte manager. Bij een andere actuele bronhash: stop
-en rebase/review/test de minimale patch; nooit met fuzz of een brede kopie doorgaan.
+Dit draait de echte classifier, MariaDB-selector op een synthetische git-merge,
+Gate-bundleselector en provider-matrixcode. Resultaat staat in Gate
+`docs/ci/DEV-54-selection-measurement.json`. Geen nieuwe scenario-PR's gestart.
 
-Image: verifieer hash en `qemu-img check`; installeer exact dit artifact
-root-owned/content-addressed/0444 onder `/var/lib/ci-runner/images/`, controleer
-de hash opnieuw en wijzig pas in een leeg lease/cleanup/VM-window de selector
-naar `ubuntu-24.04-runner-2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce.qcow2`.
-De selector is gedeeld: het effect op volgende VM's van andere repos moet in
-de integratiereview staan. Er is nu geen selector of instelling gewijzigd.
+## Volledige releaseketen
 
-Zet pas na coherente manager/config/groep/image en herstart-readiness de Gate
-repositoryvariabele `SANCTUARY_GATE_BACKEND_ENABLED=true`. Tot die tijd is
-de gewone PR-route expliciet hosted; publiceren van code activeert geen runner.
-Schedules blijven hosted ook met deze variabele. De release-route vereist haar
-aparte heavy-admission naast backend-admission.
+`reusable-gate-release-ci.yml` bevat precies **Build kandidaat → Verifieer kandidaat**.
+Build gebruikt één Bake-grafiek: vier productie-OCI's, dezelfde dependency-/scan-runtime
+voor verificatie, private maps uit dezelfde frontendcompilatie, SBOM en provenance.
+Verify controleert source/run/poging/provider/callerblob/tree en artifact-ID/ZIP/OCI-
+digests vóór gebruik; vier bestaande Trivy-rapporten en vier failure-policychecks,
+preflight/contracttests/Dockerlint, volledige PHP/frontend/API/MariaDB, bestaande paired
+Gate-scans en release-check, beide bestaande browserchecks op het exacte frontendimage,
+en de onafhankelijke security/Heal-checkbewijzen. Geen rebuild tijdens Verify.
 
-## Merge- en activatievolgorde
+Vier bestaande productie-image-receipts krijgen alleen op deze nieuwe route schema v2
+met immutable provider. Legacy v1 blijft uitsluitend geldig voor de oude route. Het
+nieuwe verificatieartifact bindt de afzonderlijke rapporthashes aan de kandidaat.
+De opt-in promotie selecteert uitsluitend die nieuwe workflow/run/poging, controleert
+het verificatieartifact en dezelfde vier image-/maps-artifactdigests en behoudt
+`--preserve-digests`. Geen terugval naar een oude groene release als de nieuwe faalt.
 
-1. Review beide open PR's en hun normale CI; controleer verse heads, groep,
-   policies, image en snapshot van de twee Gate-rulesets. Geen live wijziging
-   tijdens deze review. De Gate-PR bevat voorlopig oude én nieuwe CI.
-2. Merge DevOps #220 na groene provider-CI **met een mergecommit**; deze methode
-   is beschikbaar en behoudt de gereviewde providercommit `09ca00d…` in main.
-   Gate blijft op die volledige pin; geen bewegend main/tag of nieuwe pin zonder
-   nieuwe caller-validatie. Gebruik voor deployment alleen de minimale patch.
-3. Merge Gate #444 als overlapversie onder de huidige negen vereisten, met de
-   enable-variabele nog false/ongewijzigd. Oude CI blijft volledig actief. Dit
-   brengt de nieuwe schedule op develop; schedulebewijs vóór deze merge eisen
-   zou een onuitvoerbare volgorde maken. Een nog niet toegelaten compacte release
-   faalt veilig; de oorspronkelijke releasechecks blijven intussen verplicht.
-4. In een leeg window: herstelmetadata en readback opslaan, kandidaat permanent
-   installeren, manager en uitsluitend de twee rollen/groeprefs samen activeren,
-   bestaande rechten gebruiken. Service/group/selector en gedeelde dispatch
-   controleren. Zet daarna de Gate enable-variabele; oude CI blijft lopen.
-5. Bewijs de **nieuwe pin en checknamen**: trusted gewone PR (Backend Sanctuary),
-   onbetrouwbare PR (hosted), selectieve/lege selectie (vier groene jobs), volledige
-   schedule en trusted release inclusief beide browsers. Geen handmatige runs
-   door deze implementatie; deze aanvullende bewijzen horen bij activatie na review.
-6. Voeg per ruleset de vier nieuwe Actions-checks toe, behoud eerst de oude
-   vereisten en de vier onafhankelijke vereisten. Op main ook
-   `browser / Release browser` verplicht. Bewijs groen én dezelfde dekking op
-   actuele PR-heads; daarna mogen de vijf oude CI-contexten uit de regels.
-   Geen tijdelijk onbeschermde branch, geen admin bypass.
-7. Oude automatische CI pas in de voorbereide vervolgcommit verwijderen nadat stap 6 aantoonbaar
-   voltooid is. Het Gate-runbook bevat checkmapping, bewijsverifier en de
-   afzonderlijk toepasbare retirementpatch. Deze patch is nu niet toegepast.
-8. Verifieer normale PR, schedule, release en gedeelde dispatch na de cutover.
-   WODIQ Site volgt pas daarna; andere repos/productie blijven buiten deze stap.
+De nieuwe observability-policy vereist apart `evidence/gate-release-ci.json`:
+**bestaande enrollment bewijst de oude workflow, niet deze nieuwe pipeline**.
+Dat ontbrekende integratiebewijs is niet gefingeerd of vervangen door lokale tests.
+De nieuwe promotie weigert tot hernieuwde deployment-symbols-assurance bestaat.
+Default `GATE_RELEASE_CI_PRIMARY=false` bewaart de oude productieroute.
 
-## Rollback van de definitieve overgang
+De nieuwe mainvereisten worden `release / Build kandidaat`, `release / Verifieer kandidaat`
+plus de vier onafhankelijke checks. Gate bevat de volledige checkmapping, vervangingslijst,
+retirementverifier en generator. De oude workflows blijven tijdens overlap byte-identiek:
+`ci.yml`, `lints.yml`, `tests.yml`, `release-gate.yml`, `build.yml`. Daarna samen verwijderen.
+De eerdere vijf-job-releasevoorstelroute is verwijderd, geen generiek bundlepad toegevoegd.
 
-Voor retirement: enable-variabele terug naar false; releasewijziging terugnemen
-of oude releasechecks verplicht houden. Drain bestaande leases en cleanup; houd
-de toelating van lopende jobs intact. Stop pas daarna de manager, herstel de
-oorspronkelijke config en manager incl. uid/gid/mode, oude selector/hash
-`66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4`
-en groep/repos uit het volledige journal. Start en verifieer alles, inclusief
-echte gedeelde dispatch. Iedere stap moet bij onderbreking hervatbaar zijn.
-Na retirement: eerst oude CI via normale revert herstellen en groen bewijzen,
-dan oude vereisten terugzetten; pas daarna nieuwe vereisten verwijderen en de
-runner/image herstellen. Nooit eerst verplichte checks weghalen zonder vervanging.
+Tijdens overlap: volledige gewone CI 9 + 4 = 13 starts; volledige release 9 + 7 + 2 = 18,
+beide exclusief gewoonlijk twee onafhankelijke PR-runners. Dubbel draaien PHP/frontend/API,
+oude en nieuwe vier images/scans, host/Dockerfrontendbuilds, scan-runtimes/Composer en
+paired scans/browserchecks. Na retirement: releasecontract 2 zware starts plus 2 onafhankelijke;
+post-merge blijven promotie en deploy 2 eigen jobs. Dit zijn aantallen, geen gemeten minuten.
 
-De geaccepteerde tijdelijke proef bewijst prestaties en 91c9-herstel, niet de
-nog niet geactiveerde permanente toelating of nieuwe release/schedule-checknamen.
+## Permanente runnerwijziging, nog niet geactiveerd
+
+De effectieve bron is exact
+`5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3`.
+Gebruik uitsluitend `docs/runner/proposals/dev54-gate-permanent/manager-effective.patch`
+en de hashes uit `manager-manifest.json`, **niet de volledige repo-manager**.
+Regressie past de patch zonder fuzz toe op de opgeslagen werkelijke baseline en test
+alle nieuwe toelatingspaden. AST-vergelijking houdt pool, disk admission, dispatch,
+leases, credentials en helper buiten de wijziging.
+
+Drie rollen: `gate-backend` (medium, `ci / Backend CI`), `gate-release-build` (heavy,
+`release / Build kandidaat`), `gate-release-verify` (heavy, `release / Verifieer kandidaat`).
+Twee refs in groep 4: `reusable-gate-ci.yml@PIN` en `reusable-gate-release-ci.yml@PIN`.
+Beide release-rollen delen één exact ref. Bestaande zes refs en elf repositories blijven.
+De rollen vereisen huidige owner/private/same-repo/non-fork/open PR, oorspronkelijke en
+triggering actor, protected develop of develop→main, huidige tips, exacte mergeouders,
+jobnaam, run/poging/source/execution-nonce. Buiten deze grenzen geen JIT. Runner wordt
+binnen de bestaande taakdefinitie gekozen, geen dubbele hosted/trusted job.
+
+Imagecontract: `runner/policy/gate-compact-image.json`; bestaande geïsoleerde kandidaat
+`2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce`, oude selector
+`66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4`.
+PHP83 8.3.36, MySQL/SQLite en needrestart-guard getest; andere runtimes behouden.
+De nieuwe release-Bake-/browserroute is nog geen bewezen imagecontractrun.
+
+Read-only plan:
+
+```bash
+python3 -B scripts/plan-gate-compact-admission.py --group /tmp/group4.json --repositories /tmp/group4-repos.json --workflow-sha PIN
+```
+
+## Exacte integratievolgorde
+
+1. Review beide open PR's en normale checks. Vergelijk verse group/repos/rulesets.
+2. Merge DevOps via mergecommit zodat de gepinde providercommit bereikbaar blijft;
+   Gate houdt de exacte manifestpin. Nieuwe pin vereist nieuwe caller-validatie.
+3. Merge Gate als overlap onder huidige vereisten, alle opt-ins nog false.
+4. Operator: lege runnerwindow; volledige oorspronkelijke bytes/selector/groep/repos
+   én ownership/mode/fasejournal opslaan, onder herstelidentiteit teruglezen. Geen
+   activatie als herstelmetadata niet volledig toegankelijk is. Exacte minimale patch,
+   image en drie Gate-rollen/twee refs coherent activeren; overige policies gelijk.
+   Pas daarna backend/release-opt-ins true. Dit vergt afzonderlijke integratiereview.
+5. Bewijs nieuwe pin voor docs/frontend/backend/full/trusted/hosted PR's, volledige hosted
+   schedule en tweefasige release. Vernieuw de deployment-symbols-enrollment op deze
+   definitieve bestanden/pin en de exacte artifacts. Geen extra proeven bij deze publicatie.
+6. Voeg nieuwe branchvereisten toe naast oude, bewijs groen, schakel pas met correcte
+   assurance de promotie-opt-in en bewijs digestcontinuïteit. Verwijder dan vijf vervangen
+   checkcontexten; onafhankelijke eisen, App-ID's en overige branchregels behouden.
+7. Gate-retirementverifier op verse API/artifact/proof-snapshots moet groen zijn. Normale
+   vervolg-PR verwijdert vijf oude workflows en oude schedule. Geen opaque patch in Gate.
+8. Bewijs gedeelde dispatch en definitieve PR/schedule/release/promotie; daarna WODIQ Site.
+
+## Hervatbare rollback
+
+Primary-flag false, oude promotieroute; beide runner-opt-ins false. Laat actieve leases
+uitdraaien. Herstel uit het reeds opgeslagen journal de oorspronkelijke manager/config
+bytes én metadata, image-selector en volledige groep/repositoryselectie. Controleer
+coherentie en gedeelde dispatch. Hervat fasegewijs bij onderbreking, maak geen nieuwe
+baseline over gedeeltelijk herstelde staat. Gebruik de gecorrigeerde rollback uit
+91c9cf3 en diens regressie op afgebroken herstel. Na retirement eerst oude workflows
+via normale revert en groen bewijs, daarna oude checks herstellen; nooit beide sets weg.

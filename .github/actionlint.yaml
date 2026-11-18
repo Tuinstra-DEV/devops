@@ -6,4 +6,5 @@ self-hosted-runner:
     - ci-metadata-preflight
     - ci-pr-security-producer
     - ci-gate-backend
-    - ci-gate-release-browser
+    - ci-gate-release-build
+    - ci-gate-release-verify
