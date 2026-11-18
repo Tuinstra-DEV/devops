@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -162,6 +163,68 @@ def baseline_job(status='queued'):
 
 
 class GatePilotTransactionTests(unittest.TestCase):
+    def test_role_rendering_preserves_existing_values_and_supports_inline_tables(self):
+        layouts = (
+            b'org_execution_roles = { existing = { workflow_ref = "example}", actors = [{login="owner"}] } } # }\n',
+            b'org_execution_roles = {}',
+            b'[org_execution_roles.existing]\nworkflow_ref = "example"\n',
+            b'org_execution_roles.existing.workflow_ref = "example"\r\n',
+        )
+        role = tomllib.loads(transaction.ROLE_TOML.decode())['org_execution_roles']['gate-backend-pilot']
+        for layout in layouts:
+            before = b'# synthetic configuration; no live values\nunchanged = "{example}"\n' + layout
+            with self.subTest(layout=layout):
+                expected = tomllib.loads(before.decode())
+                insertion = (b', ' if expected['org_execution_roles'] else b'') + transaction.ROLE_INLINE
+                expected['org_execution_roles']['gate-backend-pilot'] = role
+                after = transaction.render_pilot_config(before)
+                self.assertEqual(tomllib.loads(after.decode()), expected)
+                self.assertEqual(before, after.replace(insertion, b'', 1)
+                                 if not after.startswith(before) else after[:-len(transaction.ROLE_TOML)])
+
+    def test_invalid_or_already_present_role_is_categorized_without_config_text(self):
+        for before, category in (
+            (b'synthetic_secret = "unterminated', 'existing_manager_config_toml_invalid'),
+            (transaction.ROLE_TOML, 'pilot_role_already_present'),
+        ):
+            with self.subTest(category=category):
+                with self.assertRaises(transaction.Blocked) as caught:
+                    transaction.render_pilot_config(before)
+                self.assertEqual(caught.exception.code, category)
+                self.assertNotIn('synthetic_secret', str(caught.exception))
+
+    def test_inline_role_preflight_and_install_use_the_same_validated_payload(self):
+        package = Path(__file__).parent
+        client = WatchGitHub()
+        client.group['selected_workflows'] = client.group_before['selected_workflows']
+        repos = ', '.join(json.dumps(k) + ' = ' + str(v) for k, v in client.repositories.items())
+        before = ('state_dir = "/var/lib/ci-runner-manager/state"\norg_runner_group_id = 4\n'
+                  'org_repository_ids = {' + repos + '}\n'
+                  'org_execution_roles = {existing = {workflow_ref = "example"}}\n').encode()
+        old = SimpleNamespace(validate_org_config=mock.Mock(), configured_org_workflow_refs=lambda _: client.group_before['selected_workflows'])
+        new = SimpleNamespace(validate_org_config=mock.Mock(), configured_org_workflow_refs=lambda _: client.group_after['selected_workflows'])
+        before_cfg, after_cfg = transaction.config_and_group_preflight(
+            package, old, new, before, client.group, client.repo_api)
+        expected = dict(before_cfg)
+        expected['org_execution_roles'] = dict(before_cfg['org_execution_roles'])
+        expected['org_execution_roles']['gate-backend-pilot'] = tomllib.loads(transaction.ROLE_TOML.decode())['org_execution_roles']['gate-backend-pilot']
+        self.assertEqual(after_cfg, expected)
+        metadata = SimpleNamespace(st_uid=0, st_gid=0, st_mode=0o600)
+        with mock.patch.object(transaction.Path, 'stat', return_value=metadata), \
+                mock.patch.object(transaction, 'read_staged_manager', return_value=b'pass\n'), \
+                mock.patch.object(transaction, 'atomic_write') as write:
+            transaction.install_candidate_manager_and_config(before)
+        payload = write.call_args_list[-1].args[1]
+        self.assertEqual(payload, transaction.render_pilot_config(before))
+        self.assertEqual(tomllib.loads(payload.decode()), after_cfg)
+
+    def test_invalid_config_is_rejected_before_any_manager_or_config_write(self):
+        with mock.patch.object(transaction, 'atomic_write') as write:
+            with self.assertRaises(transaction.Blocked) as caught:
+                transaction.install_candidate_manager_and_config(b'invalid = "unterminated')
+        self.assertEqual(caught.exception.code, 'existing_manager_config_toml_invalid')
+        write.assert_not_called()
+
     def test_operator_readiness_requires_existing_credential_gets_vm_proof_and_php_probe(self):
         class ProbeBlocked(Exception):
             code, http_status = 'candidate_isolated_validation_evidence_differs', None

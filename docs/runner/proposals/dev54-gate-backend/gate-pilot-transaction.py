@@ -21,7 +21,7 @@ import time
 import tomllib
 from datetime import datetime, timezone
 
-PACKAGE = Path('/home/mtuinstra/dev54-gate-pilot-transaction-20261117')
+PACKAGE = Path('/home/mtuinstra/dev54-gate-pilot-transaction-20261118-r2')
 STAGED_MANAGER = PACKAGE / 'ci_runner_manager.candidate.py'
 MANAGER = Path('/usr/local/bin/ci-runner-manager')
 CONFIG = Path('/etc/ci-runner/manager.toml')
@@ -43,6 +43,8 @@ ROLE_TOML = ("\n[org_execution_roles.gate-backend-pilot]\n"
              'repositories = ["Tuinstra-DEV/gate"]\n'
              'events = ["pull_request"]\n'
              'actors = [{ login = "marcel-tuinstra", type = "User" }]\n').encode()
+ROLE_INLINE = b'gate-backend-pilot = { ' + b', '.join(
+    line for line in ROLE_TOML.splitlines() if line and not line.startswith(b'[')) + b' }'
 GROUP_PATH = '/orgs/Tuinstra-DEV/actions/runner-groups/4'
 REPO_PATH = '/repos/Tuinstra-DEV/gate'
 SERVICE = 'ci-runner-manager.service'
@@ -281,13 +283,57 @@ def ensure_empty() -> dict[str, int]:
         raise Blocked('runner_window_state_unavailable') from None
 
 
+def parse_manager_config(data: bytes, category: str = 'existing_manager_config_toml_invalid') -> dict:
+    try:
+        return tomllib.loads(data.decode())
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        raise Blocked(category) from None
+
+
+def render_pilot_config(before: bytes) -> bytes:
+    """Insert only the approved role; preserve all existing bytes and values."""
+    cfg = parse_manager_config(before)
+    roles = cfg.get('org_execution_roles', {})
+    if not isinstance(roles, dict):
+        raise Blocked('existing_manager_roles_invalid')
+    if 'gate-backend-pilot' in roles:
+        raise Blocked('pilot_role_already_present')
+    role = tomllib.loads(ROLE_TOML.decode())['org_execution_roles']['gate-backend-pilot']
+    expected = {**cfg, 'org_execution_roles': {**roles, 'gate-backend-pilot': role}}
+
+    def matches(data: bytes) -> bool:
+        try:
+            return tomllib.loads(data.decode()) == expected
+        except (UnicodeError, tomllib.TOMLDecodeError):
+            return False
+
+    appended = before + ROLE_TOML
+    if matches(appended):
+        return appended
+    # TOML inline tables cannot be extended with a later table declaration.
+    # Test bounded insertion positions with the real parser and require exactly
+    # the expected semantic delta, including every untouched credential/setting.
+    if len(before) > 262144 or before.count(b'}') > 1024:
+        raise Blocked('proposed_role_layout_unsupported')
+    insertion = (b', ' if roles else b'') + ROLE_INLINE
+    candidates = []
+    for index, byte in enumerate(before):
+        if byte == ord('}'):
+            candidate = before[:index] + insertion + before[index:]
+            if matches(candidate):
+                candidates.append(candidate)
+    if len(candidates) != 1:
+        raise Blocked('proposed_role_layout_unsupported')
+    return candidates[0]
+
+
 def config_and_group_preflight(package: Path, old_module, new_module, config_bytes: bytes,
                                group: dict, repositories: dict) -> tuple[dict, dict]:
     verify_package_inputs(package)
     before_group = json.loads((package / 'group-before.json').read_text())
     after_group = json.loads((package / 'group-after.json').read_text())
     repo_snapshot = json.loads((package / 'repositories-before.json').read_text())
-    cfg = tomllib.loads(config_bytes.decode())
+    cfg = parse_manager_config(config_bytes)
     if 'gate-backend-pilot' in cfg.get('org_execution_roles', {}):
         raise Blocked('pilot_role_already_present')
     try:
@@ -306,7 +352,7 @@ def config_and_group_preflight(package: Path, old_module, new_module, config_byt
     if cfg.get('org_repository_ids') != repo_snapshot:
         raise Blocked('manager_repository_selection_differs')
     # New module and TOML are validated before any live service/file change.
-    after_cfg = tomllib.loads((config_bytes + ROLE_TOML).decode())
+    after_cfg = parse_manager_config(render_pilot_config(config_bytes), 'proposed_manager_config_toml_invalid')
     try:
         new_module.validate_org_config(after_cfg)
         if set(new_module.configured_org_workflow_refs(after_cfg)) != set(after_group['selected_workflows']):
@@ -369,7 +415,7 @@ def verify_pre_activation_state(client, package: Path, old_module, new_module,
     config_bytes = secure_regular(CONFIG)
     if expected_config_bytes is not None and config_bytes != expected_config_bytes:
         raise Blocked('manager_config_changed_while_waiting')
-    cfg = tomllib.loads(config_bytes.decode())
+    cfg = parse_manager_config(config_bytes)
     api_url = cfg.get('github_api_url', 'https://api.github.com')
     if not isinstance(api_url, str) or api_url.rstrip('/') != 'https://api.github.com':
         raise Blocked('github_api_origin_not_allowed')
@@ -858,11 +904,12 @@ def wait_service(active: bool, timeout: int = 45) -> None:
 
 
 def install_candidate_manager_and_config(config_bytes: bytes) -> None:
+    config_after = render_pilot_config(config_bytes)
     current = MANAGER.stat(); candidate = read_staged_manager()
     compile(candidate, str(MANAGER), 'exec')
     atomic_write(MANAGER, candidate, current.st_uid, current.st_gid, stat.S_IMODE(current.st_mode))
     conf = CONFIG.stat()
-    atomic_write(CONFIG, config_bytes + ROLE_TOML, conf.st_uid, conf.st_gid, stat.S_IMODE(conf.st_mode))
+    atomic_write(CONFIG, config_after, conf.st_uid, conf.st_gid, stat.S_IMODE(conf.st_mode))
 
 
 def restore_old_files(backup: Path, before: dict) -> None:
@@ -919,7 +966,7 @@ def verify_running_state(new: bool, backup: Path, manager_module) -> None:
     expected_image_hash = CANDIDATE_HASH if new else expected_image.name.removeprefix('ubuntu-24.04-runner-').removesuffix('.qcow2')
     if sha256_file(expected_image) != expected_image_hash:
         raise Blocked('live_image_hash_differs')
-    cfg = tomllib.loads(CONFIG.read_text())
+    cfg = parse_manager_config(CONFIG.read_bytes())
     try:
         manager_module.validate_org_config(cfg)
         refs = manager_module.configured_org_workflow_refs(cfg)
@@ -1016,7 +1063,7 @@ def activate(package: Path) -> tuple[dict, Path, dict, object, object, str]:
     group_before = json.loads((package / 'group-before.json').read_text())
     group_after = json.loads((package / 'group-after.json').read_text())
     repos_snapshot = json.loads((package / 'repositories-before.json').read_text())
-    cfg = tomllib.loads(config_bytes.decode())
+    cfg = parse_manager_config(config_bytes)
     token, client = existing_manager_client(cfg, credential_checker, old_module)
     config_bytes, cfg, after_cfg = verify_pre_activation_state(client, package, old_module, new_module,
                                                                service_active=True)
@@ -1040,7 +1087,7 @@ def activate(package: Path) -> tuple[dict, Path, dict, object, object, str]:
                 'source_mtime_ns': source_info.st_mtime_ns, 'source_size': source_info.st_size},
              'sealed_image_preexisting': NEW_IMAGE.exists(),
              'activated_at': 0, 'before_run_ids': {},
-             'config_after_sha256': hashlib.sha256(config_bytes + ROLE_TOML).hexdigest(),
+             'config_after_sha256': hashlib.sha256(render_pilot_config(config_bytes)).hexdigest(),
              'group_before_refs': group_before['selected_workflows'],
              'group_after_refs': group_after['selected_workflows']}
     write_json(backup / 'transaction.json', state)
@@ -1358,7 +1405,7 @@ def rollback_only(package: Path) -> None:
         return
     current_manager = load_module(MANAGER, 'dev54_gate_rollback_manager')
     credential_checker = load_operator_checker(package)
-    token, client = existing_manager_client(tomllib.loads(CONFIG.read_text()), credential_checker,
+    token, client = existing_manager_client(parse_manager_config(CONFIG.read_bytes()), credential_checker,
                                             current_manager)
     ensure_empty()
     if finish_already_restored_rollback(client, state, backup, before, current_manager):
@@ -1389,7 +1436,7 @@ def rollback_stopped_transaction(package: Path, state: dict, backup: Path, befor
     safe_command(['systemctl', 'start', SERVICE])
     wait_service(True)
     old_module = load_module(MANAGER, 'dev54_gate_recovered_manager')
-    cfg = tomllib.loads(CONFIG.read_text())
+    cfg = parse_manager_config(CONFIG.read_bytes())
     credential_checker = load_operator_checker(package)
     token, client = existing_manager_client(cfg, credential_checker, old_module)
     group, repos = read_group(client, cfg)

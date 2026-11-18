@@ -3,6 +3,10 @@
 # transaction. The sudo prompt stays in the existing operator's Terminal.
 set -euo pipefail
 proposal_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if ! git -C "$proposal_dir" diff --quiet HEAD -- .; then
+  printf '%s\n' '{"phase":"blocked","blocker":"provider_source_uncommitted"}' >&2
+  exit 1
+fi
 provider_head="$(git -C "$proposal_dir" rev-parse HEAD)"
 provider_ready="$(gh pr view 220 --repo Tuinstra-DEV/devops \
   --json headRefOid,state,statusCheckRollup \
@@ -12,7 +16,7 @@ if [[ "$provider_ready" != true ]]; then
   exit 1
 fi
 operator_host=mtuinstra@sanctuary.tuinstra.dev
-operator_dir=/home/mtuinstra/dev54-gate-pilot-transaction-20261117
+operator_dir=/home/mtuinstra/dev54-gate-pilot-transaction-20261118-r2
 work_dir="$(mktemp -d /tmp/dev54-gate-transaction.XXXXXX)"
 
 ssh "$operator_host" 'cat /usr/local/bin/ci-runner-manager' > "$work_dir/ci_runner_manager.py"

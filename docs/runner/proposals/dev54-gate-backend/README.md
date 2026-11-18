@@ -414,7 +414,7 @@ The operator and root can read sanitized progress without sudo:
 
 ```bash
 ssh mtuinstra@sanctuary.tuinstra.dev \
-  'cat /home/mtuinstra/dev54-gate-pilot-transaction-20261117/status.json'
+  'cat /home/mtuinstra/dev54-gate-pilot-transaction-20261118-r2/status.json'
 ```
 
 If the long-running terminal loses its process before the watcher completes,
@@ -429,6 +429,19 @@ lease is active. A timeout never stops another job; it records the failure and
 keeps waiting for a safe rollback window.
 
 ## One decision
+
+The first operator attempt stopped with a TOML parse error. Read-only checks
+confirmed the original manager hash, active image selector, running service
+and six-ref group. A synthetic inline-role configuration reproduces the old
+append-only failure; the protected live TOML is not copied or printed. The
+renderer now accepts both table forms and inline roles, preserves every
+existing byte, and requires the parsed result to differ only by the approved
+role. The same rendered bytes drive preflight, installation and the expected
+fingerprint; rollback restores the original bytes. Invalid existing TOML is
+reported only as `existing_manager_config_toml_invalid`; unsupported insertion
+is `proposed_role_layout_unsupported`. The fresh `20261118-r2` stage preserves
+the blocked attempt and cannot overwrite an existing stage. The global
+transaction-journal guard still prevents a second live trial.
 
 Authorize **one conditional, isolated Backend CI canary** with exactly the
 seven-ref group and single manager role above, plus the prepared CI-only
