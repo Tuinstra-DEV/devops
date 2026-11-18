@@ -6,6 +6,9 @@ inputs:
     default: 'false'
     required: false
 outputs:
+  provider-ref:
+    description: Exact verified reusable workflow ref
+    value: ${{ steps.route.outputs.provider-ref }}
   backend-runner:
     description: JSON runs-on value for Backend CI only
     value: ${{ steps.route.outputs.backend-runner }}

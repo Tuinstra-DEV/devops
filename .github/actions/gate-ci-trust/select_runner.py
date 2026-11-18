@@ -17,12 +17,17 @@ def private(value):
     return isinstance(value, dict) and value.get('full_name') == REPO and value.get('private') is True and value.get('fork') is False
 
 
-def select(env, event, api):
+def select(env, event, api, provider=None):
     hosted = 'ubuntu-24.04'
     if env.get('SANCTUARY_GATE_BACKEND_ENABLED') != 'true':
         return hosted
     if env.get('GITHUB_REPOSITORY') != REPO or env.get('GITHUB_EVENT_NAME') != 'pull_request':
         return hosted
+    mode = env.get('GATE_CI_MODE', 'backend')
+    role = env.get('GATE_CI_ROLE', 'gate-backend')
+    if mode not in {'backend', 'release'} or role not in ({'gate-backend'} if mode == 'backend' else {'gate-release-build', 'gate-release-verify'}):
+        return hosted
+    prefix = PREFIX if mode == 'backend' else 'Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-ci.yml@'
     pr = event.get('pull_request') or {}
     head, base = pr.get('head') or {}, pr.get('base') or {}
     number, head_ref, base_ref = pr.get('number'), head.get('ref'), base.get('ref')
@@ -30,7 +35,7 @@ def select(env, event, api):
     if (type(number) is not int or number < 1 or not isinstance(head_ref, str) or
             not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,254}', head_ref) or
             '..' in head_ref or '//' in head_ref or head_ref.endswith('/') or
-            (base_ref != 'develop' and not release) or
+            (mode == 'backend' and base_ref != 'develop') or (mode == 'release' and not release) or
             env.get('GITHUB_ACTOR') != 'marcel-tuinstra' or
             env.get('GITHUB_TRIGGERING_ACTOR') != 'marcel-tuinstra' or
             not owner(event.get('sender')) or not owner(pr.get('user')) or
@@ -51,17 +56,15 @@ def select(env, event, api):
             not all(private(run.get(k)) for k in ('repository', 'head_repository'))):
         return hosted
     refs = run.get('referenced_workflows')
-    if not isinstance(refs, list) or len(refs) != (2 if release else 1) or any(not isinstance(item, dict) for item in refs):
+    if not isinstance(refs, list) or len(refs) != 1 or any(not isinstance(item, dict) for item in refs):
         return hosted
-    core = [item for item in refs if isinstance(item.get('path'), str) and item['path'].startswith(PREFIX)]
+    core = [item for item in refs if isinstance(item.get('path'), str) and item['path'].startswith(prefix)]
     if len(core) != 1:
         return hosted
     path = core[0].get('path', '')
-    if not isinstance(path, str) or not re.fullmatch(re.escape(PREFIX) + r'[a-f0-9]{40}', path) or core[0].get('sha') != path[-40:]:
+    if not isinstance(path, str) or not re.fullmatch(re.escape(prefix) + r'[a-f0-9]{40}', path) or core[0].get('sha') != path[-40:]:
         return hosted
     expected = {path}
-    if release:
-        expected.add('Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-browser.yml@' + path[-40:])
     if {item.get('path') for item in refs} != expected or any(item.get('sha') != path[-40:] for item in refs):
         return hosted
     current = api(f'/repos/{REPO}/pulls/{number}')
@@ -97,8 +100,10 @@ def select(env, event, api):
             merge.get('sha') != source or len(parents) != 2 or
             any(not isinstance(p, dict) for p in parents) or {p.get('sha') for p in parents} != {head['sha'], base['sha']}):
         return hosted
+    if provider is not None:
+        provider.append(path)
     return {'group': 'sanctuary-trusted-verification', 'labels': [
-        'self-hosted', 'ci-gate-backend', 'sanctuary-gate',
+        'self-hosted', 'ci-' + role, 'sanctuary-gate',
         f'ci-run-{run_id}-{attempt}', 'ci-pr-head-' + head['sha'], 'ci-execution-sha-' + source]}
 
 
@@ -112,9 +117,11 @@ def main():
     with open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8') as source:
         event = json.load(source)
     # An unavailable/malformed API response fails this step, never grants a role.
-    runner = select(os.environ, event, api)
+    provider = []
+    runner = select(os.environ, event, api, provider)
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write('backend-runner=' + json.dumps(runner, separators=(',', ':')) + '\n')
+        output.write('provider-ref=' + (provider[0] if provider else '') + '\n')
         output.write('trusted=' + str(isinstance(runner, dict)).lower() + '\n')
 
 

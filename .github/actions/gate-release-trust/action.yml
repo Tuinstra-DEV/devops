@@ -1,0 +1,27 @@
+name: Verify the current Gate release identity
+description: Exact current owner develop-to-main source before release artifacts or secrets
+inputs:
+  enabled:
+    default: 'false'
+    description: Operator release admission opt-in
+  role:
+    required: true
+    description: Fixed build or verify role
+outputs:
+  trusted:
+    description: Exact release identity verified
+    value: ${{ steps.route.outputs.trusted }}
+  provider-ref:
+    description: Exact immutable provider
+    value: ${{ steps.route.outputs.provider-ref }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SANCTUARY_GATE_BACKEND_ENABLED: ${{ inputs.enabled }}
+        GATE_CI_MODE: release
+        GATE_CI_ROLE: ${{ inputs.role }}
+      run: python3 "$GITHUB_ACTION_PATH/../gate-ci-trust/select_runner.py"

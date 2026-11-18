@@ -1,8 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBuildRun, validateTrackerRouting } from '../.github/actions/gate-observability/run.mjs'
+import { enrollmentKey, validateBuildRun, validateTrackerRouting } from '../.github/actions/gate-observability/run.mjs'
 import { readFileSync } from 'node:fs'
 const source = 'a'.repeat(40)
+
+test('Release CI cannot inherit old deployment-symbol enrollment or accept a partial rerun', () => {
+  assert.throws(() => enrollmentKey('Tuinstra-DEV/gate', true, () => false), /not enrolled/)
+  assert.equal(enrollmentKey('Tuinstra-DEV/gate', false), 'gate')
+  const f = fixture()
+  f.candidate.run.workflow = f.run.path = '.github/workflows/release-ci.yml'
+  const jobs = ['release / Build kandidaat', 'release / Verifieer kandidaat'].map(name => ({name,conclusion:'success',run_attempt:1,head_sha:source}))
+  assert.doesNotThrow(() => validateBuildRun(f.candidate, f.run, jobs, true))
+  assert.throws(() => validateBuildRun(f.candidate, f.run, jobs, false))
+  jobs[0].run_attempt = 2
+  assert.throws(() => validateBuildRun(f.candidate, f.run, jobs, true), /current-attempt/)
+})
 
 test('Gate release validates Tracker routing using the enrolled selector and actual snapshot', () => {
   // Arrange: use the shipped policy and retained source snapshot, not a reduced policy fixture.
