@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parse } from 'yaml'
@@ -25,9 +25,9 @@ export function validateTrackerRouting(readGateFile) {
 
 // The protected workflow provides candidate facts; GitHub independently binds
 // them to the actual build. No application code or candidate scripts run here.
-export function validateBuildRun(candidate, run, jobs = []) {
+export function validateBuildRun(candidate, run, jobs = [], releaseCI = false) {
   const expectedWorkflow = candidate.repository === 'Tuinstra-DEV/gate'
-    ? '.github/workflows/release-gate.yml' : '.github/workflows/deploy-production.yml'
+    ? (releaseCI ? '.github/workflows/release-ci.yml' : '.github/workflows/release-gate.yml') : '.github/workflows/deploy-production.yml'
   if (String(run.id) !== String(candidate.run.id) || run.run_attempt !== candidate.run.attempt ||
       run.head_sha !== candidate.source_sha || run.path !== expectedWorkflow ||
       candidate.run.workflow !== expectedWorkflow ||
@@ -37,12 +37,26 @@ export function validateBuildRun(candidate, run, jobs = []) {
     if (run.event !== 'pull_request' || run.head_branch !== 'develop' || run.status !== 'completed' || run.conclusion !== 'success') {
       throw new Error('Gate requires a successful develop release-PR build')
     }
+    if (releaseCI) {
+      for (const name of ['release / Build kandidaat', 'release / Verifieer kandidaat']) {
+        const selected = jobs.filter(job => job.name === name)
+        if (selected.length !== 1 || selected[0].conclusion !== 'success' || selected[0].run_attempt !== candidate.run.attempt || selected[0].head_sha !== candidate.source_sha) throw new Error('Release CI requires both successful current-attempt stages')
+      }
+    }
   } else {
     if (run.event !== 'push' || run.head_branch !== 'main') throw new Error('Tracker requires a protected main build')
     const builds = jobs.filter(job => job.name === 'Build, scan, and publish immutable images')
     if (builds.length !== 1 || builds[0].status !== 'completed' || builds[0].conclusion !== 'success' ||
         builds[0].head_sha !== candidate.source_sha) throw new Error('Tracker image build has not succeeded on this source')
   }
+}
+
+export function enrollmentKey(repository, releaseCI, available = path => existsSync(resolve(actionRoot, path))) {
+  if (repository === 'Tuinstra-DEV/gate' && releaseCI) {
+    if (!available('evidence/gate-release-ci.json')) throw new Error('Release CI deployment-symbol evidence is not enrolled; retain legacy promotion until reviewed renewal')
+    return 'gate-release-ci'
+  }
+  return repository.split('/')[1]
 }
 
 async function api(path, token) {
@@ -65,7 +79,8 @@ export async function main(env = process.env) {
   execFileSync('git', ['merge-base', '--is-ancestor', candidate.source_sha, env.GITHUB_SHA], { stdio: 'pipe' })
   const sourceTree = git(['rev-parse', `${candidate.source_sha}^{tree}`])
   if (sourceTree !== git(['rev-parse', `${env.GITHUB_SHA}^{tree}`])) throw new Error('Released tree differs from the built candidate')
-  const key = repository.split('/')[1]
+  const releaseCI = repository === 'Tuinstra-DEV/gate' && env.GATE_RELEASE_CI_PRIMARY === 'true'
+  const key = enrollmentKey(repository, releaseCI)
   const policy = json(resolve(actionRoot, 'policies', `${key}.json`))
   const proof = json(resolve(actionRoot, 'evidence', `${key}.json`))
   const snapshot = json(resolve(actionRoot, 'policies', 'gate-routing-inputs.json'))
@@ -88,8 +103,8 @@ export async function main(env = process.env) {
   if (!/^[1-9][0-9]*$/.test(String(candidate.run?.id ?? '')) || !Number.isSafeInteger(candidate.run?.attempt) || candidate.run.attempt < 1) throw new Error('Invalid candidate run identity')
   const runPath = `/repos/${repository}/actions/runs/${candidate.run.id}/attempts/${candidate.run.attempt}`
   const run = await api(runPath, token)
-  const jobs = repository === 'Tuinstra-DEV/tracker' ? (await api(`${runPath}/jobs?per_page=100`, token)).jobs : []
-  validateBuildRun(candidate, run, jobs)
+  const jobs = repository === 'Tuinstra-DEV/tracker' || releaseCI ? (await api(`${runPath}/jobs?per_page=100`, token)).jobs : []
+  validateBuildRun(candidate, run, jobs, releaseCI)
   const manifest = json(env.GATE_OBSERVABILITY_MANIFEST)
   const ordered = value => JSON.stringify(Object.fromEntries(Object.entries(value ?? {}).sort()))
   if (ordered(manifest.processes) !== ordered(policy.processBindings)) throw new Error('Manifest process coverage differs from trusted policy')

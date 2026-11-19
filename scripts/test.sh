@@ -72,6 +72,12 @@ ruby scripts/gate-pr-security-contract-test.rb
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py tests/test_notify_bundle_workflow.py tests/test_dev54_activation.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_product_ci_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_compact_workflow.py tests/test_gate_selected_verdict.py tests/test_gate_permanent_preflight.py tests/test_gate_permanent_transaction.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=runner/manager:runner/tests python3 -B -m unittest discover -s runner/tests -p test_gate_effective_patch.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pilot_baked_php.py
+python3 -B docs/runner/proposals/dev54-gate-backend/operator_checks_test.py
+python3 -B docs/runner/proposals/dev54-gate-backend/gate-pilot-transaction-tests.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
 
 # The assurance action parses data only; never execute dependency install hooks.

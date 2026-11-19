@@ -1,0 +1,245 @@
+name: Gate CI
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: Reviewed DevOps CI profile for the calling repository
+        required: true
+        type: string
+
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Bronselectie
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+      selected: ${{ steps.matrix.outputs.selected }}
+      backend-trusted: ${{ steps.trust.outputs.trusted }}
+    steps:
+      - name: Verify the Gate caller and event
+        id: event
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          test "$PROFILE" = gate
+          test "$REPOSITORY" = Tuinstra-DEV/gate
+          case "$GITHUB_EVENT_NAME:$BASE_REF" in
+            pull_request:develop) release=false ;;
+            schedule:|workflow_dispatch:|workflow_call:) release=false ;;
+            *) echo '::error::Unsupported Gate CI event or base.'; exit 1 ;;
+          esac
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the Gate backend trust boundary
+        id: trust
+        uses: Tuinstra-DEV/devops/.github/actions/gate-ci-trust@ac4819f414e558da0a469c5755e8ec4a32f5c66c
+        with:
+          enabled: ${{ vars.SANCTUARY_GATE_BACKEND_ENABLED || 'false' }}
+
+      - name: Check out the exact event revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changes
+        id: changes
+        uses: Tuinstra-DEV/devops/.github/actions/classify-ci-changes@9e49bc630702c523f1ff19f4a85bb67f6656c028
+        with:
+          policy-path: .github/ci/change-routing.json
+          base-sha: ${{ github.event.pull_request.base.sha || github.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          mode: ${{ vars.CI_CHANGE_ROUTING_MODE || 'selective' }}
+          force-full: ${{ github.event_name != 'pull_request' }}
+
+      - name: Select the affected test suites
+        id: suites
+        if: steps.changes.outputs.full-safe == 'false'
+        env:
+          CI_FULL_SAFE: ${{ steps.changes.outputs.full-safe }}
+        run: node scripts/ci/select-test-suites.mjs .ci/change-routing-evidence.json
+
+      - name: Select the native database test
+        id: native
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FORCE_NATIVE_MARIADB: ${{ steps.changes.outputs.full-safe != 'false' }}
+        run: bash scripts/ci/select-native-mariadb.sh
+
+      - name: Select Gate quality and API contract checks
+        id: selection
+        env:
+          RUN_PHP: ${{ steps.changes.outputs.run-php == 'true' || steps.native.outputs.selected == 'true' }}
+          RUN_FRONTEND_STATIC: ${{ steps.changes.outputs.run-frontend-static }}
+          RUN_API_CONTRACT: ${{ steps.changes.outputs.run-api-contract }}
+          BACKEND_SUITES: ${{ steps.suites.outputs.backend-suites || 'Unit,Integration,Functional' }}
+          FRONTEND_TESTS: ${{ steps.suites.outputs.frontend-tests || 'all' }}
+          FRONTEND_BUILD: ${{ steps.suites.outputs.frontend-build || 'true' }}
+          RELEASE_INTENT: ${{ steps.event.outputs.release }}
+        run: node scripts/ci/select-gate-bundle.mjs
+
+      - name: Define only the required fixed tasks
+        id: matrix
+        shell: bash
+        env:
+          SELECTION: ${{ steps.selection.outputs.selection-json }}
+          NATIVE_DATABASE: ${{ steps.native.outputs.selected }}
+          BACKEND_RUNNER: ${{ steps.trust.outputs.backend-runner }}
+          RUN_PHP: ${{ steps.changes.outputs.run-php == 'true' || steps.native.outputs.selected == 'true' }}
+          RUN_FRONTEND_STATIC: ${{ steps.changes.outputs.run-frontend-static }}
+          RUN_API_CONTRACT: ${{ steps.changes.outputs.run-api-contract }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          profiles = {
+              "gate-frontend-static": {"name": "Frontend CI", "runner": "ubuntu-24.04", "node": "24", "pnpm": "10.28.2", "php": "", "extensions": ""},
+              "gate-php": {"name": "Backend CI", "runner": json.loads(os.environ["BACKEND_RUNNER"]), "node": "", "pnpm": "", "php": "8.3", "extensions": "ctype, iconv, pdo_sqlite, sqlite3"},
+          }
+          selection = json.loads(os.environ["SELECTION"])
+          native = os.environ["NATIVE_DATABASE"]
+          if selection.get("schemaVersion") != 1 or native not in {"true", "false"}:
+              raise SystemExit("Invalid Gate CI selection")
+
+          jobs = {}
+          for item in selection["jobs"]:
+              key = item["job-key"]
+              if key not in profiles or key in jobs or type(item["plan"]) is not dict:
+                  raise SystemExit("Unknown, duplicate, or malformed Gate CI job")
+              job = {**profiles[key], "key": key, "plan": item["plan"], "native": False}
+              if key == "gate-php" and native == "true":
+                  job["native"] = True
+                  job["extensions"] += ", pdo_mysql"
+              jobs[key] = job
+          if native == "true" and "gate-php" not in jobs:
+              raise SystemExit("MariaDB was selected without a backend job")
+
+          flags = {name: os.environ[name] for name in ("RUN_PHP", "RUN_FRONTEND_STATIC", "RUN_API_CONTRACT")}
+          if any(value not in {"true", "false"} for value in flags.values()):
+              raise SystemExit("Invalid classifier routes")
+          expected = set()
+          if flags["RUN_PHP"] == "true" or flags["RUN_API_CONTRACT"] == "true":
+              expected.add("gate-php")
+          if flags["RUN_FRONTEND_STATIC"] == "true" or flags["RUN_API_CONTRACT"] == "true":
+              expected.add("gate-frontend-static")
+          if set(jobs) != expected:
+              raise SystemExit("Selected tasks disagree with classified routes")
+          matrix = {"include": list(jobs.values())}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("matrix=" + json.dumps(matrix, separators=(",", ":")), file=output)
+              print(f"count={len(jobs)}", file=output)
+              print("selected=" + json.dumps(list(jobs), separators=(",", ":")), file=output)
+          PY
+
+      - name: Save the selected fixed plans as evidence
+        env:
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
+        run: printf '%s\n' "$MATRIX" > .ci/compact-selection.json
+
+      - name: Upload change selection evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compact-ci-routing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci/change-routing-evidence.json
+            .ci/compact-selection.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify CI and release contracts
+        run: |
+          set -euo pipefail
+          node scripts/ci/preflight.mjs frontend docker
+          node --test tests/ci/preflight.test.mjs tests/ci/runner-routing.test.mjs tests/ci/select-test-suites.test.mjs tests/ci/sanctuary-ci.test.mjs tests/ci/gate-bundle.test.mjs tests/ci/compact-transition.test.mjs tests/ci/native-dockerlint.test.mjs tests/ci/security-event-filter.test.mjs tests/ci/heal-production-compose.test.mjs tests/ci/pr-security-recovery.test.mjs tests/ci/gate-protect-workflow.test.mjs tests/ci/heal-qa-bridge.test.mjs tests/ci/release-resources.test.mjs tests/ci/release-candidate.test.mjs tests/ci/release-image-promotion.test.mjs tests/ci/release-observability.test.mjs tests/ci/runtime-observability.test.mjs tests/ci/finalize-observability.test.mjs
+          scripts/test-resolve-image-digest.sh
+
+      - name: Lint affected Dockerfiles
+        if: steps.changes.outputs.run-docker == 'true'
+        env:
+          HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/hadolint" \
+            https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          printf '%s  %s\n' "$HADOLINT_SHA256" "$RUNNER_TEMP/hadolint" | sha256sum --check -
+          chmod 0700 "$RUNNER_TEMP/hadolint"
+          scripts/ci/lint-dockerfiles.sh "$RUNNER_TEMP/hadolint"
+
+  verify:
+    name: ${{ matrix.name }}
+    needs: source
+    if: needs.source.outputs.count != '0'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.source.outputs.matrix) }}
+    env:
+      CI_PLAN: ${{ toJSON(matrix.plan) }}
+      CI_SOURCE_SHA: ${{ github.sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
+    steps:
+      - name: Run the selected quality and contract checks
+        if: matrix.key != 'gate-php' || needs.source.outputs.backend-trusted != 'true'
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@4d723f3d1b1ab2421d48f6101fb2b79b82cfc32d
+        with:
+          job-key: ${{ matrix.key }}
+          source-sha: ${{ github.sha }}
+          node-version: ${{ matrix.node }}
+          pnpm-version: ${{ matrix.pnpm }}
+          php-version: ${{ matrix.php }}
+          php-extensions: ${{ matrix.extensions }}
+          php-ini-values: ${{ matrix.key == 'gate-php' && 'opcache.enable_cli=1, opcache.memory_consumption=256, opcache.interned_strings_buffer=32, opcache.validate_timestamps=1, opcache.revalidate_freq=0' || '' }}
+
+      - name: Run the admitted Gate backend on baked PHP
+        if: matrix.key == 'gate-php' && needs.source.outputs.backend-trusted == 'true'
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@ac5ef4542cc6f8505f894a3db27f59f38fd1648e
+        with:
+          job-key: gate-php
+          source-sha: ${{ github.sha }}
+          php-version: '8.3'
+          php-extensions: ${{ matrix.extensions }}
+          gate-native-mariadb: ${{ matrix.native }}
+
+      - name: Verify native MariaDB migrations
+        if: matrix.native
+        uses: Tuinstra-DEV/devops/.github/actions/gate-native-mariadb-fixture@5e359233bbbb2bd58bf9d13179a0929de2e2f404
+
+  verdict:
+    name: CI-verdict
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    needs: [source, verify]
+    if: always()
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require each selected task from this run and attempt
+        uses: Tuinstra-DEV/devops/.github/actions/gate-ci-verdict@ac4819f414e558da0a469c5755e8ec4a32f5c66c
+        with:
+          source-result: ${{ needs.source.result }}
+          verification-result: ${{ needs.verify.result }}
+          selected-json: ${{ needs.source.outputs.selected }}
+          count: ${{ needs.source.outputs.count }}

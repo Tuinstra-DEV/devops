@@ -1,0 +1,17 @@
+name: Select the compact Gate backend route
+description: Read-only admission preflight; untrusted PRs keep the hosted runner
+outputs:
+  backend-runner:
+    description: JSON runs-on value for Backend CI only
+    value: ${{ steps.route.outputs.backend-runner }}
+  trusted:
+    description: Whether exact current owner PR identity was verified
+    value: ${{ steps.route.outputs.trusted }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/select_runner.py"

@@ -115,10 +115,20 @@ sudo apt-get install --yes --no-install-recommends \
   "trivy=${TRIVY_VERSION}" \
   "php8.3-cli=${PHP83_VERSION}" "php8.3-curl=${PHP83_VERSION}" \
   "php8.3-mbstring=${PHP83_VERSION}" "php8.3-xml=${PHP83_VERSION}" "php8.3-zip=${PHP83_VERSION}" \
-  "php8.3-sqlite3=${PHP83_VERSION}" \
+  "php8.3-sqlite3=${PHP83_VERSION}" "php8.3-mysql=${PHP83_VERSION}" \
   "php8.4-cli=${PHP84_VERSION}" "php8.4-curl=${PHP84_VERSION}" \
   "php8.4-mbstring=${PHP84_VERSION}" "php8.4-xml=${PHP84_VERSION}" "php8.4-zip=${PHP84_VERSION}" \
   "php8.4-intl=${PHP84_VERSION}" "php8.4-pgsql=${PHP84_VERSION}"
+
+# The JIT runner must not be restarted by unattended library updates: its
+# normal ExecStopPost powers off the one-shot VM. Keep all other service and
+# package restart behavior at the Ubuntu needrestart defaults.
+sudo install -d -o root -g root -m 0755 /etc/needrestart/conf.d
+sudo tee /etc/needrestart/conf.d/90-ci-runner-job.conf >/dev/null <<'NEEDRESTART'
+$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;
+NEEDRESTART
+sudo chown root:root /etc/needrestart/conf.d/90-ci-runner-job.conf
+sudo chmod 0644 /etc/needrestart/conf.d/90-ci-runner-job.conf
 
 # Image provisioning runs before the unprivileged no-new-privileges service.
 # No workflow may install handlers or run a privileged binfmt container.
@@ -181,6 +191,7 @@ node=${NODE_VERSION}
 trivy=${TRIVY_VERSION}
 php83=${PHP83_VERSION}
 php83_sqlite=${PHP83_VERSION}
+php83_mysql=${PHP83_VERSION}
 php84=${PHP84_VERSION}
 composer=${COMPOSER_VERSION}
 playwright=${PLAYWRIGHT_VERSION}

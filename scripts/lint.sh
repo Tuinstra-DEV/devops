@@ -68,6 +68,9 @@ ruby -c scripts/dependency-update-fleet-test.rb
 ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-candidate-preflight.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-transaction.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-rollback.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'
@@ -104,3 +107,7 @@ python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.p
 
 
 python3 -c 'from pathlib import Path; p=Path("scripts/activate-wodiq-ci-parallel.py"); compile(p.read_text(),str(p),"exec")'
+
+# Permanent Gate operator entrypoints are parsed only, never executed by CI.
+bash -n docs/runner/proposals/dev54-gate-permanent/run-integration-preflight.sh docs/runner/proposals/dev54-gate-permanent/run-permanent-activation.sh
+python3 -B -c 'from pathlib import Path; [compile(p.read_text(), str(p), "exec") for p in Path("docs/runner/proposals/dev54-gate-permanent").glob("*.py")]'

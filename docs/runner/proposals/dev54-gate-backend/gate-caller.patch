@@ -1,0 +1,16 @@
+diff --git a/.github/workflows/ci-compact-pilot.yml b/.github/workflows/ci-compact-pilot.yml
+index ba3033b..1ce7cc8 100644
+--- a/.github/workflows/ci-compact-pilot.yml
++++ b/.github/workflows/ci-compact-pilot.yml
+@@ -17,6 +17,10 @@ concurrency:
+ jobs:
+   ci:
+     if: github.head_ref == 'chore/DEV-54-compact-ci-pilot' && github.event.pull_request.head.repo.full_name == github.repository
+-    uses: Tuinstra-DEV/devops/.github/workflows/reusable-product-ci.yml@91da5fb0faf76231f6af2a3542889f7581afbe40
++    permissions:
++      contents: read
++      actions: read
++      pull-requests: read
++    uses: Tuinstra-DEV/devops/.github/workflows/reusable-product-ci.yml@9e4a72c0b8ca586cd97af4b6e33e65a919accb43
+     with:
+       profile: gate

@@ -1,5 +1,6 @@
 """Bounded checks for the operator's immutable image repair, with no host mutations."""
 import importlib.util
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,10 +14,14 @@ SPEC.loader.exec_module(repair)
 
 
 class RunnerRepairTests(unittest.TestCase):
-    def test_guest_program_is_valid_shell_and_contract_is_current(self):
+    def test_guest_program_is_valid_shell_and_reviewed_repair_remains_immutable(self):
         result = subprocess.run(['bash', '-n'], input=repair.GUEST, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(repair.CONTRACT, (ROOT / 'infra/packer/scripts/verify-image-contract.sh').read_text())
+        # This one-purpose repair and its embedded contract are the reviewed
+        # 5 November artifact. Later Packer requirements (such as PDO MySQL)
+        # must not silently expand that historical runner-only repair.
+        self.assertEqual(hashlib.sha256((ROOT / 'scripts/repair-runner-image-2338.py').read_bytes()).hexdigest(),
+                         '8ab894681f9afcc3eb739b12411bd6d1b4f97a67f6f92cafefcd613aa3d50333')
 
     def test_active_domain_blocks_image_rotation(self):
         with patch.object(repair, 'run', return_value='sanctuary-ci-gh-123'):

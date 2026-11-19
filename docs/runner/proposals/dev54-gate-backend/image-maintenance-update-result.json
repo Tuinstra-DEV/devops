@@ -1,0 +1,163 @@
+{
+  "date_utc": "2026-11-18",
+  "status": "built_isolated_validation_passed_and_standalone_flattened",
+  "source_image": {
+    "path": "/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2",
+    "sha256_before": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+    "sha256_after": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+    "stat_unchanged": "uid=64055 gid=994 mode=0444 size=8098807808 mtime=1793868991",
+    "selector_changed": false
+  },
+  "parent_candidate": {
+    "validation_record": "image-family-update-result.json",
+    "path": "/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2",
+    "sha256_before": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
+    "sha256_after": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
+    "stat_unchanged": "uid=1000 gid=1000 mode=0644 size=8126070784 mtime=1794950741"
+  },
+  "candidate": {
+    "build_route": "Minimal immutable derivative of the approved PHP 8.3.36 candidate via the existing libguestfs route. No full Packer rebuild and no package transaction were performed for this guard update.",
+    "validated_vm_overlay_path": "/tmp/dev54-needrestart-diagnostic-20261118/5583-guard-validation-qemu-phase3-overlay.qcow2",
+    "validated_vm_overlay_sha256": "1b05583acce3f8dba1b0cae02841bf330a97c0f11d2fd1b985e568189a3a35a4",
+    "standalone_image_path": "/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2",
+    "standalone_image_sha256": "2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce",
+    "standalone_image_size_bytes": 8126070784,
+    "standalone_image_backing_file": null,
+    "standalone_image_owner_mode": "mtuinstra:mtuinstra (uid=1000 gid=1000) 0444",
+    "standalone_image_copy": "Byte-identical no-reflink/no-sparse copy from the retained libvirt-qemu-owned sibling. Copy SHA matches; qemu-img check passed. The original libvirt-owned sibling remains at /home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone.qcow2.",
+    "validated_chain_comparison": "qemu-img compare reported Images are identical",
+    "qemu_img_check": "passed for package overlay, VM overlay, and standalone image",
+    "qemu_img_check_detail": "The final operator-owned standalone and stopped phase-3 VM overlay passed qemu-img check with no errors. The VM overlay hash was unchanged after checking. Its original backing lookup is preserved by a no-clobber symlink to the retained original standalone sibling; no overlay rebasing or repair was performed.",
+    "package_transaction": {
+      "from_version": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
+      "to_version": "8.3.36-1+ubuntu24.04.1+deb.sury.org+1",
+      "upgraded": 9,
+      "installed": 1,
+      "removed": 0,
+      "changed_packages": [
+        "php8.3-cli",
+        "php8.3-common",
+        "php8.3-curl",
+        "php8.3-mbstring",
+        "php8.3-opcache",
+        "php8.3-readline",
+        "php8.3-sqlite3",
+        "php8.3-xml",
+        "php8.3-zip",
+        "php8.3-mysql"
+      ],
+      "signed_index_package_hashes_verified": "10/10",
+      "unrelated_runtime_pins_changed": false,
+      "guard_update_relative_to_php83_family_candidate": "No package versions changed; only the guard file and verifier content differ."
+    },
+    "relative_to_parent_candidate": {
+      "guest_diff": [
+        "/etc/needrestart/conf.d/90-ci-runner-job.conf added (56 bytes, root:root 0644)",
+        "/tmp/verify-image-contract.sh content updated (file metadata unchanged)"
+      ],
+      "package_inventory_changed": false,
+      "image_manifest_changed": false,
+      "other_runtime_versions_changed": false,
+      "verified_by": "virt-diff between the 5583 parent image and final standalone; output contained only the two listed paths"
+    },
+    "needrestart_guard": {
+      "path": "/etc/needrestart/conf.d/90-ci-runner-job.conf",
+      "content": "$nrconf{override_rc}{qr(^ci-runner-job\\.service$)} = 0;",
+      "mode": "root:root 0644",
+      "scope": "only ci-runner-job.service is excluded from needrestart auto restarts; Ubuntu defaults and all other unit restart behavior remain enabled",
+      "apt_hook_preserved": "/etc/apt/apt.conf.d/99needrestart still invokes needrestart/apt-pinvoke -m u",
+      "runner_unit_preserved": "RuntimeMaxSec=7200 and ExecStopPost=+/usr/bin/systemctl poweroff remain unchanged"
+    },
+    "needrestart_ab_reproduction": {
+      "needrestart_version": "3.6-7ubuntu4.5",
+      "libc6_test_transition": "2.39-0ubuntu8.7 to 2.39-0ubuntu8.12 from existing signed Ubuntu Noble sources in a disposable VM",
+      "without_guard": "Default automatic apt hook selected ci-runner-job.service for restart; the unit stopped and its unchanged ExecStopPost powered off the guest. NEEDRESTART_MODE=l listed the unit without restarting it.",
+      "with_guard": "The unit remained running with the same PID; automatic mode deferred its restart while other restart behavior remained at defaults. NEEDRESTART_MODE=l still listed it.",
+      "historical_cause_proven": false,
+      "evidence_serial_attempt4_sha256": "e0a89d788f8a00aae2f012de62111c57b3bec39b91f348555933e1beb1f18d8d",
+      "evidence_serial_attempt5_sha256": "a22eb53ca0265c7464ecb19b296f757147d13717b6ad0233dd5e59805c31e8cd"
+    },
+    "source_code_commit": "6027bf6 fix(runner): defer JIT unit restarts during updates"
+  },
+  "isolated_validation": {
+    "source_gate_commit": "188356ba01eb7796b5dc9a746eeabf34f95cf33f",
+    "selection": {
+      "backend_suites": "Unit,Integration,Functional",
+      "quality": true,
+      "api_schema": true
+    },
+    "vm": {
+      "vcpus": 2,
+      "memory_mib": 3072,
+      "registered_as_runner": false,
+      "host_mounts_or_docker_socket": false,
+      "host_port_forwarding": false,
+      "network": "direct QEMU user-mode NAT",
+      "composer_auth_present": false,
+      "started_utc": "2026-11-18T08:23:47Z",
+      "completed_utc": "2026-11-18T08:27:39Z",
+      "elapsed_seconds": 232,
+      "qemu_exit_code": 0,
+      "guest_validation_exit_code": 0
+    },
+    "pdo_mysql_and_sqlite_query_as_ci_runner": "passed",
+    "docker_daemon_and_cli_as_ci_runner": "passed; Docker 29.6.2 with overlay2 and containerd snapshotter disabled in VM overlay",
+    "docker_runtime_details": "Docker 29.6.2, overlay2, containerd snapshotter disabled in the isolated VM config",
+    "image_contract_as_ci_runner": "passed",
+    "image_contract_details": "Includes the exact needrestart guard, preserved apt hook and runner unit checks",
+    "php_for_gate_adapter": "PHP 8.3.36 via /usr/bin/php8.3",
+    "grumphp_quality": "passed; all seven configured tasks",
+    "backend_phpunit": {
+      "status": "passed",
+      "tests": 1216,
+      "assertions": 7567,
+      "warnings": 1,
+      "skipped": 14,
+      "incomplete": 1,
+      "runtime_php": "8.3.36"
+    },
+    "api_schema": "passed",
+    "pinned_mariadb_fixture": {
+      "image_digest": "sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9",
+      "status": "passed",
+      "tests": 12,
+      "assertions": 99,
+      "skipped": 0
+    },
+    "vm_exit_code": 0,
+    "serial_log_sha256_uncommitted": "d675b524e4636f1324d55c61b5c031f0ff7364cc3f9f09f708228e4a05e652f9",
+    "seed_iso_sha256_uncommitted": "25d91306162c151e6824b32eef623e4acbc0e8facd7d2a309e19b1640ba30acd"
+  },
+  "diagnostic_attempts": [
+    {
+      "attempt": "libvirt DHCP with QEMU-usernet DNS override",
+      "result": "failed before harness validation",
+      "reason": "The libvirt guest was on 192.0.2.0/24 but the seed forced resolver 10.0.2.3; the first DNS lookup failed."
+    },
+    {
+      "attempt": "libvirt DHCP using cloud-localds-only seed",
+      "result": "harness did not start; disposable VM was then shut down gracefully",
+      "reason": "cloud-localds included NoCloud metadata but omitted the mounted Gate validation scripts and bundle."
+    },
+    {
+      "attempt": "direct QEMU, first phase-marked full seed",
+      "result": "harness failed at the PHP adapter precheck",
+      "reason": "An instrumentation edit split the runuser environment assignments, so the adapter used the system PHP 8.4. This was corrected in the next seed; candidate image was not changed."
+    },
+    {
+      "attempt": "direct QEMU, corrected adapter context",
+      "result": "backend passed; MariaDB fixture could not be read",
+      "reason": "The ISO was generated without rationalized Rock Ridge modes, leaving payload files unreadable to ci-runner. The final seed used -r and verified all eight payload files as 0444."
+    }
+  ],
+  "rollback": {
+    "active_image_or_selector_changes": "none",
+    "runner_group_manager_or_gate_caller_changed": false,
+    "rollback_action_now": "none required; the original 66 image remained active",
+    "later_activation_rollback": "Restore the original selector path/hash through the approved drained-runner transaction."
+  },
+  "evidence": {
+    "filtered_validation_summary": "image-maintenance-update-summary.md",
+    "raw_logs_and_vm_overlays": "retained locally on sanctuary under /tmp/dev54-needrestart-diagnostic-20261118; not committed"
+  }
+}

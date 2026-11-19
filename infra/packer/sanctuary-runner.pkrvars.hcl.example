@@ -19,7 +19,7 @@ trivy_key_sha256 = "REPLACE_64_HEX"
 trivy_version     = "REPLACE_EXACT_APT_VERSION"
 
 php_key_sha256 = "REPLACE_64_HEX"
-php83_version   = "REPLACE_EXACT_APT_VERSION"
+php83_version   = "8.3.36-1+ubuntu24.04.1+deb.sury.org+1"
 php84_version   = "REPLACE_EXACT_APT_VERSION"
 
 composer_version = "REPLACE_EXACT_VERSION"

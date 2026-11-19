@@ -1,0 +1,15 @@
+{
+  "schema": "dev54.gate-compact-image/v1",
+  "repository": "Tuinstra-DEV/gate",
+  "candidate_sha256": "2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce",
+  "rollback_sha256": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+  "candidate_path": "/home/mtuinstra/dev54-image-candidate-20261118-guard/candidate-php83-8.3.36-guard-standalone-operator-owned.qcow2",
+  "selector": "/var/lib/ci-runner/images/ubuntu-24.04-runner.qcow2",
+  "php83_package_version": "8.3.36-1+ubuntu24.04.1+deb.sury.org+1",
+  "contract": "infra/packer/scripts/verify-image-contract.sh",
+  "build": "infra/packer/sanctuary-runner.pkr.hcl",
+  "isolated_validation": ["ci-runner PDO MySQL", "ci-runner SQLite query", "guest Docker overlay2", "PHPUnit 1216/7567", "MariaDB 12/99"],
+  "accepted_pair": [44380385946, 44380385541],
+  "activation": "review-required; shared selector affects all subsequent runner VMs",
+  "other_runtimes": "preserve existing Node, pnpm, PHP 8.4, runner and Docker versions; image must also retain the tested needrestart guard"
+}
