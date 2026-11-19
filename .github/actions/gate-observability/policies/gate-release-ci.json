@@ -133,7 +133,18 @@
           ".github/workflows/release-ci.yml",
           "scripts/ci/release-candidate.mjs",
           "scripts/ci/release-artifacts.mjs",
-          "backend/docker/release-ci/Dockerfile"
+          "backend/docker/release-ci/Dockerfile",
+          "scripts/ci/release-image-artifact.mjs",
+          "scripts/ci/prepare-oci-scan-layout.mjs",
+          "scripts/ci/extract-release-artifact.py",
+          "scripts/ci/release-observability.mjs",
+          "scripts/ci/release-promotion-dry-run.mjs",
+          "scripts/ci/measure-release-resources.py",
+          "scripts/ci/promote-release-images.mjs",
+          ".github/actions/gate-release-check/action.yml",
+          "frontend/scripts/visual-preview.mjs",
+          "frontend/scripts/visual-smoke.mjs",
+          "frontend/scripts/visual-authenticated.mjs"
         ],
         "workflows": []
       }
