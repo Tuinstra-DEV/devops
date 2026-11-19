@@ -353,16 +353,18 @@ jobs:
       run: node scripts/ci/release-candidate.mjs mariadb
     - name: Scan exact base and head with built candidate runtime
       run: node scripts/ci/release-candidate.mjs paired-scans
+    - name: Bind release decision to the scan runtime identity
+      id: decision
+      env:
+        REVIEWED_SOURCE_RISK_SHA256: ${{ vars.GATE_REVIEWED_SOURCE_RISK_SHA256 }}
+      run: node scripts/ci/release-candidate.mjs prepare-decision
     - name: Evaluate existing Gate release decision
       uses: ./.github/actions/gate-release-check
       with:
         repository: ${{ github.repository }}
         base-ref: main
         head-ref: ${{ github.event.pull_request.head.sha }}
-        command: ${{ format('docker run --rm --user 1000:1000 --entrypoint php -e APP_ENV=test -e DATABASE_URL=sqlite:////release-db/gate.sqlite --volume {0}/release-db:/release-db --volume
-          {1}/gate-release-check:/var/www/app/gate-release-check --volume {1}:/reviewed-head:ro gate-release-runtime:{2}-{3} bin/console app:gate:release-check --reviewed-source-risk-manifest=/reviewed-head/.gate/reviewed-source-risk.json
-          --reviewed-source-risk-manifest-sha256={4} --reviewed-source-risk-source-root=/reviewed-head --reviewed-source-risk-head-sha={5}', runner.temp, github.workspace, github.run_id,
-          github.run_attempt, vars.GATE_REVIEWED_SOURCE_RISK_SHA256, github.event.pull_request.head.sha) }}
+        command: ${{ steps.decision.outputs.command }}
     - name: Run browser gates against compiled production candidate
       run: node scripts/ci/release-candidate.mjs browser
     - name: Bind required independent security and Heal checks

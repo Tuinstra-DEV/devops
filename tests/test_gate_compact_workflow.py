@@ -50,8 +50,7 @@ class GateCompactTests(unittest.TestCase):
         self.assertNotIn('reusable-trusted-verification', SOURCE)
 
     def test_release_builds_once_then_verifies_without_rebuild(self):
-        import yaml
-        wf = yaml.safe_load((ROOT / '.github/workflows/reusable-gate-release-ci.yml').read_text())
+        wf = json.loads(subprocess.check_output(['ruby', '-ryaml', '-rjson', '-e', 'puts JSON.generate(YAML.safe_load(File.read(ARGV[0]), aliases: true))', str(ROOT / '.github/workflows/reusable-gate-release-ci.yml')], text=True))
         self.assertEqual(list(wf['jobs']), ['build', 'verify'])
         self.assertEqual(wf['jobs']['build']['name'], 'Build kandidaat')
         self.assertEqual(wf['jobs']['verify']['name'], 'Verifieer kandidaat')
@@ -61,6 +60,8 @@ class GateCompactTests(unittest.TestCase):
         self.assertFalse(any('buildx' in s.get('uses', '') or 'mjs build' in s.get('run', '') for s in verify))
         self.assertEqual(sum('trivy-action@' in s.get('uses', '') for s in verify), 8)
         self.assertLess(next(i for i,s in enumerate(verify) if s.get('id') == 'trust'), next(i for i,s in enumerate(verify) if s.get('id') == 'receive'))
+        self.assertTrue(any('prepare-decision' in s.get('run', '') for s in verify))
+        self.assertNotIn('--user 1000:1000', str(verify))
         self.assertTrue(any('gate-native-mariadb-fixture@' in s.get('uses', '') for s in verify))
         for phase in ['quality', 'paired-scans', 'browser', 'independent', 'finalize']:
             self.assertTrue(any('release-candidate.mjs '+phase in s.get('run', '') for s in verify))
