@@ -70,7 +70,7 @@ oude en nieuwe vier images/scans, host/Dockerfrontendbuilds, scan-runtimes/Compo
 paired scans/browserchecks. Na retirement: releasecontract 2 zware starts plus 2 onafhankelijke;
 post-merge blijven promotie en deploy 2 eigen jobs. Dit zijn aantallen, geen gemeten minuten.
 
-Exacte workflowpin: `a02ff9f9a89a243b53861c51b6ba83036487ea52`. Trust/verdict/observability-actions zijn gepind op
+Exacte workflowpin: `a083c789196ee8cd89b4ab3253c458d8d1de6dd6`. Trust/verdict/observability-actions zijn gepind op
 `ac4819f414e558da0a469c5755e8ec4a32f5c66c`.
 
 ## Permanente runnerwijziging, nog niet geactiveerd
