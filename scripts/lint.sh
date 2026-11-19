@@ -107,3 +107,7 @@ python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.p
 
 
 python3 -c 'from pathlib import Path; p=Path("scripts/activate-wodiq-ci-parallel.py"); compile(p.read_text(),str(p),"exec")'
+
+# Permanent Gate operator entrypoints are parsed only, never executed by CI.
+bash -n docs/runner/proposals/dev54-gate-permanent/run-integration-preflight.sh docs/runner/proposals/dev54-gate-permanent/run-permanent-activation.sh
+python3 -B -c 'from pathlib import Path; [compile(p.read_text(), str(p), "exec") for p in Path("docs/runner/proposals/dev54-gate-permanent").glob("*.py")]'

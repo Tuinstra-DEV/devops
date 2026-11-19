@@ -58,6 +58,8 @@ class GateCompactTests(unittest.TestCase):
         build = wf['jobs']['build']['steps']; verify = wf['jobs']['verify']['steps']
         self.assertEqual(sum('release-candidate.mjs build' in s.get('run', '') for s in build), 1)
         self.assertFalse(any('buildx' in s.get('uses', '') or 'mjs build' in s.get('run', '') for s in verify))
+        self.assertTrue(any('measure-release-resources.py' in step.get('run', '') for step in build))
+        self.assertTrue(any('release-promotion-dry-run.mjs' in step.get('run', '') for step in verify))
         self.assertEqual(sum('trivy-action@' in s.get('uses', '') for s in verify), 8)
         self.assertLess(next(i for i,s in enumerate(verify) if s.get('id') == 'trust'), next(i for i,s in enumerate(verify) if s.get('id') == 'receive'))
         self.assertTrue(any('prepare-decision' in s.get('run', '') for s in verify))

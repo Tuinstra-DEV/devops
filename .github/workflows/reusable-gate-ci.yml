@@ -168,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/ci/preflight.mjs frontend docker
-          node --test tests/ci/preflight.test.mjs tests/ci/runner-routing.test.mjs tests/ci/select-test-suites.test.mjs tests/ci/sanctuary-ci.test.mjs tests/ci/gate-bundle.test.mjs tests/ci/compact-transition.test.mjs tests/ci/native-dockerlint.test.mjs tests/ci/security-event-filter.test.mjs tests/ci/heal-production-compose.test.mjs tests/ci/pr-security-recovery.test.mjs tests/ci/gate-protect-workflow.test.mjs tests/ci/heal-qa-bridge.test.mjs tests/ci/release-candidate.test.mjs tests/ci/release-image-promotion.test.mjs tests/ci/release-observability.test.mjs tests/ci/runtime-observability.test.mjs tests/ci/finalize-observability.test.mjs
+          node --test tests/ci/preflight.test.mjs tests/ci/runner-routing.test.mjs tests/ci/select-test-suites.test.mjs tests/ci/sanctuary-ci.test.mjs tests/ci/gate-bundle.test.mjs tests/ci/compact-transition.test.mjs tests/ci/native-dockerlint.test.mjs tests/ci/security-event-filter.test.mjs tests/ci/heal-production-compose.test.mjs tests/ci/pr-security-recovery.test.mjs tests/ci/gate-protect-workflow.test.mjs tests/ci/heal-qa-bridge.test.mjs tests/ci/release-resources.test.mjs tests/ci/release-candidate.test.mjs tests/ci/release-image-promotion.test.mjs tests/ci/release-observability.test.mjs tests/ci/runtime-observability.test.mjs tests/ci/finalize-observability.test.mjs
           scripts/test-resolve-image-digest.sh
 
       - name: Lint affected Dockerfiles

@@ -68,7 +68,10 @@ jobs:
     - name: Build all candidate artifacts once
       env:
         SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-      run: node scripts/ci/release-candidate.mjs build
+      run: >-
+        python3 scripts/ci/measure-release-resources.py
+        --output "${{ runner.temp }}/gate-candidate/build-resources.json"
+        -- node scripts/ci/release-candidate.mjs build
     - name: Preserve php candidate
       id: php
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -125,6 +128,7 @@ jobs:
         path: |-
           ${{ runner.temp }}/gate-candidate/scan-runtime.oci.tar
           ${{ runner.temp }}/gate-candidate/candidate.json
+          ${{ runner.temp }}/gate-candidate/build-resources.json
         include-hidden-files: true
         if-no-files-found: error
         compression-level: 0
@@ -153,6 +157,14 @@ jobs:
         name: gate-release-transfer-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/gate-candidate/transfer.json
         if-no-files-found: error
+        retention-days: 7
+    - name: Preserve failed build resource measurement
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-build-resources-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gate-candidate/build-resources.json
+        if-no-files-found: warn
         retention-days: 7
     outputs:
       transfer-id: ${{ steps.transfer.outputs.artifact-id }}
@@ -371,6 +383,16 @@ jobs:
       run: node scripts/ci/release-candidate.mjs independent
     - name: Verify complete candidate and release evidence
       run: node scripts/ci/release-candidate.mjs finalize
+    - name: Prepare immutable symbol collector for read-only promotion review
+      id: observability
+      uses: Tuinstra-DEV/devops/.github/actions/gate-observability@4d18caee9c2027c410a9e325381cac3b5e955ade
+      with:
+        prepare-only: 'true'
+    - name: Verify promotion as an explicit dry-run
+      env:
+        RELEASE_PROMOTION_DRY_RUN: 'true'
+        GATE_OBSERVABILITY_COLLECTOR_SCRIPT: ${{ steps.observability.outputs.collector-script }}
+      run: node scripts/ci/release-promotion-dry-run.mjs
     - name: Preserve successful verification and report digests
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
