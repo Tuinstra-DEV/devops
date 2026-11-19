@@ -115,6 +115,8 @@ def activate(base,manifest,package):
     image,evidence=checker.gate_candidate_image(package);checker.candidate_image_php_check(image)
     if evidence['sha256']!=base.CANDIDATE_HASH:raise base.Blocked('candidate_evidence_changed')
     base.wait_until_empty(base.MAX_WAIT_SECONDS,'waiting_for_empty_permanent_window')
+    # Never snapshot selector/helper drift as an approved recovery baseline.
+    base.verify_candidate_and_source()
     if base.secure_regular(base.CONFIG)!=original:
         raise base.Blocked('prechange_baseline_drift')
     backup,before=base.make_backup();info=base.CANDIDATE_SOURCE.stat()
@@ -130,6 +132,7 @@ def activate(base,manifest,package):
             base.wait_until_empty(base.MAX_WAIT_SECONDS,'waiting_for_empty_permanent_window')
             if base.secure_regular(base.CONFIG)!=original or base.sha256_file(base.MANAGER)!=base.OLD_MANAGER_HASH:raise base.Blocked('prechange_baseline_drift')
             check_merged(client,request,manifest['workflow_pin']);validate_policy(base,client,plan,cfg)
+            base.verify_candidate_and_source()
             base.safe_command(['systemctl','stop',base.SERVICE]);base.wait_service(False)
             try:base.ensure_empty()
             except base.Blocked as error:
@@ -138,6 +141,8 @@ def activate(base,manifest,package):
                 continue
             if base.secure_regular(base.CONFIG)!=original or base.sha256_file(base.MANAGER)!=base.OLD_MANAGER_HASH:raise base.Blocked('prechange_baseline_drift')
             validate_policy(base,client,plan,cfg)
+            # The service-down readback closes the admission/waiting race before writes.
+            base.verify_candidate_and_source()
             break
         # Backup readback was completed before the first mutation. Journal-bound
         # recovery accepts each old/new partial state, including service-down.

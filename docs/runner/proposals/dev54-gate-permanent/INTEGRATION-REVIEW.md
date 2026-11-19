@@ -75,6 +75,15 @@ configbytes én metadata, selector, oorspronkelijke groep/repos en kandidaatloca
 ook na een afgebroken herstel of reeds herstelde deelstaat. Externe wijzigingen
 worden niet overschreven. De oorspronkelijke caller is nog als hosted overlap bruikbaar.
 
+## Hercontrole na wachten
+
+Controleer selector, bron- en kandidaat-image en helper opnieuw na het wachten,
+vóór de backup en vóór iedere service-stop. Herhaal dit met de service gestopt,
+vóór de eerste inhoudelijke mutatie. Drift mag geen nieuwe herstelbaseline worden.
+De regressietest reproduceert dit en controleert de volgorde bij een nieuwe job
+tijdens service-stop. Een oude wachtende activatie eerst afbreken; hervat alleen
+met de gepubliceerde groene correctie en de geverifieerde oorspronkelijke invoer.
+
 ## Live bewijs en resterende productiegrens
 
 Hergebruik geldig bewijs op dezelfde pin/source/attempt. Verzamel echte docs/frontend/
