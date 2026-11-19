@@ -52,6 +52,36 @@ class PermanentRollbackInterruptionTests(prior.RollbackInterruptionTests):
         location=mock.patch.object(prior,'__file__',str(root/'placeholder-tests.py'));location.start();self.addCleanup(location.stop)
 
 class PermanentActivationOrderingTests(unittest.TestCase):
+    def test_image_or_helper_drift_after_wait_is_rejected_before_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);pin='a'*40
+            refs=['old@'+str(i)*40 for i in range(6)]
+            after=refs+[f'Tuinstra-DEV/devops/.github/workflows/{w}@{pin}' for w in dict.fromkeys(permanent.ROLES.values())]
+            (root/'plan.json').write_text(json.dumps({'runner_group_before':{'selected_workflows':refs},'runner_group_after':{'selected_workflows':after}}))
+            (root/'request.json').write_text('{}')
+            class Blocked(Exception):
+                def __init__(self,code):self.code=code
+            base=mock.Mock();base.Blocked=Blocked;base.JOURNAL=root/'absent-journal'
+            base.MANAGER=root/'manager';base.CONFIG=root/'config';base.STAGED_MANAGER=root/'candidate'
+            base.OLD_MANAGER_HASH='old';base.sha256_file.return_value='old'
+            base.secure_regular.return_value=b'org_execution_roles = {}\n'
+            base.parse_manager_config.side_effect=lambda raw:tomllib.loads(raw.decode())
+            old=mock.Mock();old.configured_org_workflow_refs.return_value=refs
+            new=mock.Mock();new.configured_org_workflow_refs.return_value=after
+            base.load_module.side_effect=[old,new]
+            base.existing_manager_client.return_value=('SECRET_SENTINEL',mock.Mock())
+            base.CANDIDATE_HASH='image';checker=mock.Mock()
+            checker.gate_candidate_image.return_value=(root/'image',{'sha256':'image'})
+            base.load_operator_checker.return_value=checker
+            # The first check succeeds; the empty-window wait permits external drift.
+            base.verify_candidate_and_source.side_effect=[None,Blocked('baseline_drift')]
+            base.make_backup.side_effect=AssertionError('drift must not become the recovery baseline')
+            with mock.patch.object(permanent,'check_merged'),mock.patch.object(permanent,'validate_policy'):
+                with self.assertRaises(Blocked) as error:
+                    permanent.activate(base,{'workflow_pin':pin},root)
+            self.assertEqual(error.exception.code,'baseline_drift')
+            base.make_backup.assert_not_called();base.safe_command.assert_not_called()
+
     def test_backup_readback_precedes_stop_and_empty_window_race_restarts_original_service(self):
         from types import SimpleNamespace
         import hashlib
@@ -74,6 +104,7 @@ class PermanentActivationOrderingTests(unittest.TestCase):
             class Blocked(Exception):
                 def __init__(self,code):self.code=code
             base=mock.Mock();base.Blocked=Blocked;base.JOURNAL=root/'active.json';base.STATUS=package/'status.json';base.CONFIG=config;base.MANAGER=manager
+            base.verify_candidate_and_source.side_effect=lambda:events.append('baseline_running' if service['active'] else 'baseline_stopped')
             base.CANDIDATE_SOURCE=candidate;base.NEW_IMAGE=root/'sealed';base.NEW_IMAGE.write_bytes(b'image');base.CANDIDATE_HASH='b'*64
             base.OLD_MANAGER_HASH=hashlib.sha256(manager.read_bytes()).hexdigest();base.NEW_MANAGER_HASH=hashlib.sha256(b'new manager').hexdigest();base.SERVICE='ci-runner-manager.service';base.MAX_WAIT_SECONDS=1
             base.sha256_file.side_effect=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -109,7 +140,10 @@ class PermanentActivationOrderingTests(unittest.TestCase):
             with mock.patch.object(permanent,'check_merged'),mock.patch.object(permanent,'validate_policy'):
                 result=permanent.activate(base,{'workflow_pin':pin,'target_sha256':base.NEW_MANAGER_HASH},package)
             self.assertEqual(result['phase'],'active');self.assertEqual(result['group_refs'],8)
-            self.assertEqual(events[:5],['readback','stop','start','stop','group_patch'])
+            self.assertEqual(events[:3],['baseline_running','baseline_running','readback'])
+            self.assertEqual([e for e in events if not e.startswith('baseline_')][:5],['readback','stop','start','stop','group_patch'])
+            self.assertGreaterEqual(base.verify_candidate_and_source.call_count,5)
+            self.assertLess(events.index('baseline_stopped'),events.index('group_patch'))
             self.assertEqual(manager.read_bytes(),b'new manager')
             self.assertEqual(set(permanent.tomllib.loads(config.read_text())['org_execution_roles']),set(permanent.ROLES))
             self.assertEqual(stat.S_IMODE(config.stat().st_mode),0o600)
