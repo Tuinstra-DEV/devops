@@ -63,3 +63,18 @@ test('retains only the HTTP status when the actual ingest rejects the event', as
   const { forward } = setup(async () => ({ status: 403 }))
   assert.deepEqual(await forward(envelope(makeEvent('nitro'))), { component: 'nitro', event_id: 'c'.repeat(32), confirmed: false, http_status: 403 })
 })
+
+
+test('supports the actual browser SDK privacy metadata but rejects IP inference', async()=>{
+  const {forward}=setup(async(url,init)=>({status:200,json:async()=>({id:JSON.parse(init.body.split('\n')[2]).event_id})}))
+  const e=makeEvent('browser');e.sdk={name:'sentry.javascript.nuxt',version:'10.32.1',settings:{infer_ip:'never'}}
+  assert.equal((await forward(envelope(e))).confirmed,true)
+  const bad=makeEvent('nitro');bad.sdk={name:'sentry.javascript.nuxt',version:'10.32.1',settings:{infer_ip:'auto'}}
+  await assert.rejects(forward(envelope(bad)),/payload_rejected/)
+})
+test('local SDK client reports are acknowledged without reservation or network',async()=>{
+  let sent=0;const {state,forward}=setup(async()=>{sent++;throw Error('must not send')})
+  const report=Buffer.from('{}\n{"type":"client_report"}\n{"timestamp":1,"discarded_events":[]}')
+  assert.deepEqual(await forward(report),{ignored:true,category:'client_report_not_forwarded'})
+  assert.equal(sent,0)
+})

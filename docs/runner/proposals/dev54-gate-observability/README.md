@@ -48,6 +48,9 @@ retain its binding and inspect it; do not erase history or send again automatica
 `artifact_digest`). It accepts only already-redacted actual browser/Nitro SDK
 envelopes for that exact source in `verification`. Wrong identity, unexpected fields,
 private user/stack data and oversized bodies fail before reservation or networking.
+The actual browser SDK's `settings.infer_ip=never` is accepted; `auto` or unknown
+settings still fail closed. Local SDK client reports are acknowledged and discarded,
+without reserving an event or contacting Sentry.
 
 After the real SDK privacy callback it adds only the fixed operator test grouping;
 source, class, frames, event/debug IDs and compiled bytes remain unchanged. The
