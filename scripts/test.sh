@@ -62,6 +62,7 @@ else
   echo "Native signing-key regression skipped: ansible-playbook is not installed"
 fi
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_website_deploy.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 ./scripts/production-umami-test.sh

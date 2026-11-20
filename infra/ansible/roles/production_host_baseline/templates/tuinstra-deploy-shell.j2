@@ -9,6 +9,16 @@ if [[ -z "$original_command" || "$original_command" == *$'\n'* || "$original_com
 fi
 
 read -r -a command_parts <<< "$original_command"
+if [[ $# -eq 1 ]]; then
+  if [[ "${#command_parts[@]}" != 4 || "${command_parts[0]}" != deploy ||
+        "${command_parts[1]}" != "$1" ||
+        ! "${command_parts[2]}" =~ ^[0-9a-f]{40}$ ||
+        ! "${command_parts[3]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "usage: deploy <assigned website> SOURCE_SHA IMAGE_DIGEST" >&2
+    exit 64
+  fi
+  exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy "${command_parts[@]}"
+fi
 case ${#command_parts[@]} in
   2)
     exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy \

@@ -1,0 +1,79 @@
+---
+- name: Install the restricted immutable website release endpoint
+  hosts: prod01
+  become: true
+  vars:
+    production_website_release_keys: {}
+    production_website_release_apps: [site-marcel, site-tuinstra, wodiq-site]
+    production_deploy_user: deploy
+    production_deploy_group: deploy
+  tasks:
+    - name: Require the existing production administrator and valid scoped key names
+      ansible.builtin.assert:
+        that:
+          - ansible_host == 'vps01.tuinstra.dev'
+          - ansible_user == 'mtuinstra'
+          - ansible_hostname == 'tuinstra-prod-01'
+          - production_website_release_keys.keys() | difference(production_website_release_apps) | length == 0
+          - production_website_release_keys.values() | list | unique | length == production_website_release_keys | length
+
+    - name: Validate dedicated Ed25519 public keys
+      ansible.builtin.assert:
+        that:
+          - item.value is match('^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$')
+      loop: "{{ production_website_release_keys | dict2items }}"
+
+    - name: Read the existing forced deploy keys
+      ansible.builtin.slurp:
+        src: "/home/{{ production_deploy_user }}/.ssh/authorized_keys"
+      register: existing_website_deploy_keys
+      when: production_website_release_keys | length > 0
+
+    - name: Reject a website key already authorized for another command
+      ansible.builtin.assert:
+        that:
+          - >-
+            (existing_website_deploy_keys.content | b64decode).splitlines()
+            | reject('equalto', 'restrict,command="/usr/local/sbin/tuinstra-deploy-shell ' ~ item.key ~ '" ' ~ item.value)
+            | select('search', item.value | regex_escape)
+            | list | length == 0
+      loop: "{{ production_website_release_keys | dict2items }}"
+
+    - name: Create a protected directory for the root-only release helper
+      ansible.builtin.file:
+        path: /usr/local/libexec/tuinstra-websites
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Install the release helper and its transaction module
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+        dest: "/usr/local/libexec/tuinstra-websites/{{ item }}"
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [production-websites.py, production_website_release.py]
+
+    - name: Install the updated root-owned deploy boundaries
+      ansible.builtin.template:
+        src: "roles/production_host_baseline/templates/{{ item }}.j2"
+        dest: "/usr/local/sbin/{{ item }}"
+        owner: root
+        group: root
+        mode: '0755'
+        backup: true
+        validate: /usr/bin/bash -n %s
+      loop: [tuinstra-compose-deploy, tuinstra-deploy-shell]
+
+    - name: Install one forced-command key for each explicitly selected website
+      ansible.builtin.lineinfile:
+        path: "/home/{{ production_deploy_user }}/.ssh/authorized_keys"
+        regexp: '^restrict,command="/usr/local/sbin/tuinstra-deploy-shell {{ item.key }}" '
+        line: 'restrict,command="/usr/local/sbin/tuinstra-deploy-shell {{ item.key }}" {{ item.value }}'
+        owner: "{{ production_deploy_user }}"
+        group: "{{ production_deploy_group }}"
+        mode: '0600'
+        backup: true
+      loop: "{{ production_website_release_keys | dict2items }}"
