@@ -1,8 +1,8 @@
 # DEV-54 — frontend SDK renewal, verification only
 
-The Release CI deployment/symbol fingerprint and frontend SDK closure changed.
-Routing and privacy inputs still match the enrolled proof. Preserve the attributed
-backend/routing/privacy records. Renew browser/Nitro with the existing manual
+The Release CI deployment/symbol fingerprint, frontend SDK closure and frontend
+envelope-privacy inputs changed. Preserve attributed backend/routing records only
+where their inputs still match; renew the changed browser/Nitro privacy evidence. Renew browser/Nitro with the existing manual
 `sentry-verification.yml` on protected develop. This fixture is separate from the
 production Release CI candidate: never substitute its digest or maps for Build
 kandidaat → Verifieer kandidaat receipts.
@@ -28,7 +28,9 @@ check existing host reserves first; never evade CI admission by overbooking VMs.
 `scripts/gate-verification-ledger.py receipts.json` defaults to read-only. The JSON
 contains only independently verified browser/Nitro receipts in the existing schema.
 `--apply` appends at most these two verification rows under both existing locks,
-after comparing the actual worker-mounted file hash with the host file. It saves
+after refusing the existing `.observability-deploying` marker and comparing the
+actual worker-mounted file hash with the host file. The marker also blocks a
+read-only preview. It saves
 and reads back a private durable backup, preserves every existing record and the
 mounted inode/owner/mode, then verifies the worker readback. A failure restores the
 original bytes through the same inode. Source/artifact conflicts or duplicate JSON

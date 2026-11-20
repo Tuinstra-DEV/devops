@@ -59,6 +59,15 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(),self.original)
         self.assertEqual(list(self.path.parent.glob('*.bak-dev54-*')),[])
 
+    def test_deploy_marker_blocks_before_backup_or_receipt_write(self):
+        (self.root/'.observability-deploying').touch()
+        for apply in [True,False]:
+            with self.subTest(apply=apply):
+                with self.assertRaisesRegex(ledger.Blocked,'deployment_in_progress'):
+                    ledger.append_rows(self.root,self.path,[row()],self.readback,apply=apply)
+                self.assertEqual(self.path.read_bytes(),self.original)
+                self.assertEqual(list(self.path.parent.glob('*.bak-dev54-*')),[])
+
     def test_failed_readback_restores_original_bytes_and_same_inode(self):
         def readback():
             return self.readback() if self.path.read_bytes()==self.original else '0'*64
