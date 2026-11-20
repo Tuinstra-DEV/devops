@@ -92,6 +92,8 @@ python3 -c 'compile(open("scripts/test-signing-key-check.py", encoding="utf-8").
 node --check scripts/verify-gate-release-assurance.mjs
 node --check scripts/gate-observability-fingerprint.mjs
 node --check scripts/collect-gate-symbols.mjs
+node --check scripts/gate-verification-forwarder.mjs
+python3 -B -c 'from pathlib import Path; p=Path("scripts/gate-verification-ledger.py"); compile(p.read_text(),str(p),"exec")'
 node --check .github/actions/gate-observability/run.mjs
 ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/gate-observability/action.yml"), aliases: true)'
 
