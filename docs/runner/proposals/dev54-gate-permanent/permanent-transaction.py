@@ -111,6 +111,7 @@ def activate(base,manifest,package):
     if set(old.configured_org_workflow_refs(cfg))!=set(plan['runner_group_before']['selected_workflows']):raise base.Blocked('original_manager_group_disagree')
     after=render_roles(original,manifest['workflow_pin']);after_cfg=base.parse_manager_config(after)
     candidate=base.load_module(base.STAGED_MANAGER,'permanent_new_manager');candidate.validate_org_config(after_cfg)
+    candidate_client=candidate.GitHubClient(token,api_url=cfg.get('github_api_url','https://api.github.com'))
     if set(candidate.configured_org_workflow_refs(after_cfg))!=set(plan['runner_group_after']['selected_workflows']):raise base.Blocked('permanent_roles_and_group_disagree')
     image,evidence=checker.gate_candidate_image(package);checker.candidate_image_php_check(image)
     if evidence['sha256']!=base.CANDIDATE_HASH:raise base.Blocked('candidate_evidence_changed')
@@ -157,7 +158,11 @@ def activate(base,manifest,package):
             info=path.lstat()
             if (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))!=(before[key+'_uid'],before[key+'_gid'],before[key+'_mode']):raise base.Blocked('new_file_metadata_differs')
         base.safe_command(['systemctl','start',base.SERVICE]);base.wait_service(True)
-        base.verify_running_state(True,backup,candidate);client.verify_org_group(after_cfg)
+        base.verify_running_state(True,backup,candidate)
+        try:candidate_client.verify_org_group(after_cfg)
+        except Exception as error:
+            status=re.search(r'HTTP ([0-9]{3})',str(error))
+            raise base.Blocked('activated_group_readback_failed',int(status[1]) if status else None) from None
         state['phase']='active';base.write_json(base.JOURNAL,state)
         result={'phase':'active','recovery_metadata_verified':True,'manager_sha256':manifest['target_sha256'],
                 'image_sha256':base.CANDIDATE_HASH,'group_refs':8,'new_gate_roles':3,'other_settings_unchanged':True,'production_activated':False}
@@ -172,6 +177,29 @@ def activate(base,manifest,package):
         raise
 
 
+def archive_completed_rollback(base,package):
+    """Keep completed recovery evidence before a new, fully validated attempt."""
+    if not base.JOURNAL.exists():return
+    state=json.loads(base.secure_regular(base.JOURNAL))
+    if state.get('phase')!='rolled_back':raise base.Blocked('retry_requires_completed_rollback')
+    backup=Path(state['backup']);before=base.load_backup_before(backup,state.get('before'))
+    archived=backup/'completed-activation-journal.json'
+    if archived.exists() or archived.is_symlink():raise base.Blocked('completed_journal_archive_exists')
+    if base.service_state()['ActiveState']!='active':raise base.Blocked('restored_manager_not_running')
+    base.verify_candidate_and_source()
+    old=base.load_module(base.MANAGER,'permanent_retry_original_manager')
+    cfg=base.parse_manager_config(base.secure_regular(base.CONFIG))
+    checker=base.load_operator_checker(package)
+    _,client=base.existing_manager_client(cfg,checker,old)
+    if not base.finish_already_restored_rollback(client,state,backup,before,old):
+        raise base.Blocked('completed_rollback_readback_differs')
+    os.rename(base.JOURNAL,archived)
+    for directory in (backup,base.JOURNAL.parent):
+        fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+
+
 def main():
     package=Path(__file__).resolve().parent
     if os.geteuid()!=0:raise ValueError('existing_operator_sudo_required')
@@ -181,8 +209,9 @@ def main():
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600:raise ValueError('permanent_lock_unsafe')
     fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
     mode=sys.argv[1] if len(sys.argv)==2 else ''
-    if mode=='activate':
+    if mode in {'activate','retry'}:
         if not sys.stdin.isatty():raise ValueError('existing_operator_tty_required')
+        if mode=='retry':archive_completed_rollback(base,package)
         return activate(base,manifest,package)
     if mode=='rollback':
         base.rollback_only(package)
@@ -195,4 +224,7 @@ if __name__=='__main__':
     except BaseException as error:
         code=getattr(error,'code',None)
         if code is None:code=str(error) if isinstance(error,ValueError) and re.fullmatch('[a-z0-9_]+',str(error)) else type(error).__name__
-        print(json.dumps({'phase':'blocked','blocker':code}));raise SystemExit(1)
+        report={'phase':'blocked','blocker':code}
+        status=getattr(error,'http_status',None)
+        if type(status) is int and 100<=status<=599:report['http_status']=status
+        print(json.dumps(report));raise SystemExit(1)
