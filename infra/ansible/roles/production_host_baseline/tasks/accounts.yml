@@ -70,11 +70,13 @@
     mode: '0700'
 
 - name: Install the forced-command deploy public key
-  ansible.builtin.copy:
-    content: >-
+  ansible.builtin.lineinfile:
+    regexp: '^restrict,command="/usr/local/sbin/tuinstra-deploy-shell" '
+    line: >-
       restrict,command="/usr/local/sbin/tuinstra-deploy-shell"
       {{ lookup('ansible.builtin.file', production_deploy_public_key_file) | trim }}
-    dest: "/home/{{ production_deploy_user }}/.ssh/authorized_keys"
+    path: "/home/{{ production_deploy_user }}/.ssh/authorized_keys"
+    create: true
     owner: "{{ production_deploy_user }}"
     group: "{{ production_deploy_user }}"
     mode: '0600'

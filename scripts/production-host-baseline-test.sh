@@ -22,7 +22,8 @@ grep -q 'tracker release identity is invalid' "$role/templates/tuinstra-compose-
 grep -q 'deploy tracker' "$role/templates/tuinstra-deploy-shell.j2"
 workflow="$repo_root/.github/workflows/reusable-cd-nuxt-ssg.yml"
 grep -q 'name: Deploy application through fixed endpoint' "$workflow"
-grep -q 'deploy@"\$DEPLOY_HOST" "deploy \${{ inputs.service-name }}"' "$workflow"
+grep -q 'command="deploy \$SERVICE"' "$workflow"
+grep -q 'deploy@"\$DEPLOY_HOST" "\$command"' "$workflow"
 if grep -q "printf 'deploy %s %s" "$workflow"; then
   echo 'reusable CD must not stream a legacy stdin protocol' >&2
   exit 1
