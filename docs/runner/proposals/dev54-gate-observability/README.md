@@ -2,8 +2,8 @@
 
 The Release CI deployment/symbol fingerprint, frontend SDK closure and frontend
 envelope-privacy inputs changed. Preserve attributed backend/routing records only
-where their inputs still match; renew the changed browser/Nitro privacy evidence. Renew browser/Nitro with the existing manual
-`sentry-verification.yml` on protected develop. This fixture is separate from the
+where their inputs still match; renew browser/Nitro privacy evidence with the existing
+manual `sentry-verification.yml` on protected develop. This fixture is separate from the
 production Release CI candidate: never substitute its digest or maps for Build
 kandidaat → Verifieer kandidaat receipts.
 
@@ -30,8 +30,7 @@ contains only independently verified browser/Nitro receipts in the existing sche
 `--apply` appends at most these two verification rows under both existing locks,
 after refusing the existing `.observability-deploying` marker and comparing the
 actual worker-mounted file hash with the host file. The marker also blocks a
-read-only preview. It saves
-and reads back a private durable backup, preserves every existing record and the
+read-only preview. It saves and reads back a private durable backup, preserves every existing record and the
 mounted inode/owner/mode, then verifies the worker readback. A failure restores the
 original bytes through the same inode. Source/artifact conflicts or duplicate JSON
 keys block. An identical retry retains its original timestamp and adds no rows.
