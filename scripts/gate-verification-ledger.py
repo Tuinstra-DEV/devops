@@ -66,6 +66,7 @@ def append_rows(root, path, proposed, mounted_digest, *, apply=True):
             stack.callback(os.close,fd)
             try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError: raise Blocked('observability_busy') from None
+        require(not (root/'.observability-deploying').exists(),'deployment_in_progress')
         old=path.read_bytes();require(len(old)<=262144,'ledger_capacity_exceeded');original=strict_json(old)
         require(set(original)=={'schema','deployments'} and original['schema']=='gate.heal-deployments.v1','ledger_schema_invalid')
         existing=original['deployments'];found=validate(existing);new=[]

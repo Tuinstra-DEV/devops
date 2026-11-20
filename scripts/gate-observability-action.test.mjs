@@ -58,13 +58,13 @@ test('Tracker requires its completed image job even while the enclosing deploy r
 test('enrolled Gate and Tracker policy/proof pairs accept a complete candidate and reject missing images', async () => {
   const {readFileSync} = await import('node:fs')
   const {validateAssurance} = await import('./verify-gate-release-assurance.mjs')
-  for (const key of ['gate', 'tracker']) {
+  for (const key of ['gate', 'gate-release-ci', 'tracker']) {
     // Arrange: real reviewed enrollment; candidate symbols here are synthetic.
     const root = new URL('../.github/actions/gate-observability/', import.meta.url)
     const read = p => JSON.parse(readFileSync(new URL(p, root), 'utf8'))
     const policy = read(`policies/${key}.json`)
     const proof = read(`evidence/${key}.json`)
-    const manifest = read(`evidence/${key}-manifest.example.json`)
+    const manifest = read(`evidence/${key === 'gate-release-ci' ? 'gate' : key}-manifest.example.json`)
     const digest = `sha256:${'b'.repeat(64)}`
     const candidate = {repository:manifest.repository, source_sha:source, source_tree:source,
       run:{workflow:'.github/workflows/deploy-production.yml',id:'42',attempt:1,source_sha:source},
