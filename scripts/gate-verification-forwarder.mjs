@@ -12,7 +12,13 @@ const keys = (value, allowed) => value && typeof value === 'object' && !Array.is
 function parseEvent(bytes, source) {
   if (bytes.length > limit) reject()
   let lines, event
-  try { lines = bytes.toString('utf8').trimEnd().split('\n'); if (lines.length !== 3 || JSON.parse(lines[1]).type !== 'event') reject(); event = JSON.parse(lines[2]) } catch { reject() }
+  try {
+    lines = bytes.toString('utf8').trimEnd().split('\n'); if (lines.length !== 3) reject()
+    const type = JSON.parse(lines[1]).type
+    if (type === 'client_report') return null
+    if (type !== 'event') reject()
+    event = JSON.parse(lines[2])
+  } catch { reject() }
   if (!keys(event, ['event_id','level','platform','environment','release','tags','exception','debug_meta','timestamp','sdk']) ||
       !/^[a-f0-9]{32}$/.test(event.event_id) || event.release !== source || event.environment !== 'verification' || event.level !== 'error' ||
       !keys(event.tags, ['component']) || !['browser','nitro'].includes(event.tags.component) ||
@@ -30,7 +36,8 @@ function parseEvent(bytes, source) {
   if (event.debug_meta && (!keys(event.debug_meta,['images']) || !Array.isArray(event.debug_meta.images) || event.debug_meta.images.length > 32 || event.debug_meta.images.some(i =>
     !keys(i,['type','code_file','debug_id']) || i.type !== 'sourcemap' || !safePath(i.code_file) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(i.debug_id)))) reject()
   if (event.timestamp !== undefined && (typeof event.timestamp !== 'number' || !Number.isFinite(event.timestamp) || event.timestamp < 1000000000 || event.timestamp > 100000000000)) reject()
-  if (event.sdk && (!keys(event.sdk,['name','version','integrations','packages']) || !/^sentry\.javascript\.[a-z-]{1,30}$/.test(event.sdk.name) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][a-zA-Z0-9.-]+)?$/.test(event.sdk.version) ||
+  if (event.sdk && (!keys(event.sdk,['name','version','integrations','packages','settings']) || !/^sentry\.javascript\.[a-z-]{1,30}$/.test(event.sdk.name) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][a-zA-Z0-9.-]+)?$/.test(event.sdk.version) ||
+      (event.sdk.settings !== undefined && (!keys(event.sdk.settings,['infer_ip']) || event.sdk.settings.infer_ip !== 'never')) ||
       (event.sdk.integrations && (!Array.isArray(event.sdk.integrations) || event.sdk.integrations.length > 32 || event.sdk.integrations.some(x => !/^[A-Za-z][A-Za-z0-9]{0,80}$/.test(x)))) ||
       (event.sdk.packages && (!Array.isArray(event.sdk.packages) || event.sdk.packages.length > 16 || event.sdk.packages.some(x => !keys(x,['name','version']) || !/^npm:@sentry\/[a-z-]+$/.test(x.name) || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(x.version)))))) reject()
   return event
@@ -61,7 +68,9 @@ export function createForwarder({ source, dsn, state, binding, fetchImpl = fetch
   const contextInfo=lstatSync(contextPath)
   if(!contextInfo.isFile() || contextInfo.isSymbolicLink() || contextInfo.uid!==process.getuid() || (contextInfo.mode&0o077) || readFileSync(contextPath,'utf8').trim()!==identity) throw new Error('state_context_mismatch')
   return async bytes => {
-    const event = parseEvent(bytes, source), component = event.tags.component, path = join(state, component + '.json')
+    const event = parseEvent(bytes, source)
+    if (event === null) return {ignored:true,category:'client_report_not_forwarded'}
+    const component = event.tags.component, path = join(state, component + '.json')
     let fd
     try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600) }
     catch (e) { if (e.code === 'EEXIST') return { ...JSON.parse(readFileSync(path)), ignored: true }; throw new Error('reservation_failed') }
