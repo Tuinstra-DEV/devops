@@ -2,7 +2,7 @@
 set -euo pipefail
 proposal_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:-activate}"
-case "$mode" in activate|rollback|status) ;; *) exit 2 ;; esac
+case "$mode" in activate|retry|rollback|status) ;; *) exit 2 ;; esac
 local_python="$(command -v python3.14 || command -v python3)"
 "$local_python" -c 'import sys; assert sys.version_info >= (3,11), "Python 3.11+ required"'
 pin="$("$local_python" -c 'import json,sys;print(json.load(open(sys.argv[1]))["workflow_pin"])' "$proposal_dir/manager-manifest.json")"
