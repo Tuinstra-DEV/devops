@@ -1,0 +1,17 @@
+{
+  "source": "8fbbb16bd1949e6af591db2937321caaf62c489a",
+  "reason": "Exclude Nitro third-party dependencies from private symbol export; strict first-party link and digest validation retained",
+  "sdk_events_reused_without_relabeling": true,
+  "runtime_versions_unchanged": true,
+  "production_activated": false,
+  "fingerprints": {
+    "gate-release-ci": {
+      "deployment_symbols": "sha256:877e5a1b02b7301e2425de2bcd5e7a8f27b55105d9d5b4237ddc743f9f166ca2",
+      "approvedProofSha256": "sha256:2eae378f845395746950563563acab387923af908be30854ff8459d6e0d3a037"
+    },
+    "gate": {
+      "deployment_symbols": "sha256:723688e28db008f956ca3c771b55c07e383cd2c0754c35beaff6ce4607159fc6",
+      "approvedProofSha256": "sha256:12054fe4b3af75c4b1e9d0032a171b91c4ba5b1e8bd25cc9f3776543b0ce181c"
+    }
+  }
+}
