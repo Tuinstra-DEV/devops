@@ -93,3 +93,10 @@ deployment fingerprint and the same attributed SDK observations. This keeps the
 retained overlap route available; Release CI does not inherit its selector set or
 policy identity. Reverting a consumer to its previous immutable action pin retains
 that pin's original historical enrollment for the previous source.
+
+
+## Deployment-only review 21 November
+
+Gate source `34eded55a225f481224a17aee823ce0446144c84` pins Bookworm linux-libc-dev to 6.1.192-2 in both PHP runtime roots and grants Bake writes only to the absolute candidate export directory. Signed APT simulation changes exactly one package; AMD64 installation verifies PHP remains 8.3.36. Full local AMD64 extension compilation on ARM stopped with a cc1 segmentation fault in unchanged Xdebug code; native clean-room builds and mandatory image scans remain required. No CVE exemption or runner-policy change is introduced.
+
+The SDK initialization, privacy and routing fingerprints remain byte-identical, as do all six historical PHP witness inputs. Both route-specific deployment fingerprints and canonical approvals are updated in `gate-DEV-54-header-review-20261121.json`. Existing actual SDK events, original source/run/attempt/artifact digests and historical PHP witness are retained without relabeling. This review is not evidence of a successful candidate build or production activation.
