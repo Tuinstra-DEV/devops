@@ -1,0 +1,9 @@
+{
+  "source": "a8c39d606b4af1507206208273d6ce6d0cbc5fe5",
+  "reason": "Use binary file-descriptor artifact streaming supported by baked gh 2.45; no image or credential changes",
+  "deployment_symbols": "sha256:01a40fd194b7266cb70b9420d3a6cf33aa3be1b22d65575e406d807270993fe6",
+  "approvedProofSha256": "sha256:8d764d94b0fabd05474002b1b66f3d7c6aea7bf8f3094463d4d00b7f010a27ba",
+  "legacy_fingerprints_unchanged": true,
+  "sdk_events_reused_without_relabeling": true,
+  "production_activated": false
+}
