@@ -8,7 +8,7 @@
     "sdk_initialization": "sha256:9920aa597ba7a7b3d1b4f3e6f4e88789080a91e9e13a65d530aa71b0f9803324",
     "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
     "privacy_filters": "sha256:adb607142ef9a3c25aec2faf59dec9893257cf23d702ad45a70e4d7506c24a06",
-    "deployment_symbols": "sha256:f28490cfb00081e241e8e7307c79a8c05f140d3b362ab3e94b22800fd7551416"
+    "deployment_symbols": "sha256:877e5a1b02b7301e2425de2bcd5e7a8f27b55105d9d5b4237ddc743f9f166ca2"
   },
   "provenance": {
     "captured_at": "2026-11-05T18:09:27.382Z",
