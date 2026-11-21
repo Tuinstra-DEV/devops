@@ -1,0 +1,22 @@
+{
+  "source": "34eded55a225f481224a17aee823ce0446144c84",
+  "reason": "CVE-2026-99083 Bookworm linux-libc-dev pin and bounded Bake candidate export permission",
+  "runtime_versions_unchanged": true,
+  "package_pin": {
+    "name": "linux-libc-dev",
+    "from": "6.1.190-1",
+    "to": "6.1.192-2"
+  },
+  "sdk_events_reused_without_relabeling": true,
+  "production_activated": false,
+  "fingerprints": {
+    "gate-release-ci": {
+      "deployment_symbols": "sha256:f28490cfb00081e241e8e7307c79a8c05f140d3b362ab3e94b22800fd7551416",
+      "approvedProofSha256": "sha256:fcd139b5af13e3ef0a1cca1893f228e31bdaed2fc46bb4694ae7ffe7dc0fedf5"
+    },
+    "gate": {
+      "deployment_symbols": "sha256:8f302624d60e0d0b3706f4a4211ff80656b46ceb9317e1a62302efdd0ce75512",
+      "approvedProofSha256": "sha256:44faacc54e07ee82b6db619b96c623080982b27be8a5d2b1f3a15d429a419ef8"
+    }
+  }
+}
