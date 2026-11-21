@@ -1,0 +1,17 @@
+{
+  "source": "37f6530dd146ab38be93e8a76ed6886271a83702",
+  "reason": "Bounded HTTPS downloads and SHA-256 checks retain APCu 5.1.28, Xdebug 3.3.0 and PHP 8.3.36 after reproduced PECL-client HTTP 500",
+  "fingerprints": {
+    "gate-release-ci": {
+      "deployment_symbols": "sha256:5070c8d523cd54827fc7297c1942cfee023a940326a474d7361a27af3d2e1f8e",
+      "approvedProofSha256": "sha256:a3e1218944f9a0ece60abf8876534c10fd05e95cae293b491409e2ad4f7d1e60"
+    },
+    "gate": {
+      "deployment_symbols": "sha256:558174653e8c10a116396aa4d438d8b875477c7fa8d64e5922c854ba6bf35efd",
+      "approvedProofSha256": "sha256:d21df191fbe25e1c8b3f102ce378de18a89e166f600aabdf6522f023cff8ef5c"
+    }
+  },
+  "sdk_events_reused_without_relabeling": true,
+  "backend_verification_inputs_unchanged": true,
+  "production_activated": false
+}
