@@ -180,6 +180,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
+      checks: read
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
