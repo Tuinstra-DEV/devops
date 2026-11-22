@@ -1,0 +1,9 @@
+{
+  "source": "51f54364bd6955df34e42c88563dc58ca9c95733",
+  "reason": "Independent full-history source checkouts for both paired release scans; exact reachable ancestors only, no finding suppression",
+  "deployment_symbols": "sha256:ffb5372fbd5c3cfbb8d260ad81c79c3cbc490758c327ec75451117958010c240",
+  "approvedProofSha256": "sha256:e69ff790c794be49a5bf9feb5d3a0bb27476dcee1ad8a5b59b4f21932c140ded",
+  "legacy_fingerprints_unchanged": true,
+  "sdk_events_reused_without_relabeling": true,
+  "production_activated": false
+}
