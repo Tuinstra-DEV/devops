@@ -1,6 +1,5 @@
 {
   "schema": "dev54.release-check-read-proposal/v1",
-  "published": false,
   "activated": false,
   "captured_at": "2026-11-22T10:49:52.557396+00:00",
   "workflow_pin_before": "a083c789196ee8cd89b4ab3253c458d8d1de6dd6",
@@ -22,5 +21,6 @@
   "image_sha256_unchanged": "2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce",
   "manager_restart_required": true,
   "effective_config_delta_verified": false,
-  "production_activated": false
+  "production_activated": false,
+  "scope_approval_received": false
 }

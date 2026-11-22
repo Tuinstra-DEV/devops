@@ -1,10 +1,10 @@
 # DEV-54: minimaal leesrecht voor onafhankelijke releasechecks
 
-Status: lokaal voorbereid, niet gepubliceerd, geen live activatie. De bestaande
+Status: reviewvoorstel, geen live activatie of toestemming voor de nieuwe scope. De bestaande
 Gate PR #460 blijft open op 9f9ae82d7c359f68f4bf049e448eb83fad908af4;
-die gepubliceerde head heeft groene normale checks. Nieuwe lokale Gate-commits
+die head heeft groene normale checks. De volgende gebundelde Gate-correcties bevatten
 17cbd071637d2f5b648d930eb37a514ce50af472 en
-afe3e5fa3c403dd2c95706db43a2052e1e432afe zijn nog niet gepusht.
+afe3e5fa3c403dd2c95706db43a2052e1e432afe en de daaropvolgende assurance-pin.
 
 ## Bewijs en besluit
 
@@ -54,8 +54,8 @@ Providerimplementatie, lokale commit:
 
 ## Veilige volgorde en resterende controle
 
-1. Na akkoord: publiceer provider en bijbehorende assurance-enrollment samen;
-   volg normale Linux-CI en merge zonder bypass. Pin blijft de exacte
+1. Publiceer provider en bijbehorende assurance-enrollment samen als review-PR;
+   volg normale Linux-CI. Merge pas na het specifieke scope-akkoord, zonder bypass. Pin blijft de exacte
    implementatiecommit, niet een bewegende branch of nieuwe main-tip.
 2. Voor live delta: verse groep/repos én effectieve rootconfig via de bestaande
    operatorroute lezen; effectieve manager laten valideren. `plan.py` is puur:
