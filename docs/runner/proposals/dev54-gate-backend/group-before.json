@@ -1,0 +1,10 @@
+{
+  "selected_workflows": [
+    "Tuinstra-DEV/devops/.github/workflows/reusable-gate-pr-security.yml@ea86c62eeac615cb292a78bf50995fed81c051ee",
+    "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e",
+    "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@604ad2b9e636798899cb90a7aa8bdfa8d6ad2a4d",
+    "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@a8ace2f171d7d127bbfb3a6d6b13f158f461ba98",
+    "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@e1a9f09504b903120e9b5297eff64f58a891c907",
+    "Tuinstra-DEV/devops/.github/workflows/reusable-trusted-verification.yml@ea86c62eeac615cb292a78bf50995fed81c051ee"
+  ]
+}

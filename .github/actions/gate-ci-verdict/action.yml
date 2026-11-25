@@ -1,0 +1,27 @@
+name: Verify selected Gate tasks
+description: Require each selected current-attempt task; allow an evidenced empty selection
+inputs:
+  source-result:
+    required: true
+    description: Source job result
+  verification-result:
+    required: true
+    description: Matrix aggregate result
+  selected-json:
+    required: true
+    description: Exact fixed task keys emitted by source selection
+  count:
+    required: true
+    description: Exact number of selected tasks
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SOURCE_RESULT: ${{ inputs.source-result }}
+        VERIFICATION_RESULT: ${{ inputs.verification-result }}
+        SELECTED_JSON: ${{ inputs.selected-json }}
+        SELECTED_COUNT: ${{ inputs.count }}
+        SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: python3 "$GITHUB_ACTION_PATH/verify.py"

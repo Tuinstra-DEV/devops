@@ -1,0 +1,14 @@
+{
+  "group_id": 4,
+  "workflow_ref": "Tuinstra-DEV/devops/.github/workflows/reusable-product-ci.yml@9e4a72c0b8ca586cd97af4b6e33e65a919accb43",
+  "actions_pin": "ac5ef4542cc6f8505f894a3db27f59f38fd1648e",
+  "deployed_manager_before_sha256": "5404bbbf3d4430f4518afa37c19d7be090d1246c3b5d7cc4580ffb601f999ed3",
+  "deployed_manager_after_sha256": "e9b2f1865fb915f80f01803a81d36476c637d8b655044f5c664b67acfc6f185c",
+  "devops_remote_head": "91da5fb0faf76231f6af2a3542889f7581afbe40",
+  "gate_remote_head": "188356ba01eb7796b5dc9a746eeabf34f95cf33f",
+  "gate_local_head": "4ddbadada67147dc8d2ecb81c061cc61b971f9ba",
+  "gate_base": "1ca529f02479c4e1d0a14353382a6a7dc9cc74f7",
+  "gate_backend_tree": "657d391f08b592fe5c615cb0b1049d3dc5aae440",
+  "gate_frontend_tree": "e284e0c9c768187bddfa9c9071ce728963e141b6",
+  "routing_canonical_sha256": "eb17e7ee0facb307315b28699bc8dd29eb262b7a7f2db3b5e63f52caca54b7d5"
+}

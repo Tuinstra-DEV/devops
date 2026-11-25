@@ -1,0 +1,40 @@
+{
+  "all_checks_green": true,
+  "preflight_mode": "candidate_before_activation",
+  "policy": {
+    "policy_verified": true,
+    "existing_workflow_refs": 6,
+    "existing_repository_count": 11,
+    "proposed_workflow_ref": "Tuinstra-DEV/devops/.github/workflows/reusable-product-ci.yml@9e4a72c0b8ca586cd97af4b6e33e65a919accb43"
+  },
+  "credential_read_access": {
+    "pull_request": true,
+    "protected_develop": true,
+    "merge_commit": true,
+    "actions_run": true,
+    "actions_jobs": true,
+    "runner_group_and_repositories": true
+  },
+  "candidate_image": {
+    "php_version": "8.3",
+    "php_version_full": "8.3.36",
+    "pdo_mysql": true,
+    "pdo_sqlite": true
+  },
+  "runner_guest_docker": "verified_in_isolated_candidate_vm",
+  "isolated_vm_validation": {
+    "sha256_verified": true,
+    "sha256": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
+    "pdo_mysql_and_sqlite_vm_queries": "passed",
+    "docker_overlay2_vm": "passed",
+    "phpunit": "1216 tests / 7567 assertions; 14 skipped, 1 incomplete, 1 warning",
+    "mariadb": "12 tests / 99 assertions; 0 skipped",
+    "vm_exit_code": 0
+  },
+  "active_image": {
+    "sha256_verified": true,
+    "sha256": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+    "selector_unchanged": true,
+    "php_probe": "not_run_on_old_source_image"
+  }
+}

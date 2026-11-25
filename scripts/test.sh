@@ -62,6 +62,7 @@ else
   echo "Native signing-key regression skipped: ansible-playbook is not installed"
 fi
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_websites.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_production_website_deploy.py
 node --test ./scripts/production-restricted-tracker-bridge.test.mjs
 ./scripts/production-host-rehearsal-test.sh
 ./scripts/production-umami-test.sh
@@ -74,11 +75,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_wo
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_tessera_scope_action.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_dev54_runner_diagnostics.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_product_ci_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_compact_workflow.py tests/test_gate_release_check_read.py tests/test_gate_release_read_recovery.py tests/test_gate_release_ref_transaction.py tests/test_gate_selected_verdict.py tests/test_gate_permanent_preflight.py tests/test_gate_permanent_transaction.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=runner/manager:runner/tests python3 -B -m unittest discover -s runner/tests -p test_gate_effective_patch.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pilot_baked_php.py
+python3 -B docs/runner/proposals/dev54-gate-backend/operator_checks_test.py
+python3 -B docs/runner/proposals/dev54-gate-backend/gate-pilot-transaction-tests.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest runner/tests/test_runner_host_org_policy.py
 
 # The assurance action parses data only; never execute dependency install hooks.
 npm ci --ignore-scripts --no-audit --no-fund --prefix .github/actions/gate-observability
 node --test scripts/verify-gate-release-assurance.test.mjs scripts/gate-observability-fingerprint.test.mjs scripts/gate-observability-action.test.mjs scripts/collect-gate-symbols.test.mjs
+node --test scripts/gate-verification-forwarder.test.mjs
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest tests.test_gate_verification_ledger
 
 
 python3 -B -m unittest tests.test_wodiq_ci_parallel_activation

@@ -1,0 +1,12 @@
+{
+  "source": "afe3e5fa3c403dd2c95706db43a2052e1e432afe",
+  "workflow_pin": "716ce046a09da7a01b647e74f966ba0c89a0a7ad",
+  "reason": "Prepared Verify-only Checks read, strict release-only provider pin and gh 2.45 complete pagination; pending explicit scope approval",
+  "deployment_symbols": "sha256:eda8deb485ff10cd5fff9bd3f041aea570b81ead7ffb9226ce69450218d5ff35",
+  "approvedProofSha256": "sha256:22cbfb18c859bf05e663155522f5816787661adf9fd90c0bb6044767a9eac2eb",
+  "legacy_fingerprints_unchanged": true,
+  "sdk_events_reused_without_relabeling": true,
+  "permission_activated": false,
+  "native_release_pass": false,
+  "production_activated": false
+}

@@ -1,0 +1,19 @@
+{
+  "source": "73cb8f0b1593e5a7c6595e2ad669df6302a887aa",
+  "reason": "Candidate browser fixture supplies mandatory production environment with synthetic local values; production entrypoint unchanged",
+  "deployment_symbols": "sha256:2d4c615feccdf69769df40e74d70ef336beca74d717a6947c00390852a665ac5",
+  "approvedProofSha256": "sha256:812392a1c9ec6af0c07d245f8daad96534dd24854a0ed779ac73bf495a66fab8",
+  "legacy_fingerprints_unchanged": true,
+  "local_candidate": {
+    "run": "45003479956",
+    "attempt": 1,
+    "source": "c9c1c09ecb836aa46855e22e1079b24a32bbe139",
+    "artifact_id": 14746879933,
+    "artifact_digest": "sha256:e7498805122c63479fcbb773d8df11a0b8d3664b2d37667ca13251da08f29eb4",
+    "smoke_captures": 3,
+    "authenticated_cases": 115,
+    "native_sanctuary_release_pass": false
+  },
+  "sdk_events_reused_without_relabeling": true,
+  "production_activated": false
+}

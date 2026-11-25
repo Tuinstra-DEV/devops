@@ -1,0 +1,5 @@
+[org_execution_roles.gate-backend-pilot]
+workflow_ref = "Tuinstra-DEV/devops/.github/workflows/reusable-product-ci.yml@9e4a72c0b8ca586cd97af4b6e33e65a919accb43"
+repositories = ["Tuinstra-DEV/gate"]
+events = ["pull_request"]
+actors = [{ login = "marcel-tuinstra", type = "User" }]

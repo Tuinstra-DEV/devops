@@ -5,29 +5,29 @@
   "project_id": "4511659790630992",
   "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
   "fingerprints": {
-    "sdk_initialization": "sha256:6f17730371d6ed5e0fc4892784d521b38b40aac5878aeb10352257311b1c6f4b",
+    "sdk_initialization": "sha256:9920aa597ba7a7b3d1b4f3e6f4e88789080a91e9e13a65d530aa71b0f9803324",
     "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
-    "privacy_filters": "sha256:a0c63875a5808ce06b17689d208c52bc063e5d628118d056c066531957ac3853",
-    "deployment_symbols": "sha256:d2c3d2ad8a61127576752c7ba4a8e71a217316d1d9a207384efd08f5fb1afdd4"
+    "privacy_filters": "sha256:adb607142ef9a3c25aec2faf59dec9893257cf23d702ad45a70e4d7506c24a06",
+    "deployment_symbols": "sha256:558174653e8c10a116396aa4d438d8b875477c7fa8d64e5922c854ba6bf35efd"
   },
   "components": [
     {
       "id": "browser",
-      "verification_source": "317e086b9fa7299f0394c36cdd1df4b229558984",
-      "artifact_digest": "sha256:ea42f4ef9c4c73818429fad92cc16a01d90d95b5ef631bc998136a075a069dfa",
+      "verification_source": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+      "artifact_digest": "sha256:350d8ba7053eeff21f6ca7e8a37af286d990ca2b7a73aebaf1a96da15d4df033",
       "run": {
         "workflow": ".github/workflows/sentry-verification.yml",
-        "id": "41701648819",
+        "id": "44824942586",
         "attempt": 1,
-        "source_sha": "317e086b9fa7299f0394c36cdd1df4b229558984"
+        "source_sha": "45bc74769aaa08906262f866f1eedb7fd05aab46"
       },
       "sentry": {
-        "issue_id": "158413863",
+        "issue_id": "162707841",
         "event_ids": [
-          "a3d2b445f3d84059a64c0ef053545b41"
+          "945eb41f1ec445f387d223221a8c9be0"
         ]
       },
-      "heal_case_id": "2263f2f206fd4f6cac90a533f2bbd697",
+      "heal_case_id": "3af99702543b40a8bb7caf9ae7344a8a",
       "source_frame": {
         "path": "frontend/app/utils/sentry-verification.ts",
         "line": 3
@@ -37,9 +37,8 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         },
         "deduplication": {
@@ -47,38 +46,36 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         },
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         }
       }
     },
     {
       "id": "nitro",
-      "verification_source": "317e086b9fa7299f0394c36cdd1df4b229558984",
-      "artifact_digest": "sha256:ea42f4ef9c4c73818429fad92cc16a01d90d95b5ef631bc998136a075a069dfa",
+      "verification_source": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+      "artifact_digest": "sha256:350d8ba7053eeff21f6ca7e8a37af286d990ca2b7a73aebaf1a96da15d4df033",
       "run": {
         "workflow": ".github/workflows/sentry-verification.yml",
-        "id": "41701648819",
+        "id": "44824942586",
         "attempt": 1,
-        "source_sha": "317e086b9fa7299f0394c36cdd1df4b229558984"
+        "source_sha": "45bc74769aaa08906262f866f1eedb7fd05aab46"
       },
       "sentry": {
-        "issue_id": "158414345",
+        "issue_id": "162707854",
         "event_ids": [
-          "09ab8cba32ab43328c683644cc5ff0ea"
+          "d1c5154786184979b98a2402f7a2b7e7"
         ]
       },
-      "heal_case_id": "80555315948a417f8430d383edc860b8",
+      "heal_case_id": "6479af4205234a3aa97a20c2b91e59b0",
       "source_frame": {
         "path": "frontend/server/utils/sentry-verification.ts",
         "line": 3
@@ -88,9 +85,8 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         },
         "deduplication": {
@@ -98,17 +94,15 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         },
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "gate-IN-46-verification.json",
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-verification-20261120.json",
+            "gate-DEV-54-verification-20261120.md"
           ]
         }
       }

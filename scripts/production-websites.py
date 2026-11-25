@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -153,9 +154,40 @@ def main():
         print(json.dumps(apply(folder, expected, check=args.action == "check")))
 
 
+def release(app, source, image_digest):
+    from production_website_release import HOSTS, WebsiteRelease, deploy_website
+
+    if os.geteuid() != 0 or socket.gethostname() != "tuinstra-prod-01" or app not in HOSTS:
+        raise RuntimeError("website release is unavailable on this host")
+    lock_path = Path("/run/lock/tuinstra/operations.host.tuinstra-prod-01.lock")
+    info = lock_path.lstat()
+    if lock_path.is_symlink() or not lock_path.is_file() or info.st_uid != 0 or info.st_mode & 0o777 != 0o660:
+        raise RuntimeError("existing host operation lock is unavailable")
+    with lock_path.open("r") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name in (app, "umami", "status"):
+            marker = Path("/var/lib/tuinstra-production-restore/maintenance") / name
+            if os.path.lexists(marker):
+                raise RuntimeError("production restore maintenance is active")
+        signal.signal(signal.SIGHUP, interrupted)
+        signal.signal(signal.SIGTERM, interrupted)
+        deploy_website(WebsiteRelease(app, source, image_digest, SITES, secure, atomic))
+
+
+def interrupted(_signal, _frame):
+    raise RuntimeError("website deployment interrupted")
+
+
 if __name__ == "__main__":
+    import sys
+
     try:
-        main()
+        if sys.argv[1:2] == ["release"]:
+            if len(sys.argv) != 5:
+                raise RuntimeError("release requires an application, commit and digest")
+            release(*sys.argv[2:])
+        else:
+            main()
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"error": str(error)}))
         raise SystemExit(1)

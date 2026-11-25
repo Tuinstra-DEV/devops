@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-16",
+  "source_image_sha256": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+  "candidate_image_sha256": null,
+  "build_status": "blocked_exact_package_unavailable",
+  "source_diagnosis": {
+    "method": "guestfish --ro against hash-verified selected sealed image, PHP run as ci-runner",
+    "php83_cli_package": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
+    "php83_sqlite_package": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
+    "php83_mysql_installed": false,
+    "pdo_mysql_ini_present": false,
+    "cli_pdo_drivers": ["sqlite"]
+  },
+  "requested_package": {
+    "name": "php8.3-mysql",
+    "version": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
+    "architecture": "amd64",
+    "build_changes_sha256": "5cd83710704508e57f63053f7216567198553faf8e255f83f997a57f4327da9c",
+    "publication": "https://api.launchpad.net/1.0/~ondrej/+archive/ubuntu/php/+binarypub/250320205",
+    "publication_status": "Superseded",
+    "date_removed": "2026-10-22T18:49:58.920197+00:00",
+    "apt_exact_pin": "not_found",
+    "ppa_pool_download_http_status": 404,
+    "original_build_download_http_status": 404,
+    "source_publication_binary_urls_for_amd64_mysql": [],
+    "existing_local_cache_match": false
+  },
+  "existing_repair_build_route": "standalone qemu-img convert followed by virt-customize with explicit bash",
+  "build_directory": "/home/mtuinstra/dev54-image-candidate-20261116",
+  "failed_build_log": "build-bash.log",
+  "failed_artifacts_retained_unactivated": true,
+  "new_contract_rejects_missing_mysql_in_source_image_as_ci_runner": true,
+  "isolated_candidate_vm": {
+    "started": false,
+    "reason": "no_successfully_built_candidate",
+    "pdo_mysql": "not_run",
+    "sqlite": "not_run",
+    "docker": "not_run",
+    "complete_image_contract": "not_run",
+    "existing_gate_mariadb_fixture": "not_run"
+  },
+  "active_selector_changed": false,
+  "runner_group_changed": false,
+  "manager_configuration_changed": false,
+  "published_or_pr_changed": false
+}

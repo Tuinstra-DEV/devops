@@ -1,0 +1,412 @@
+name: Gate Release CI
+'on':
+  workflow_call:
+    secrets:
+      SENTRY_AUTH_TOKEN:
+        required: true
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+jobs:
+  build:
+    name: Build kandidaat
+    runs-on: ${{ fromJSON(vars.SANCTUARY_GATE_RELEASE_ENABLED == 'true' && github.repository == 'Tuinstra-DEV/gate' && github.event_name == 'pull_request' && github.base_ref == 'main'
+      && github.head_ref == 'develop' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.pull_request.user.login == 'marcel-tuinstra'
+      && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.event.sender.login
+      == 'marcel-tuinstra' && github.event.sender.type == 'User' && format('{{"group":"sanctuary-trusted-verification","labels":["self-hosted","ci-gate-release-build","sanctuary-gate","ci-run-{0}-{1}","ci-pr-head-{2}","ci-execution-sha-{3}"]}}',
+      github.run_id, github.run_attempt, github.event.pull_request.head.sha, github.sha) || '"ubuntu-24.04"') }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      RELEASE_PR_NUMBER: ${{ github.event.pull_request.number }}
+      RELEASE_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+      RELEASE_BASE_REF: ${{ github.base_ref }}
+      RELEASE_HEAD_REF: ${{ github.head_ref }}
+    steps:
+    - name: Verify current release trust before source or secrets
+      id: trust
+      uses: Tuinstra-DEV/devops/.github/actions/gate-release-trust@ac4819f414e558da0a469c5755e8ec4a32f5c66c
+      with:
+        enabled: ${{ vars.SANCTUARY_GATE_RELEASE_ENABLED || 'false' }}
+        role: gate-release-build
+    - name: Require enrolled release route
+      env:
+        TRUSTED: ${{ steps.trust.outputs.trusted }}
+        PROVIDER_REF: ${{ steps.trust.outputs.provider-ref }}
+        CUSTOM_COMMAND: ${{ vars.GATE_RELEASE_CHECK_COMMAND }}
+      run: |
+        set -euo pipefail
+        test "$TRUSTED" = true
+        test -z "$CUSTOM_COMMAND"
+        echo "RELEASE_PROVIDER_REF=$PROVIDER_REF" >> "$GITHUB_ENV"
+    - name: Check out exact release execution
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify baked tools
+      run: |-
+        node --version | grep -E '^v24\.'
+        /usr/bin/php8.3 -r 'exit(extension_loaded("pdo_mysql") && extension_loaded("pdo_sqlite") ? 0 : 1);'
+        docker info >/dev/null
+        skopeo --version
+        chromium --version
+    - name: Set up one shared BuildKit graph
+      uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      with:
+        buildkitd-config-inline: |-
+          [worker.oci]
+            max-parallelism = 1
+    - name: Build all candidate artifacts once
+      env:
+        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      run: >-
+        python3 scripts/ci/measure-release-resources.py
+        --output "${{ runner.temp }}/gate-candidate/build-resources.json"
+        -- node scripts/ci/release-candidate.mjs build
+    - name: Preserve php candidate
+      id: php
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-image-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}-php
+        path: |-
+          ${{ runner.temp }}/gate-candidate/php.oci.tar
+          ${{ runner.temp }}/gate-candidate/php.receipt.json
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Preserve web candidate
+      id: web
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-image-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}-web
+        path: |-
+          ${{ runner.temp }}/gate-candidate/web.oci.tar
+          ${{ runner.temp }}/gate-candidate/web.receipt.json
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Preserve frontend candidate
+      id: frontend
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-image-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}-frontend
+        path: |-
+          ${{ runner.temp }}/gate-candidate/frontend.oci.tar
+          ${{ runner.temp }}/gate-candidate/frontend.receipt.json
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Preserve heal-runner candidate
+      id: heal-runner
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-image-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}-heal-runner
+        path: |-
+          ${{ runner.temp }}/gate-candidate/heal-runner.oci.tar
+          ${{ runner.temp }}/gate-candidate/heal-runner.receipt.json
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Preserve runtime candidate
+      id: runtime
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-runtime-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+        path: |-
+          ${{ runner.temp }}/gate-candidate/scan-runtime.oci.tar
+          ${{ runner.temp }}/gate-candidate/candidate.json
+          ${{ runner.temp }}/gate-candidate/build-resources.json
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Preserve maps candidate
+      id: maps
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-frontend-sourcemaps-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gate-candidate/private-maps/
+        include-hidden-files: true
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Bind all transfer artifacts to this source run and attempt
+      env:
+        UPLOAD_ARTIFACTS: '{"php": {"id": "${{ steps.php.outputs.artifact-id }}", "digest": "${{ steps.php.outputs.artifact-digest }}"}, "web": {"id": "${{ steps.web.outputs.artifact-id
+          }}", "digest": "${{ steps.web.outputs.artifact-digest }}"}, "frontend": {"id": "${{ steps.frontend.outputs.artifact-id }}", "digest": "${{ steps.frontend.outputs.artifact-digest
+          }}"}, "heal-runner": {"id": "${{ steps.heal-runner.outputs.artifact-id }}", "digest": "${{ steps.heal-runner.outputs.artifact-digest }}"}, "runtime": {"id": "${{ steps.runtime.outputs.artifact-id
+          }}", "digest": "${{ steps.runtime.outputs.artifact-digest }}"}, "maps": {"id": "${{ steps.maps.outputs.artifact-id }}", "digest": "${{ steps.maps.outputs.artifact-digest }}"}}'
+      run: node scripts/ci/release-candidate.mjs transfer
+    - name: Preserve immutable transfer receipt
+      id: transfer
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-transfer-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gate-candidate/transfer.json
+        if-no-files-found: error
+        retention-days: 7
+    - name: Preserve failed build resource measurement
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-build-resources-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gate-candidate/build-resources.json
+        if-no-files-found: warn
+        retention-days: 7
+    outputs:
+      transfer-id: ${{ steps.transfer.outputs.artifact-id }}
+      transfer-digest: ${{ steps.transfer.outputs.artifact-digest }}
+  verify:
+    name: Verifieer kandidaat
+    runs-on: ${{ fromJSON(vars.SANCTUARY_GATE_RELEASE_ENABLED == 'true' && github.repository == 'Tuinstra-DEV/gate' && github.event_name == 'pull_request' && github.base_ref == 'main'
+      && github.head_ref == 'develop' && github.actor == 'marcel-tuinstra' && github.triggering_actor == 'marcel-tuinstra' && github.event.pull_request.user.login == 'marcel-tuinstra'
+      && github.event.pull_request.user.type == 'User' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.event.sender.login
+      == 'marcel-tuinstra' && github.event.sender.type == 'User' && format('{{"group":"sanctuary-trusted-verification","labels":["self-hosted","ci-gate-release-verify","sanctuary-gate","ci-run-{0}-{1}","ci-pr-head-{2}","ci-execution-sha-{3}"]}}',
+      github.run_id, github.run_attempt, github.event.pull_request.head.sha, github.sha) || '"ubuntu-24.04"') }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: read
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      RELEASE_PR_NUMBER: ${{ github.event.pull_request.number }}
+      RELEASE_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+      RELEASE_BASE_REF: ${{ github.base_ref }}
+      RELEASE_HEAD_REF: ${{ github.head_ref }}
+    steps:
+    - name: Verify current release trust before source or secrets
+      id: trust
+      uses: Tuinstra-DEV/devops/.github/actions/gate-release-trust@ac4819f414e558da0a469c5755e8ec4a32f5c66c
+      with:
+        enabled: ${{ vars.SANCTUARY_GATE_RELEASE_ENABLED || 'false' }}
+        role: gate-release-verify
+    - name: Require enrolled release route
+      env:
+        TRUSTED: ${{ steps.trust.outputs.trusted }}
+        PROVIDER_REF: ${{ steps.trust.outputs.provider-ref }}
+        CUSTOM_COMMAND: ${{ vars.GATE_RELEASE_CHECK_COMMAND }}
+      run: |
+        set -euo pipefail
+        test "$TRUSTED" = true
+        test -z "$CUSTOM_COMMAND"
+        echo "RELEASE_PROVIDER_REF=$PROVIDER_REF" >> "$GITHUB_ENV"
+    - name: Check out exact release execution
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify baked tools
+      run: |-
+        node --version | grep -E '^v24\.'
+        /usr/bin/php8.3 -r 'exit(extension_loaded("pdo_mysql") && extension_loaded("pdo_sqlite") ? 0 : 1);'
+        docker info >/dev/null
+        skopeo --version
+        chromium --version
+    - name: Receive exact candidate by artifact ID and ZIP digest
+      id: receive
+      env:
+        TRANSFER_ID: ${{ needs.build.outputs.transfer-id }}
+        TRANSFER_DIGEST: ${{ needs.build.outputs.transfer-digest }}
+      run: node scripts/ci/release-candidate.mjs receive
+    - name: Lint the candidate Dockerfiles with the existing pinned policy
+      env:
+        HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+      run: |
+        set -euo pipefail
+        curl --fail --location --proto '=https' --tlsv1.2 \
+          --output "$RUNNER_TEMP/hadolint" \
+          https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+        printf '%s  %s\n' "$HADOLINT_SHA256" "$RUNNER_TEMP/hadolint" | sha256sum --check -
+        chmod 0700 "$RUNNER_TEMP/hadolint"
+        scripts/ci/lint-dockerfiles.sh "$RUNNER_TEMP/hadolint"
+        "$RUNNER_TEMP/hadolint" --config .hadolint.yaml backend/docker/release-ci/Dockerfile
+    - name: Report php candidate vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/php.layout@${{ steps.receive.outputs.php-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: json
+        output: gate-release-check/php.vulnerability.json
+        exit-code: '0'
+        severity: HIGH,CRITICAL
+    - name: Enforce php vulnerability policy
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/php.layout@${{ steps.receive.outputs.php-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: table
+        exit-code: '1'
+        severity: ${{ vars.GATE_IMAGE_VULN_FAIL_SEVERITY || 'CRITICAL' }}
+        skip-setup-trivy: true
+        cache: false
+    - name: Report web candidate vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/web.layout@${{ steps.receive.outputs.web-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: json
+        output: gate-release-check/web.vulnerability.json
+        exit-code: '0'
+        severity: HIGH,CRITICAL
+    - name: Enforce web vulnerability policy
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/web.layout@${{ steps.receive.outputs.web-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: table
+        exit-code: '1'
+        severity: ${{ vars.GATE_IMAGE_VULN_FAIL_SEVERITY || 'CRITICAL' }}
+        skip-setup-trivy: true
+        cache: false
+    - name: Report frontend candidate vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/frontend.layout@${{ steps.receive.outputs.frontend-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: json
+        output: gate-release-check/frontend.vulnerability.json
+        exit-code: '0'
+        severity: HIGH,CRITICAL
+    - name: Enforce frontend vulnerability policy
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/frontend.layout@${{ steps.receive.outputs.frontend-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: table
+        exit-code: '1'
+        severity: ${{ vars.GATE_IMAGE_VULN_FAIL_SEVERITY || 'CRITICAL' }}
+        skip-setup-trivy: true
+        cache: false
+    - name: Report heal-runner candidate vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/heal-runner.layout@${{ steps.receive.outputs.heal-runner-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: json
+        output: gate-release-check/heal-runner.vulnerability.json
+        exit-code: '0'
+        severity: HIGH,CRITICAL
+    - name: Enforce heal-runner vulnerability policy
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      env:
+        TRIVY_PLATFORM: linux/amd64
+      with:
+        input: ${{ runner.temp }}/gate-candidate/heal-runner.layout@${{ steps.receive.outputs.heal-runner-index }}
+        scanners: vuln
+        ignore-unfixed: true
+        vuln-type: os,library
+        trivyignores: .trivyignore.yaml
+        format: table
+        exit-code: '1'
+        severity: ${{ vars.GATE_IMAGE_VULN_FAIL_SEVERITY || 'CRITICAL' }}
+        skip-setup-trivy: true
+        cache: false
+    - name: Select the existing exact frontend package manager
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+      with:
+        version: 10.28.2
+    - name: Validate source quality with candidate dependencies
+      run: node scripts/ci/release-candidate.mjs quality
+    - name: Verify native MariaDB migrations
+      uses: Tuinstra-DEV/devops/.github/actions/gate-native-mariadb-fixture@5e359233bbbb2bd58bf9d13179a0929de2e2f404
+    - name: Record successful MariaDB coverage
+      run: node scripts/ci/release-candidate.mjs mariadb
+    - name: Scan exact base and head with built candidate runtime
+      run: node scripts/ci/release-candidate.mjs paired-scans
+    - name: Bind release decision to the scan runtime identity
+      id: decision
+      env:
+        REVIEWED_SOURCE_RISK_SHA256: ${{ vars.GATE_REVIEWED_SOURCE_RISK_SHA256 }}
+      run: node scripts/ci/release-candidate.mjs prepare-decision
+    - name: Evaluate existing Gate release decision
+      uses: ./.github/actions/gate-release-check
+      with:
+        repository: ${{ github.repository }}
+        base-ref: main
+        head-ref: ${{ github.event.pull_request.head.sha }}
+        command: ${{ steps.decision.outputs.command }}
+    - name: Run browser gates against compiled production candidate
+      run: node scripts/ci/release-candidate.mjs browser
+    - name: Bind required independent security and Heal checks
+      run: node scripts/ci/release-candidate.mjs independent
+    - name: Verify complete candidate and release evidence
+      run: node scripts/ci/release-candidate.mjs finalize
+    - name: Prepare immutable symbol collector for read-only promotion review
+      id: observability
+      uses: Tuinstra-DEV/devops/.github/actions/gate-observability@4d18caee9c2027c410a9e325381cac3b5e955ade
+      with:
+        prepare-only: 'true'
+    - name: Verify promotion as an explicit dry-run
+      env:
+        RELEASE_PROMOTION_DRY_RUN: 'true'
+        GATE_OBSERVABILITY_COLLECTOR_SCRIPT: ${{ steps.observability.outputs.collector-script }}
+      run: node scripts/ci/release-promotion-dry-run.mjs
+    - name: Preserve successful verification and report digests
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-verification-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+        path: gate-release-check/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Preserve diagnostic evidence
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gate-release-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+        path: gate-release-check/
+        if-no-files-found: warn
+        retention-days: 7
+    needs: build

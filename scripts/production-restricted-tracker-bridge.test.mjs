@@ -6,13 +6,13 @@ import test from 'node:test'
 const root = new URL('..', import.meta.url).pathname
 const shellTemplate = readFileSync(new URL('../infra/ansible/roles/production_host_baseline/templates/tuinstra-deploy-shell.j2', import.meta.url), 'utf8')
 const helperTemplate = readFileSync(new URL('../infra/ansible/roles/production_host_baseline/templates/tuinstra-compose-deploy.j2', import.meta.url), 'utf8')
-const shell = shellTemplate
+const shell = 'record() { printf "accepted:%s\\n" "$@"; exit; }\n' + shellTemplate
   .replace('{% raw -%}', '')
   .replace('{% endraw %}', '')
-  .replaceAll('exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy', 'printf "accepted:%s\\n"')
+  .replaceAll('exec /usr/bin/sudo -n /usr/local/sbin/tuinstra-compose-deploy', 'record')
 
-function route(command) {
-  return spawnSync('bash', ['-c', shell], {
+function route(command, ...scope) {
+  return spawnSync('bash', ['-c', shell, 'deploy-shell', ...scope], {
     cwd: root,
     encoding: 'utf8',
     env: { ...process.env, SSH_ORIGINAL_COMMAND: command },
@@ -28,6 +28,17 @@ test('preserves the fixed two-token site endpoint', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /accepted:deploy/)
   assert.match(result.stdout, /accepted:site-marcel/)
+})
+
+test('only a matching site-scoped key can request a website digest activation', () => {
+  const request = `deploy site-marcel ${sha} ${php}`
+  const result = route(request, 'site-marcel')
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /accepted:site-marcel/)
+  assert.equal(route(request).status, 64)
+  assert.equal(route(request, 'wodiq-site').status, 64)
+  assert.equal(route(`deploy site-marcel ${sha} invalid`, 'site-marcel').status, 64)
+  assert.equal(route('deploy site-marcel', 'site-marcel').status, 64)
 })
 
 test('accepts only the five-token Tracker release identity', () => {

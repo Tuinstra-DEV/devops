@@ -57,6 +57,17 @@ for my $other ("ci-runner-jobXservice", "systemd-journald.service", "ci-runner-j
             result = subprocess.run([perl, '-e', script, str(config)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_gate_php83_mysql_matches_cli_pin_and_requires_pdo_driver(self):
+        installer = INSTALLER.read_text()
+        self.assertIn('"php8.3-mysql=${PHP83_VERSION}"', installer)
+        self.assertIn('php83_mysql=${PHP83_VERSION}', installer)
+        source = CONTRACT.read_text()
+        self.assertIn('"pdo_mysql"', source)
+        self.assertIn('in_array("mysql", PDO::getAvailableDrivers(), true)', source)
+        self.assertIn('php83_mysql=', source)
+        self.assertIn("dpkg-query -W -f='${Version}' php8.3-mysql", source)
+        self.assertIn("dpkg-query -W -f='${Version}' php8.3-cli", source)
+
     def test_gate_php83_sqlite_is_installed_and_probed(self):
         installer = INSTALLER.read_text()
         self.assertIn('"php8.3-sqlite3=${PHP83_VERSION}"', installer)
