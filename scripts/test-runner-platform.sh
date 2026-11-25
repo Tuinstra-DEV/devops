@@ -168,7 +168,7 @@ grep -q '^SocketUser=ci-runner-manager$' runner/systemd/ci-runner-host-helper.so
 grep -q '^SocketMode=0600$' runner/systemd/ci-runner-host-helper.socket
 grep -q 'SO_PEERCRED' runner/host-helper/ci_runner_host_helper.py
 grep -q 'helper_socket = "/run/ci-runner-host-helper.sock"' runner/config/manager.toml
-assert_absent 'sudo' runner/manager/ci_runner_manager.py
+assert_absent '\(^\|[^[:alnum:]_]\)sudo\([^[:alnum:]_]\|$\)' runner/manager/ci_runner_manager.py
 if [ -e infra/ansible/roles/runner_host/templates/ci-runner-manager.sudoers.j2 ] ||
    [ -e runner/sudoers/ci-runner-manager ]; then
   echo "obsolete runner sudoers policy remains" >&2

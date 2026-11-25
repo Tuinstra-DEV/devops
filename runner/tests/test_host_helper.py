@@ -82,7 +82,7 @@ class HostHelperTests(unittest.TestCase):
         self.assertFalse(helper.reservation_fits(59 * 1024**3, "heavy"))
         self.assertFalse(helper.reservation_fits(59 * 1024**3, "medium"))
 
-    def test_recorded_heavy_accepts_only_full_legacy_12_or_new_24_gib_backing(self):
+    def test_recorded_heavy_accepts_only_approved_full_backings(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             (directory / "profile").write_text("heavy\n", encoding="ascii")
@@ -103,7 +103,7 @@ class HostHelperTests(unittest.TestCase):
                     mock.patch.object(Path, "stat", autospec=True,
                                       side_effect=backing_stat), \
                     mock.patch.object(helper, "verify_bounded_mount", return_value=True):
-                for gib in (12, 24):
+                for gib in (12, 24, 40):
                     size = gib * 1024**3
                     with self.subTest(gib=gib):
                         self.assertEqual(helper.recorded_profile("lease"), "heavy")

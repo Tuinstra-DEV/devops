@@ -486,9 +486,18 @@ def configured_resource(cfg: dict[str, Any], key: str, expected: int) -> int:
     return value
 
 
+def storage_gib_for_dispatch(repo: str, scope: str, profile: str,
+                             execution_role: str | None) -> int | None:
+    if (repo, scope, profile, execution_role) == (
+            "Tuinstra-DEV/sudoku-tessera", "organization", "heavy", None):
+        return 40
+    return None
+
+
 def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
                     profile: str = "heavy", active: list[dict[str, Any]] | None = None,
-                    available_override_mib: int | None = None) -> list[str]:
+                    available_override_mib: int | None = None,
+                    storage_gib: int | None = None) -> list[str]:
     errors: list[str] = []
     if four_pool(cfg):
         requested_vcpus, requested_memory = pool_resources(profile)
@@ -530,7 +539,12 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
         # The configured threshold is free space BEFORE allocating a pool's
         # fully reserved backing file. The root helper repeats this check and
         # verifies the corresponding remaining floor after fallocate.
-        if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
+        if storage_gib is not None and (profile != "heavy" or type(storage_gib) is not int or storage_gib != 40):
+            raise RunnerError("invalid expanded storage reservation")
+        threshold = int(cfg["min_free_disk_gib"])
+        if storage_gib is not None:
+            threshold += storage_gib + 2
+        if disk.free < threshold * 1024**3:
             errors.append("bounded overlay reservation would breach NVMe floor")
         return errors
     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
@@ -1718,10 +1732,13 @@ def read_token(path: Path) -> str:
 
 
 def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
-           check: bool = True, profile: str | None = None) -> subprocess.CompletedProcess[bytes]:
+           check: bool = True, profile: str | None = None,
+           storage_gib: int | None = None) -> subprocess.CompletedProcess[bytes]:
     if not args or args[0] not in {"list", "resources", "launch", "destroy"} or len(args) > 2:
         raise RunnerError("invalid host helper operation")
     operation = args[0]
+    if operation != "launch" and storage_gib is not None:
+        raise RunnerError("expanded storage is only valid for launch")
     request_id = secrets.token_hex(16)
     request: dict[str, Any] = {"v": 1, "id": request_id, "op": operation}
     if operation in {"launch", "destroy"}:
@@ -1731,6 +1748,10 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
     elif len(args) != 1:
         raise RunnerError("list operation does not accept a lease")
     if operation == "launch":
+        if storage_gib is not None:
+            if not four_pool(cfg) or profile != "heavy" or type(storage_gib) is not int or storage_gib != 40:
+                raise RunnerError("invalid expanded storage reservation")
+            request["storage_gib"] = storage_gib
         if stdin is None:
             raise RunnerError("launch requires JIT configuration")
         if four_pool(cfg):
@@ -1841,6 +1862,9 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         if lease in state_by_lease or lease in inventory:
             raise RunnerError("lease already exists")
         active = None
+        storage_gib = storage_gib_for_dispatch(
+            (metadata or {}).get("repo"), (metadata or {}).get("scope"), profile,
+            (metadata or {}).get("execution_role"))
         if four_pool(cfg):
             active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
             if not isinstance(active, list) or \
@@ -1852,7 +1876,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
                         for item in active if isinstance(item, dict)):
                 raise RunnerError("runner resource inventory requires reconciliation")
         failures = capacity_errors(cfg, len(state_by_lease) + 1,
-                                   profile=profile, active=active) if four_pool(cfg) \
+                                   profile=profile, active=active, storage_gib=storage_gib) if four_pool(cfg) \
             else capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
             LOG.info("admission denied active=%s reasons=%s", len(state_by_lease),
@@ -1881,7 +1905,10 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         LOG.info("launch requested lease=%s", lease)
         try:
             if four_pool(cfg):
-                helper(cfg, "launch", lease, stdin=jit, profile=profile)
+                if storage_gib is not None:
+                    helper(cfg, "launch", lease, stdin=jit, profile=profile, storage_gib=storage_gib)
+                else:
+                    helper(cfg, "launch", lease, stdin=jit, profile=profile)
             else:
                 helper(cfg, "launch", lease, stdin=jit)
         except Exception:
@@ -2301,7 +2328,7 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
 
 
 def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
-                            profile: str) -> list[str]:
+                            profile: str, storage_gib: int | None = None) -> list[str]:
     """Read current four-pool capacity without creating a GitHub runner."""
     states = store.leases()
     state_by_lease: dict[str, dict[str, Any]] = {}
@@ -2326,7 +2353,7 @@ def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
                 for item in active) or \
             {item["lease"] for item in active} != set(inventory):
         raise RunnerError("runner resource inventory requires reconciliation")
-    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active)
+    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active, storage_gib=storage_gib)
     if any(error.startswith("active runner") for error in errors):
         raise RunnerError("runner resource inventory requires reconciliation")
     return errors
@@ -2393,7 +2420,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
                     continue
                 if four_pool(cfg):
-                    failures = pre_jit_capacity_errors(cfg, store, profile)
+                    storage_gib = storage_gib_for_dispatch(repo, scope, profile, execution_role)
+                    failures = pre_jit_capacity_errors(cfg, store, profile, storage_gib) if storage_gib is not None \
+                        else pre_jit_capacity_errors(cfg, store, profile)
                     if failures:
                         LOG.info("pre-JIT capacity unavailable profile=%s reasons=%s",
                                  profile, "; ".join(failures))
