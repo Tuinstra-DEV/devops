@@ -16,7 +16,7 @@ requests a repository JIT configuration. `runner_group_id` is configurable and
 defaults to the verified repository runner group ID `1`.
 
 The configured allowlist is Gate, WODIQ App, WODIQ Platform, Tracker, Notify,
-Console, wodiq-site, marcel-site, and tuinstra-site. This DevOps repository
+Console, Sudoku Tessera, wodiq-site, marcel-site, and tuinstra-site. This DevOps repository
 remains hosted-only and is intentionally excluded to prevent the runner control
 plane from executing its own changes.
 
