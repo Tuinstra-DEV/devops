@@ -41,6 +41,7 @@ BASE_REPOSITORIES = [
     "Tuinstra-DEV/tracker",
     "Tuinstra-DEV/notify",
     "Tuinstra-DEV/console",
+    "Tuinstra-DEV/sudoku-tessera",
     "Tuinstra-DEV/wodiq-site",
     "Tuinstra-DEV/marcel-site",
     "Tuinstra-DEV/tuinstra-site",

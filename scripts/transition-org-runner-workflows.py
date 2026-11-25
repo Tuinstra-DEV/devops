@@ -27,7 +27,7 @@ import urllib.request
 
 OLD_MANAGER_SHA = "2ace71bf8872ce2090ff5e15668f08f906e84519f920240eafbe23d9590017b4"
 NEW_MANAGER_SHA = "81aa1f6405f71ebf15740079bbde89c8f4e7d44820110172a6ad1565728591ec"
-ACTIVATION_SHA = "46e383e9068d0b3e936749d567867bc67cd1de62f62c6a8c81b61a5672ddae51"
+ACTIVATION_SHA = "da82d0e7b4b914647c6cb34ade2e1b6f6b38402759f0f3aa52290ab64d817d76"
 KNOWN_OLD_SHAS = frozenset({"36f32aebe315274df8825674b7bd0ced637ab056",
                             "e1a9f09504b903120e9b5297eff64f58a891c907"})
 ADMITTED_WORKFLOW_SHA = "23c08cf212dd6411ed5076b2ec53a05c1e2e5f3e"
@@ -133,7 +133,8 @@ def candidate_config(data: bytes, new_sha: str, group_id: int) -> tuple[bytes, t
              "helper_socket": "/run/ci-runner-host-helper.sock"}
     exact["repositories"] = ["Tuinstra-DEV/gate", "Tuinstra-DEV/wodiq-app",
         "Tuinstra-DEV/wodiq-platform", "Tuinstra-DEV/tracker", "Tuinstra-DEV/notify",
-        "Tuinstra-DEV/console", "Tuinstra-DEV/wodiq-site", "Tuinstra-DEV/marcel-site",
+        "Tuinstra-DEV/console", "Tuinstra-DEV/sudoku-tessera", "Tuinstra-DEV/wodiq-site",
+        "Tuinstra-DEV/marcel-site",
         "Tuinstra-DEV/tuinstra-site"]
     if any(type(old.get(key)) is not type(value) or old.get(key) != value
            for key, value in exact.items()):

@@ -251,7 +251,8 @@ def candidate_config(old_bytes: bytes, workflow_sha: str, group_id: int) -> tupl
     legacy_repositories = ["Tuinstra-DEV/gate", "Tuinstra-DEV/wodiq-app",
                            "Tuinstra-DEV/wodiq-platform", "Tuinstra-DEV/tracker",
                            "Tuinstra-DEV/notify", "Tuinstra-DEV/console",
-                           "Tuinstra-DEV/wodiq-site", "Tuinstra-DEV/marcel-site",
+                           "Tuinstra-DEV/sudoku-tessera", "Tuinstra-DEV/wodiq-site",
+                           "Tuinstra-DEV/marcel-site",
                            "Tuinstra-DEV/tuinstra-site"]
     if old.get("repositories") != legacy_repositories:
         raise ActivationError("installed legacy repository allowlist differs")
