@@ -117,3 +117,21 @@ gebruikt om deze config-only update terug te draaien.
   115 bestaande authenticated cases groen, geen rebuild. AMD64-emulatie en Mac
   Chrome zijn geen native Sanctuary-eindbewijs; bestaande mobile-capturebeperking
   is vastgelegd. Er is nog geen volledig groene twee-job Release CI.
+
+
+## Uitvoering en hervatbaar herstel
+
+Na expliciet akkoord en de groene rootpreflight van 25 november is de provider
+via #235 gemergd. `transaction.py` maakt eerst een root-only journal en snapshots
+van manager, config, image-selector, helper, groep en repositories en leest het
+bewijs terug. Pas daarna wordt de service in een leeg venster gestopt en de exacte
+release-ref gewijzigd. De metadata en byte-exacte oude en nieuwe configuratie
+blijven beschikbaar voor `rollback`. Herstel accepteert uitsluitend journalgebonden
+oude of nieuwe waarden en herwint de credential via de gestarte systemd-service.
+
+`run-transaction.sh activate` neemt nieuwe snapshots, stageert de gereviewde
+bestanden en controleert hun hashes op Sanctuary. De bestaande operator voert dit
+uit met zijn eigen sudo-authenticatie. `run-transaction.sh rollback` gebruikt het
+bestaande pakket en het root-only journal. Er mogen geen credentials worden gedeeld.
+Bij onbekende drift stopt het herstel en blijft het journal behouden. Repetitie en
+review moeten vóór live activatie afgerond zijn.
