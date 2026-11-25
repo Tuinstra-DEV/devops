@@ -1,0 +1,29 @@
+{
+  "reported_date": "2026-11-17",
+  "source": "existing_operator_terminal",
+  "read_only": true,
+  "diagnostics_verified": true,
+  "helper_limits": {
+    "DISK_GIB": "120G",
+    "PROFILE_RESOURCES": {"heavy": [4, 6144], "medium": [2, 3072]},
+    "PROFILE_DISK_GIB": {"heavy": 24, "medium": 4},
+    "MAX_LEASE_SECONDS": "7200"
+  },
+  "effective_bounds": {
+    "lease_ttl_at_least_two_hours": true,
+    "heavy_reservation_matches_helper": true
+  },
+  "qemu": [
+    {"job_id": 133931380577, "readable": true,
+     "categories": ["qemu_signal_termination", "qemu_shutdown"],
+     "termination_signals": [15], "diagnostic_lines": 2},
+    {"job_id": 133931391484, "readable": true,
+     "categories": ["qemu_signal_termination", "qemu_shutdown"],
+     "termination_signals": [15], "diagnostic_lines": 2}
+  ],
+  "host_kernel_readable": true,
+  "host_oom_recorded": false,
+  "policy_unchanged": true,
+  "root_cause_proven": false,
+  "next_evidence": "read-only libvirt state/reason and block-error samples during one Sanctuary diagnostic run"
+}

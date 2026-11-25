@@ -72,7 +72,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_pr_security_source
 ruby scripts/gate-pr-security-contract-test.rb
 
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_trusted_verification_workflow.py tests/test_notify_bundle_workflow.py tests/test_dev54_activation.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_tessera_scope_action.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_wodiq_compact_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_dev54_runner_diagnostics.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_product_ci_workflow.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_gate_compact_workflow.py tests/test_gate_release_check_read.py tests/test_gate_release_read_recovery.py tests/test_gate_release_ref_transaction.py tests/test_gate_selected_verdict.py tests/test_gate_permanent_preflight.py tests/test_gate_permanent_transaction.py
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=runner/manager:runner/tests python3 -B -m unittest discover -s runner/tests -p test_gate_effective_patch.py

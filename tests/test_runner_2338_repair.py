@@ -18,8 +18,8 @@ class RunnerRepairTests(unittest.TestCase):
         result = subprocess.run(['bash', '-n'], input=repair.GUEST, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         # This one-purpose repair and its embedded contract are the reviewed
-        # 5 November artifact. Later Packer requirements (such as PDO MySQL)
-        # must not silently expand that historical runner-only repair.
+        # 5 November artifact. Later Packer requirements must not silently
+        # expand that historical runner-only repair.
         self.assertEqual(hashlib.sha256((ROOT / 'scripts/repair-runner-image-2338.py').read_bytes()).hexdigest(),
                          '8ab894681f9afcc3eb739b12411bd6d1b4f97a67f6f92cafefcd613aa3d50333')
 
