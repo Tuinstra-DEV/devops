@@ -3,6 +3,9 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import hashlib
+import stat
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -72,6 +75,42 @@ class ActivationTests(unittest.TestCase):
                         tx.activate(base, manager, checker, client, original, group, repos)
                 self.assertLess(calls.index('journal'), calls.index(failure))
                 self.assertEqual(calls[-1], 'recover')
+
+    def test_backup_hash_mismatch_blocks_before_journal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manager_file = root / 'manager'
+            config_file = root / 'config'
+            selector = root / 'selector'
+            manager_file.write_bytes(b'manager')
+            config_file.write_bytes(b'changed-after-original-read')
+            selector.symlink_to(manager_file)
+            backup_root = root / 'backup'
+            base = mock.Mock()
+            base.MANAGER, base.CONFIG, base.SELECTOR = manager_file, config_file, selector
+            base.source_fingerprints.return_value = {
+                'manager_sha256': hashlib.sha256(b'manager').hexdigest(),
+                'config_sha256': hashlib.sha256(config_file.read_bytes()).hexdigest(),
+            }
+            def protected(path, expected=None):
+                data = path.read_bytes()
+                if expected is not None and hashlib.sha256(data).hexdigest() != expected:
+                    raise ValueError('protected_file_hash_differs')
+                return data
+            base.secure_regular.side_effect = protected
+            base.repository_map.return_value = {'gate': 1}
+            original_lstat = Path.lstat
+            def fake_lstat(path):
+                info = original_lstat(path)
+                if path == backup_root:
+                    return SimpleNamespace(st_mode=info.st_mode, st_uid=0)
+                return info
+            group = {'selected_workflows': ['old']}
+            with mock.patch.object(tx, 'BACKUP_ROOT', backup_root),                  mock.patch.object(tx, 'JOURNAL', backup_root / 'active.json'),                  mock.patch.object(tx.preflight, 'verify_policy', return_value=(b'new', {'selected_workflows': ['new']})),                  mock.patch.object(Path, 'lstat', fake_lstat):
+                with self.assertRaisesRegex(ValueError, 'protected_file_hash_differs'):
+                    tx.prepare(base, mock.Mock(), b'original', group, {})
+                self.assertFalse((backup_root / 'active.json').exists())
+                base.write_json.assert_not_called()
 
     def test_rollback_refuses_backup_outside_fixed_directory(self):
         base = mock.Mock()

@@ -52,6 +52,11 @@ def prepare(base, manager, original, group, repos):
         saved_file(base, backup / name, data)
     state = {'phase': 'prepared', 'backup': str(backup), 'before': metadata,
              'config_after_sha256': hashlib.sha256(candidate).hexdigest()}
+    # Recovery reads these protected copies, not the live files. Prove their
+    # bytes agree with the metadata before the journal can authorize changes.
+    base.secure_regular(backup / 'manager.before', metadata['manager_sha256'])
+    base.secure_regular(backup / 'manager.toml.before', metadata['config_sha256'])
+    base.secure_regular(backup / 'manager.toml.after', state['config_after_sha256'])
     base.write_json(backup / 'before.json', metadata)
     base.write_json(backup / 'transaction.json', state)
     base.write_json(JOURNAL, state)
