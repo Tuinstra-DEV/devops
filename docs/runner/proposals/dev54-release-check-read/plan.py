@@ -1,6 +1,5 @@
 """Pure release admission delta. No filesystem writes, credentials or HTTP."""
 import copy
-import re
 import tomllib
 
 OLD = 'a083c789196ee8cd89b4ab3253c458d8d1de6dd6'
@@ -20,21 +19,14 @@ def render_config(original, *, rollback=False):
         if actual != POLICY | {'workflow_ref': PREFIX + source}:
             raise ValueError('release_role_baseline_changed')
         expected['org_execution_roles'][role]['workflow_ref'] = PREFIX + target
-    lines = original.splitlines(keepends=True)
-    current = None
-    found = set()
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(b'['):
-            current = next((r for r in ROLES if stripped == ('[org_execution_roles.' + r + ']').encode()), None)
-        if current and re.match(rb'^\s*workflow_ref\s*=', line):
-            old = (PREFIX + source).encode()
-            if current in found or line.count(old) != 1:
-                raise ValueError('release_ref_layout_changed')
-            lines[i] = line.replace(old, (PREFIX + target).encode())
-            found.add(current)
-    result = b''.join(lines)
-    if found != set(ROLES) or tomllib.loads(result.decode()) != expected:
+    old = (PREFIX + source).encode()
+    new = (PREFIX + target).encode()
+    # Both explicit tables and the existing activator's inline layout use
+    # literal refs. Refuse ambiguous occurrences and validate the full delta.
+    if original.count(old) != len(ROLES) or new in original:
+        raise ValueError('release_ref_layout_changed')
+    result = original.replace(old, new)
+    if tomllib.loads(result.decode()) != expected:
         raise ValueError('config_delta_not_exact')
     return result
 
