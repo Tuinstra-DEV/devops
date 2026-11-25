@@ -1,0 +1,26 @@
+{
+  "schema": "dev54.release-check-read-proposal/v1",
+  "activated": false,
+  "captured_at": "2026-11-22T10:49:52.557396+00:00",
+  "workflow_pin_before": "a083c789196ee8cd89b4ab3253c458d8d1de6dd6",
+  "workflow_pin_after": "716ce046a09da7a01b647e74f966ba0c89a0a7ad",
+  "runner_group_id": 4,
+  "group_snapshot_sha256": "9074c675b0104f3095bb23fae5d4d84eacb39ec9d2e67b3bf3928b65d318ee44",
+  "repositories_snapshot_sha256": "878e7df27d23a5f6da900c79d40a9dc18cc9f90b1286abb4f09037645448d2c7",
+  "repository_count_unchanged": 11,
+  "workflow_ref_count_unchanged": 8,
+  "replace_group_ref": {
+    "before": "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-ci.yml@a083c789196ee8cd89b4ab3253c458d8d1de6dd6",
+    "after": "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-ci.yml@716ce046a09da7a01b647e74f966ba0c89a0a7ad"
+  },
+  "manager_roles": [
+    "gate-release-build",
+    "gate-release-verify"
+  ],
+  "manager_sha256_unchanged": "82d9abb407546ebefab4a68f944232cd791415f981ab205e558ed9b0dca3a66c",
+  "image_sha256_unchanged": "2faaf1bed35a253fd134bb52bcd2f9ce3e93f204a0bcdc4d96a5a2df925971ce",
+  "manager_restart_required": true,
+  "effective_config_delta_verified": false,
+  "production_activated": false,
+  "scope_approval_received": false
+}

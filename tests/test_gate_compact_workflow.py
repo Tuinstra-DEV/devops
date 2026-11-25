@@ -68,6 +68,13 @@ class GateCompactTests(unittest.TestCase):
         for phase in ['quality', 'paired-scans', 'browser', 'independent', 'finalize']:
             self.assertTrue(any('release-candidate.mjs '+phase in s.get('run', '') for s in verify))
 
+    def test_only_release_verify_can_read_private_check_results(self):
+        wf = json.loads(subprocess.check_output(['ruby', '-ryaml', '-rjson', '-e', 'puts JSON.generate(YAML.safe_load(File.read(ARGV[0]), aliases: true))', str(ROOT / '.github/workflows/reusable-gate-release-ci.yml')], text=True))
+        baseline = {'contents': 'read', 'actions': 'read', 'pull-requests': 'read'}
+        self.assertEqual(wf['permissions'], baseline)
+        self.assertEqual(wf['jobs']['build']['permissions'], baseline)
+        self.assertEqual(wf['jobs']['verify']['permissions'], baseline | {'checks': 'read'})
+
     def test_planner_preserves_policy_and_does_not_apply(self):
         spec = importlib.util.spec_from_file_location('gate_plan', ROOT / 'scripts/plan-gate-compact-admission.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
