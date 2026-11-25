@@ -105,3 +105,30 @@ class LiveAdapterTests(unittest.TestCase):
         base.atomic_write.assert_not_called()
         adapter.write_config(b'original')
         base.atomic_write.assert_called_once_with(base.CONFIG, b'original', 0, 1, 0o600)
+
+    def test_selector_link_and_metadata_drift_fail_closed(self):
+        import os
+        import stat
+        import tempfile
+        location = path.with_name('live_recovery.py')
+        loader = importlib.util.spec_from_file_location('live_release_recovery_selector', location)
+        module = importlib.util.module_from_spec(loader)
+        loader.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            selector = Path(temporary) / 'selector'
+            selector.symlink_to('image')
+            info = selector.lstat()
+            fixed = {'manager_sha256': 'manager', 'helper_sha256': 'helper',
+                     'selector_target': '/image', 'active_image_sha256': 'hash',
+                     'selector_link': 'image', 'selector_uid': info.st_uid,
+                     'selector_gid': info.st_gid, 'selector_mode': stat.S_IMODE(info.st_mode)}
+            base = mock.Mock()
+            base.SELECTOR = selector
+            base.source_fingerprints.return_value = fixed
+            adapter = module.LiveRecovery(base, mock.Mock(), mock.Mock(), Path(temporary), {})
+            adapter.verify_fixed_resources(SimpleNamespace(fixed=fixed))
+            with mock.patch.object(module.os, 'readlink', return_value='different'):
+                with self.assertRaisesRegex(ValueError, 'recovery_selector_metadata_drift'):
+                    adapter.verify_fixed_resources(SimpleNamespace(fixed=fixed))
+            with self.assertRaisesRegex(ValueError, 'recovery_selector_metadata_drift'):
+                adapter.verify_fixed_resources(SimpleNamespace(fixed=fixed | {'selector_uid': info.st_uid + 1}))

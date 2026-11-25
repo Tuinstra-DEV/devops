@@ -39,11 +39,16 @@ def prepare(base, manager, original, group, repos):
     backup.mkdir(mode=0o700)
     fingerprints = base.source_fingerprints()
     manager_info, config_info = base.MANAGER.stat(), base.CONFIG.stat()
+    selector_info = base.SELECTOR.lstat()
+    if not stat.S_ISLNK(selector_info.st_mode) or selector_info.st_uid != 0:
+        raise ValueError('selector_metadata_unsafe')
     metadata = {**fingerprints, 'selector_link': os.readlink(base.SELECTOR),
                 'manager_uid': manager_info.st_uid, 'manager_gid': manager_info.st_gid,
                 'manager_mode': stat.S_IMODE(manager_info.st_mode),
                 'config_uid': config_info.st_uid, 'config_gid': config_info.st_gid,
-                'config_mode': stat.S_IMODE(config_info.st_mode)}
+                'config_mode': stat.S_IMODE(config_info.st_mode),
+                'selector_uid': selector_info.st_uid, 'selector_gid': selector_info.st_gid,
+                'selector_mode': stat.S_IMODE(selector_info.st_mode)}
     for name, data in [('manager.before', base.secure_regular(base.MANAGER)),
                        ('manager.toml.before', original), ('manager.toml.after', candidate),
                        ('group-before.json', json.dumps(group).encode()),
