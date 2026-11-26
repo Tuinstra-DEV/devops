@@ -156,10 +156,10 @@ jobs:
                                   ("base-sha", base_sha), ("run-id", run_id),
                                   ("run-attempt", attempt), ("workflow-sha", workflow_sha)):
                   out.write(f"{name}={value}\n")
+              # Since 25 Nov 2026 WODIQ verification runs only on GitHub-hosted
+              # runners; the trust decision still selects the adapter and route.
               for profile in ("medium", "heavy"):
-                  runner = {"group": "sanctuary-trusted-verification",
-                            "labels": ["self-hosted", "trusted-" + profile, "sanctuary-wodiq-platform"]} if trusted else "ubuntu-24.04"
-                  out.write(profile + "-runner=" + json.dumps(runner, separators=(",", ":")) + "\n")
+                  out.write(profile + "-runner=" + json.dumps("ubuntu-24.04") + "\n")
           IDENTITY
       - name: Check out verified source history without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
