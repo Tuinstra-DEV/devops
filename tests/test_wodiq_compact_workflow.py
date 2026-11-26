@@ -52,6 +52,8 @@ class WodiqCompactTests(unittest.TestCase):
                           'wodiq-management', 'wodiq-worker'])
         self.assertNotIn('tracker-', source)
         self.assertNotIn('gate-php', source)
+        self.assertNotIn('self-hosted', source)
+        self.assertNotIn('sanctuary', source)
         self.assertIn('npm run scan:secrets', source)
         self.assertIn('--release-candidate', source)
         self.assertIn('fetch-depth: 0', source)
@@ -76,7 +78,8 @@ class WodiqCompactTests(unittest.TestCase):
         with patch.object(legacy, 'identity_script', script):
             identity = case.execute_identity()
             self.assertEqual(identity['trusted'], 'true')
-            self.assertEqual(json.loads(identity['medium-runner']), {'group': 'sanctuary-trusted-verification', 'labels': ['self-hosted', 'trusted-medium', 'sanctuary-wodiq-platform']})
+            self.assertEqual(json.loads(identity['medium-runner']), 'ubuntu-24.04')
+            self.assertEqual(json.loads(identity['heavy-runner']), 'ubuntu-24.04')
             case.env['GITHUB_ACTOR'] = 'untrusted-user'
             identity = case.execute_identity()
             self.assertEqual(identity['trusted'], 'false')
