@@ -18,14 +18,22 @@ reconciliation and cleanup. No unbounded storage is allowed.
 
 The effective live manager and helper are older, checksum-pinned builds with a
 stricter post-allocation floor than current repository defaults. Do not deploy
-the current source files over them: prepare a narrowly reviewed patch against
-the exact effective hashes, retain their ordinary admission rules, test both
-patches and take verified recovery backups. Deploy manager and helper together
+the current source files over them. The reviewed patches in
+`proposals/dev54-tessera-storage/` apply only to the pinned effective hashes,
+retain their ordinary admission rules and are tested before use. Deploy manager and helper together
 only after a natural drain of domains, leases and helper requests. Preserve the
 current config, runner group and image selector. On a failed installation,
 keep admission paused and restore both verified backups; rollback also requires
 the 40-GiB guest and its cleanup to finish first because the old helper does not
 recognize that size. Verify shared dispatch after either operation.
+
+The transaction wrapper supports `prepare-only`, `apply` and `rollback`. Preparation
+reads only the existing executable files, checks their original and resulting
+hashes, and runs the effective-code tests. The playbook verifies root-owned
+backups before stopping admission and rechecks the empty window after stopping.
+If installation fails after the first binary is installed, admission remains
+paused; run `rollback` and confirm both hashes and service health. The operator
+supplies existing sudo authentication in their terminal.
 
 Validate with one full trusted Tessera job and separately sample free guest
 backing space. A green run and its observed minimum free space establish only
