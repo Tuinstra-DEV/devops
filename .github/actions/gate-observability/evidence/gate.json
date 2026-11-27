@@ -5,7 +5,7 @@
   "project_id": "4511659790630992",
   "installation_uuid": "73812b1c-1666-407e-8234-d6ace9b95765",
   "fingerprints": {
-    "sdk_initialization": "sha256:9920aa597ba7a7b3d1b4f3e6f4e88789080a91e9e13a65d530aa71b0f9803324",
+    "sdk_initialization": "sha256:da96693bee8c5b0437ef79d17258a2bc2d33d97fa64443597a51278e7e39a4e7",
     "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
     "privacy_filters": "sha256:adb607142ef9a3c25aec2faf59dec9893257cf23d702ad45a70e4d7506c24a06",
     "deployment_symbols": "sha256:558174653e8c10a116396aa4d438d8b875477c7fa8d64e5922c854ba6bf35efd"
@@ -109,21 +109,21 @@
     },
     {
       "id": "backend",
-      "verification_source": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
-      "artifact_digest": "sha256:8c55178cb8859b1b1117092efebdb0f344826ef7bea68dc615ed8ed3a1ae5c59",
+      "verification_source": "f9added4a183fb7c683c529ab46c23f4cbd94d72",
+      "artifact_digest": "sha256:f4104f7f948c7e335d0bf8f2dd7a6f6b398853541abfe743b9202846b07a7989",
       "run": {
-        "workflow": ".github/workflows/release-gate.yml",
-        "id": "42067086339",
+        "workflow": ".github/workflows/release-ci.yml",
+        "id": "45884649226",
         "attempt": 1,
-        "source_sha": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4"
+        "source_sha": "f9added4a183fb7c683c529ab46c23f4cbd94d72"
       },
       "sentry": {
-        "issue_id": "158924336",
+        "issue_id": "164233430",
         "event_ids": [
-          "d0cd8c26ddce4a24aabd599005648a2b"
+          "1646313d7f2848c8a21e7eeb7c7d110c"
         ]
       },
-      "heal_case_id": "ee0380d84c15414a838e6546aec0efdf",
+      "heal_case_id": "6b994d6332e04aff89d740a1791a5436",
       "source_frame": {
         "path": "backend/src/Service/Heal/HealRunnerFailureReporter.php",
         "line": 42
@@ -133,8 +133,7 @@
           "user_fields_count": 0,
           "private_fields_count": 0,
           "verification_refs": [
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-symfony-7424-20261127.md"
           ]
         },
         "deduplication": {
@@ -142,22 +141,21 @@
           "triage_attempts": 1,
           "case_count": 1,
           "verification_refs": [
-            "gate-live-cases.json",
+            "gate-DEV-54-symfony-7424-20261127.md",
             "gate-local-verification.md"
           ]
         },
         "disabled_fixes": {
           "fix_attempts": 0,
           "verification_refs": [
-            "gate-live-cases.json",
-            "gate-local-verification.md"
+            "gate-DEV-54-symfony-7424-20261127.md"
           ]
         }
       }
     }
   ],
   "provenance": {
-    "captured_at": "2026-11-05T18:09:27.382Z",
+    "captured_at": "2026-11-27T17:02:03.392113Z",
     "source": "operator-verified-actual-sdk-and-provider-intake",
     "verification_environment": "verification",
     "production_event": false
