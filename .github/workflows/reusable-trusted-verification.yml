@@ -227,7 +227,22 @@ jobs:
           if p["proofs"]["all"] or os.environ["RELEASE_CANDIDATE"] == "true":
               require(p["proofs"]["all"] and all(p[k] for k in checks) and all(p["builds"].values()) and not any(p["proofs"][k] for k in proofs if k != "all"), "full release closure")
           require(not any(p[k] for k in checks) or any(p["proofs"].values()), "integration proof")
-          keys = [key for key,active in (("wodiq-core",p["core"] or p["migration"] or p["client"]),("wodiq-runtime-build",any(p["builds"].values())),*(('wodiq-'+k,p[k]) for k in builds)) if active]
+          # CI speed step 2: mirrors scripts/ci/bundle-selection.mjs in wodiq-platform (same keys, same order).
+          coach = p["proofs"]["all"] or p["proofs"]["api"] or p["proofs"]["coach"]
+          personas = p["proofs"]["all"] or p["proofs"]["management"] or p["proofs"]["managementAuth"]
+          keys = [key for key,active in (
+              ("wodiq-core", p["core"] or p["client"]),
+              ("wodiq-migration", p["migration"]),
+              ("wodiq-runtime-build", any(p["builds"].values())),
+              ("wodiq-api-unit-1", p["api"]),
+              ("wodiq-api-unit-2", p["api"]),
+              ("wodiq-api-isolation", p["api"]),
+              ("wodiq-api-c310", p["api"] and coach),
+              ("wodiq-api-proof-coach", p["api"] and coach),
+              ("wodiq-api-proof-other", p["api"]),
+              ("wodiq-management", p["management"]),
+              ("wodiq-management-personas", p["management"] and personas),
+              ("wodiq-worker", p["worker"])) if active]
           expected = {"schemaVersion":1,"jobs":[{"job-key":k,"plan":p} for k in keys]}
           require(s == expected, "ordered selection or plan mismatch")
           canonical = json.dumps(s,sort_keys=True,separators=(",",":"),ensure_ascii=False)
@@ -330,21 +345,11 @@ jobs:
           runtime-download: 'false'
           gate-frontend-output: 'false'
 
-  wodiq-api:
-    name: wodiq-api verification (${{ matrix.shard }})
-    needs: [preflight, wodiq-runtime-build]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api') && needs.wodiq-runtime-build.result == 'success' && needs.wodiq-runtime-build.outputs.verified == 'true' && needs.wodiq-runtime-build.outputs.route == needs.preflight.outputs.trusted }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: contracts
-            profile: medium
-          - shard: lifecycle
-            profile: heavy
-          - shard: http
-            profile: heavy
-    runs-on: ${{ fromJSON(matrix.profile == 'medium' && needs.preflight.outputs.medium-runner || needs.preflight.outputs.heavy-runner) }}
+  wodiq-migration:
+    name: wodiq-migration verification
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-migration') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.medium-runner) }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -352,18 +357,237 @@ jobs:
       verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
       route: ${{ needs.preflight.outputs.trusted }}
     env:
-      CI_API_SHARD: ${{ matrix.shard }}
       CI_PLAN: ${{ needs.preflight.outputs.plan }}
       CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
       CI_RUN_ID: ${{ github.run_id }}
       CI_RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
-      - name: Run fixed trusted wodiq-api adapter
+      - name: Run fixed trusted wodiq-migration adapter
         if: needs.preflight.outputs.trusted == 'true'
         id: trusted
         uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
         with:
-          job-key: wodiq-api
+          job-key: wodiq-migration
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-migration adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-migration
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-unit-1:
+    name: wodiq-api-unit-1 verification
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-unit-1') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.medium-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-unit-1 adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-unit-1
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-api-unit-1 adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-unit-1
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-unit-2:
+    name: wodiq-api-unit-2 verification
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-unit-2') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.medium-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-unit-2 adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-unit-2
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-api-unit-2 adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-unit-2
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-isolation:
+    name: wodiq-api-isolation verification
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-isolation') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.medium-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-isolation adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-isolation
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-api-isolation adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-isolation
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-c310:
+    name: wodiq-api-c310 verification
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-c310') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.heavy-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-c310 adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-c310
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-api-c310 adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-c310
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: 'false'
+          gate-frontend-output: 'false'
+
+  wodiq-api-proof-coach:
+    name: wodiq-api-proof-coach verification
+    needs: [preflight, wodiq-runtime-build]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-proof-coach') && needs.wodiq-runtime-build.result == 'success' && needs.wodiq-runtime-build.outputs.verified == 'true' && needs.wodiq-runtime-build.outputs.route == needs.preflight.outputs.trusted }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.heavy-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-proof-coach adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-proof-coach
           source-sha: ${{ needs.preflight.outputs.source-sha }}
           node-version: '24'
           pnpm-version: ''
@@ -371,12 +595,56 @@ jobs:
           php-extensions: ''
           runtime-download: ${{ fromJSON(needs.preflight.outputs.plan).builds.api }}
           gate-frontend-output: 'false'
-      - name: Run fixed hosted wodiq-api adapter
+      - name: Run fixed hosted wodiq-api-proof-coach adapter
         if: needs.preflight.outputs.trusted == 'false'
         id: hosted
         uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
         with:
-          job-key: wodiq-api
+          job-key: wodiq-api-proof-coach
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(needs.preflight.outputs.plan).builds.api }}
+          gate-frontend-output: 'false'
+
+  wodiq-api-proof-other:
+    name: wodiq-api-proof-other verification
+    needs: [preflight, wodiq-runtime-build]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-api-proof-other') && needs.wodiq-runtime-build.result == 'success' && needs.wodiq-runtime-build.outputs.verified == 'true' && needs.wodiq-runtime-build.outputs.route == needs.preflight.outputs.trusted }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.heavy-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-api-proof-other adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-proof-other
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(needs.preflight.outputs.plan).builds.api }}
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-api-proof-other adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-api-proof-other
           source-sha: ${{ needs.preflight.outputs.source-sha }}
           node-version: '24'
           pnpm-version: ''
@@ -421,6 +689,50 @@ jobs:
         uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
         with:
           job-key: wodiq-management
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(needs.preflight.outputs.plan).builds.management }}
+          gate-frontend-output: 'false'
+
+  wodiq-management-personas:
+    name: wodiq-management-personas verification
+    needs: [preflight, wodiq-runtime-build]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), 'wodiq-management-personas') && needs.wodiq-runtime-build.result == 'success' && needs.wodiq-runtime-build.outputs.verified == 'true' && needs.wodiq-runtime-build.outputs.route == needs.preflight.outputs.trusted }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.heavy-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.trusted.outputs.verified || steps.hosted.outputs.verified }}
+      route: ${{ needs.preflight.outputs.trusted }}
+    env:
+      CI_PLAN: ${{ needs.preflight.outputs.plan }}
+      CI_SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Run fixed trusted wodiq-management-personas adapter
+        if: needs.preflight.outputs.trusted == 'true'
+        id: trusted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-management-personas
+          source-sha: ${{ needs.preflight.outputs.source-sha }}
+          node-version: '24'
+          pnpm-version: ''
+          php-version: ''
+          php-extensions: ''
+          runtime-download: ${{ fromJSON(needs.preflight.outputs.plan).builds.management }}
+          gate-frontend-output: 'false'
+      - name: Run fixed hosted wodiq-management-personas adapter
+        if: needs.preflight.outputs.trusted == 'false'
+        id: hosted
+        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc
+        with:
+          job-key: wodiq-management-personas
           source-sha: ${{ needs.preflight.outputs.source-sha }}
           node-version: '24'
           pnpm-version: ''

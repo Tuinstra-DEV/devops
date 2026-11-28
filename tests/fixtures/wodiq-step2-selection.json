@@ -1,0 +1,337 @@
+{
+ "source": "wodiq-platform scripts/ci/bundle-selection.mjs (chore/ci-speed-step2)",
+ "cases": [
+  {
+   "paths": [
+    "package-lock.json"
+   ],
+   "plan": {
+    "version": 3,
+    "core": true,
+    "migration": true,
+    "api": true,
+    "management": true,
+    "worker": true,
+    "client": true,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": true
+    },
+    "proofs": {
+     "all": true,
+     "api": false,
+     "management": false,
+     "worker": false,
+     "activity": false,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-core",
+    "wodiq-migration",
+    "wodiq-runtime-build",
+    "wodiq-api-unit-1",
+    "wodiq-api-unit-2",
+    "wodiq-api-isolation",
+    "wodiq-api-c310",
+    "wodiq-api-proof-coach",
+    "wodiq-api-proof-other",
+    "wodiq-management",
+    "wodiq-management-personas",
+    "wodiq-worker"
+   ]
+  },
+  {
+   "paths": [
+    "packages/api/src/server/api/goals/index.get.ts"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": true,
+    "management": false,
+    "worker": false,
+    "client": true,
+    "builds": {
+     "api": true,
+     "management": false,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": true,
+     "management": false,
+     "worker": false,
+     "activity": false,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-core",
+    "wodiq-runtime-build",
+    "wodiq-api-unit-1",
+    "wodiq-api-unit-2",
+    "wodiq-api-isolation",
+    "wodiq-api-c310",
+    "wodiq-api-proof-coach",
+    "wodiq-api-proof-other"
+   ]
+  },
+  {
+   "paths": [
+    "test/local-proof/activity-crud.e2e.test.mjs"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": true,
+    "management": false,
+    "worker": false,
+    "client": true,
+    "builds": {
+     "api": true,
+     "management": false,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": false,
+     "worker": false,
+     "activity": true,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-core",
+    "wodiq-runtime-build",
+    "wodiq-api-unit-1",
+    "wodiq-api-unit-2",
+    "wodiq-api-isolation",
+    "wodiq-api-proof-other"
+   ]
+  },
+  {
+   "paths": [
+    "test/local-proof/c310-recovery.e2e.test.mjs"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": true,
+    "management": false,
+    "worker": false,
+    "client": true,
+    "builds": {
+     "api": true,
+     "management": false,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": false,
+     "worker": false,
+     "activity": false,
+     "coach": true,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-core",
+    "wodiq-runtime-build",
+    "wodiq-api-unit-1",
+    "wodiq-api-unit-2",
+    "wodiq-api-isolation",
+    "wodiq-api-c310",
+    "wodiq-api-proof-coach",
+    "wodiq-api-proof-other"
+   ]
+  },
+  {
+   "paths": [
+    "workers/platform-workers/src/sync/garmin-provider.ts"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": true,
+    "management": true,
+    "worker": true,
+    "client": true,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": true
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": false,
+     "worker": false,
+     "activity": true,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": true
+    }
+   },
+   "keys": [
+    "wodiq-core",
+    "wodiq-runtime-build",
+    "wodiq-api-unit-1",
+    "wodiq-api-unit-2",
+    "wodiq-api-isolation",
+    "wodiq-api-proof-other",
+    "wodiq-management",
+    "wodiq-worker"
+   ]
+  },
+  {
+   "paths": [
+    "test/local-proof/management-auth.e2e.test.mjs"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": false,
+    "management": true,
+    "worker": false,
+    "client": false,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": false,
+     "worker": false,
+     "activity": false,
+     "coach": false,
+     "managementAuth": true,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-runtime-build",
+    "wodiq-management",
+    "wodiq-management-personas"
+   ]
+  },
+  {
+   "paths": [
+    "packages/management/server/api/management/operators/index.get.ts"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": false,
+    "management": true,
+    "worker": false,
+    "client": false,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": true,
+     "worker": false,
+     "activity": false,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-runtime-build",
+    "wodiq-management",
+    "wodiq-management-personas"
+   ]
+  },
+  {
+   "paths": [
+    "workers/platform-workers/src/retention/worker.ts"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": false,
+    "management": false,
+    "worker": true,
+    "client": false,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": true
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": false,
+     "worker": true,
+     "activity": false,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-runtime-build",
+    "wodiq-worker"
+   ]
+  },
+  {
+   "paths": [
+    "test/local-proof/management-c4-import.e2e.test.mjs"
+   ],
+   "plan": {
+    "version": 3,
+    "core": false,
+    "migration": false,
+    "api": false,
+    "management": true,
+    "worker": false,
+    "client": false,
+    "builds": {
+     "api": true,
+     "management": true,
+     "worker": false
+    },
+    "proofs": {
+     "all": false,
+     "api": false,
+     "management": true,
+     "worker": false,
+     "activity": false,
+     "coach": false,
+     "managementAuth": false,
+     "garmin": false
+    }
+   },
+   "keys": [
+    "wodiq-runtime-build",
+    "wodiq-management",
+    "wodiq-management-personas"
+   ]
+  }
+ ]
+}

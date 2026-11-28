@@ -11,6 +11,12 @@ from tests import test_trusted_verification_workflow as legacy
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / '.github/workflows/reusable-trusted-verification.yml'
+# CI speed step 2 job topology (wodiq-platform scripts/ci/bundle-selection.mjs).
+KEYS = ['wodiq-core', 'wodiq-runtime-build', 'wodiq-migration', 'wodiq-api-unit-1', 'wodiq-api-unit-2',
+        'wodiq-api-isolation', 'wodiq-api-c310', 'wodiq-api-proof-coach', 'wodiq-api-proof-other',
+        'wodiq-management', 'wodiq-management-personas', 'wodiq-worker']
+RUNTIME = {'wodiq-api-proof-coach': 'api', 'wodiq-api-proof-other': 'api', 'wodiq-management': 'management',
+           'wodiq-management-personas': 'management', 'wodiq-worker': 'worker'}
 
 
 class WodiqCompactTests(unittest.TestCase):
@@ -24,7 +30,7 @@ class WodiqCompactTests(unittest.TestCase):
                 'builds': {'api': True, 'management': True, 'worker': False},
                 'proofs': dict.fromkeys(['all','api','management','worker','activity','coach','managementAuth','garmin'], False)}
         plan['management'] = plan['proofs']['management'] = True
-        selection = {'schemaVersion': 1, 'jobs': [{'job-key': key, 'plan': plan} for key in ['wodiq-runtime-build','wodiq-management']]}
+        selection = {'schemaVersion': 1, 'jobs': [{'job-key': key, 'plan': plan} for key in ['wodiq-runtime-build','wodiq-management','wodiq-management-personas']]}
         def execute(p, s, release='false'):
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / 'output'
@@ -33,7 +39,7 @@ class WodiqCompactTests(unittest.TestCase):
                     exec(compile(script, str(WORKFLOW), 'exec'), {})
                 return dict(line.split('=', 1) for line in output.read_text().splitlines())
         actual = execute(plan, selection)
-        self.assertEqual(json.loads(actual['selected-jobs']), ['wodiq-runtime-build','wodiq-management'])
+        self.assertEqual(json.loads(actual['selected-jobs']), ['wodiq-runtime-build','wodiq-management','wodiq-management-personas'])
         self.assertEqual(actual['selection-sha256'], hashlib.sha256(json.dumps(selection, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
         bad_key = copy.deepcopy(selection)
         bad_key['jobs'][0]['job-key'] = 'arbitrary-command'
@@ -45,11 +51,12 @@ class WodiqCompactTests(unittest.TestCase):
         malformed['builds']['api'] = False
         with self.assertRaises(SystemExit): execute(malformed, selection)
 
-    def test_only_preflight_and_five_fixed_suites_exist(self):
+    def test_only_preflight_and_the_twelve_fixed_step2_suites_exist(self):
         source = WORKFLOW.read_text()
         self.assertEqual(re.findall(r'^  ([a-z][a-z0-9-]*):$', source.split('jobs:\n', 1)[1], re.M),
-                         ['preflight', 'wodiq-core', 'wodiq-runtime-build', 'wodiq-api',
-                          'wodiq-management', 'wodiq-worker'])
+                         ['preflight', *KEYS])
+        self.assertNotIn('CI_API_SHARD', source)  # devops main's unused 36d8ad15 matrix stays out
+        self.assertNotIn('matrix:', source)  # one job per key: bundle results are per job, never a collapsed matrix
         self.assertNotIn('tracker-', source)
         self.assertNotIn('gate-php', source)
         self.assertNotIn('self-hosted', source)
@@ -57,21 +64,42 @@ class WodiqCompactTests(unittest.TestCase):
         self.assertIn('npm run scan:secrets', source)
         self.assertIn('--release-candidate', source)
         self.assertIn('fetch-depth: 0', source)
-        for key in ['core', 'runtime-build', 'api', 'management', 'worker']:
-            block = source.split(f'  wodiq-{key}:\n', 1)[1].split('\n  wodiq-', 1)[0]
-            if key == 'api':
-                self.assertIn("matrix.profile == 'medium'", block)
-                self.assertIn('CI_API_SHARD: ${{ matrix.shard }}', block)
-                self.assertIn('fail-fast: false', block)
-                self.assertEqual(re.findall(r'- shard: ([a-z]+)', block), ['contracts', 'lifecycle', 'http'])
-                self.assertNotIn('continue-on-error', block)
-            else:
-                self.assertRegex(block, r"runs-on: .*fromJSON\(needs.preflight.outputs.(?:medium|heavy)-runner\)")
+        for key in KEYS:
+            block = source.split(f'  {key}:\n', 1)[1].split('\n  wodiq-', 1)[0]
+            self.assertIn(f'job-key: {key}\n', block)
+            self.assertIn(f"contains(fromJSON(needs.preflight.outputs.selected-jobs || '[]'), '{key}')", block)
+            if key in RUNTIME:
+                self.assertIn('needs: [preflight, wodiq-runtime-build]', block)
+                self.assertIn("needs.wodiq-runtime-build.outputs.verified == 'true'", block)
+                self.assertIn(f'runtime-download: ${{{{ fromJSON(needs.preflight.outputs.plan).builds.{RUNTIME[key]} }}}}', block)
+            elif key != 'wodiq-runtime-build':
+                self.assertIn('needs: preflight\n', block)
+                self.assertIn("runtime-download: 'false'", block)
+            self.assertRegex(block, r"runs-on: .*fromJSON\(needs.preflight.outputs.(?:medium|heavy)-runner\)")
             self.assertIn("if: needs.preflight.outputs.trusted == 'true'", block)
             self.assertIn("if: needs.preflight.outputs.trusted == 'false'", block)
             self.assertIn('trusted-bundle-trusted@7c284a1b4405d844e581ad369b754885ab2415cc', block)
             self.assertIn('trusted-bundle-hosted@7c284a1b4405d844e581ad369b754885ab2415cc', block)
             self.assertIn('route: ${{', block)
+
+    def test_preflight_selection_matches_the_platform_bundle_selection(self):
+        # Fixture generated by wodiq-platform scripts/ci/bundle-selection.mjs: the
+        # preflight must accept exactly that ordered selection for every plan.
+        import os
+        import textwrap
+        script = textwrap.dedent(re.search(r"^          python3 - <<'PLAN'\n(.*?)^          PLAN$", WORKFLOW.read_text(), re.M | re.S).group(1))
+        cases = json.loads((Path(__file__).parent / 'fixtures' / 'wodiq-step2-selection.json').read_text())['cases']
+        self.assertGreaterEqual(len(cases), 9)
+        for case in cases:
+            selection = {'schemaVersion': 1, 'jobs': [{'job-key': key, 'plan': case['plan']} for key in case['keys']]}
+            release = 'true' if case['plan']['proofs']['all'] else 'false'
+            with self.subTest(paths=case['paths']), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'output'
+                with patch.dict(os.environ, {'PLAN': json.dumps(case['plan']), 'SELECTION': json.dumps(selection),
+                                            'RELEASE_CANDIDATE': release, 'GITHUB_OUTPUT': str(output)}, clear=True):
+                    exec(compile(script, str(WORKFLOW), 'exec'), {})
+                lines = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual(json.loads(lines['selected-jobs']), case['keys'])
 
     def test_identity_preserves_exact_attempt_pin_current_head_and_merge_checks(self):
         # Execute the existing GitHub identity negatives against the NEW entrypoint.
