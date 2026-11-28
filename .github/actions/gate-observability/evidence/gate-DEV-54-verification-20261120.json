@@ -1,0 +1,183 @@
+{
+  "environment": "verification",
+  "source": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+  "frontend_build": {
+    "source": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+    "run_id": "44824942586",
+    "attempt": 1,
+    "job_id": 136595060717,
+    "artifact_id": 14673521962,
+    "outer_digest": "sha256:7a0a5a3ff599fb6cde2557bcd4a2e3f4dab163b8c5023668349a32848e240f82",
+    "runtime_digest": "sha256:350d8ba7053eeff21f6ca7e8a37af286d990ca2b7a73aebaf1a96da15d4df033",
+    "archive_members": 1825,
+    "uncompressed_bytes": 48376250,
+    "map_upload_success_markers": 2,
+    "verified": true
+  },
+  "runtime": {
+    "node": "24.22.3",
+    "sdk": "11.7.0",
+    "read_only": true,
+    "memory_limit_mib": 512,
+    "cpus": 0.5,
+    "production_credentials": false
+  },
+  "offline_wire_privacy": {
+    "actual_sdk_components": [
+      "browser",
+      "nitro"
+    ],
+    "infer_ip": "never",
+    "sentry_network_sends": 0
+  },
+  "actual_sends": [
+    {
+      "component": "browser",
+      "event_id": "945eb41f1ec445f387d223221a8c9be0",
+      "confirmed": true,
+      "http_status": 200
+    },
+    {
+      "component": "nitro",
+      "event_id": "d1c5154786184979b98a2402f7a2b7e7",
+      "confirmed": true,
+      "http_status": 200
+    }
+  ],
+  "events": [
+    {
+      "component": "browser",
+      "event_id": "945eb41f1ec445f387d223221a8c9be0",
+      "issue_id": "162707841",
+      "http_status": 200,
+      "source_verified": true,
+      "component_verified": true,
+      "environment_verified": true,
+      "nonempty_user_fields": 0,
+      "private_entries_count": 0,
+      "frame_variables_count": 0,
+      "processing_errors": 0,
+      "exception_values_sanitized": true,
+      "source_frames": [
+        {
+          "path": "frontend/app/utils/sentry-verification.ts",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "component": "nitro",
+      "event_id": "d1c5154786184979b98a2402f7a2b7e7",
+      "issue_id": "162707854",
+      "http_status": 200,
+      "source_verified": true,
+      "component_verified": true,
+      "environment_verified": true,
+      "nonempty_user_fields": 0,
+      "private_entries_count": 0,
+      "frame_variables_count": 0,
+      "processing_errors": 0,
+      "exception_values_sanitized": true,
+      "source_frames": [
+        {
+          "path": "frontend/server/utils/sentry-verification.ts",
+          "line": 3
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "heal_case_id": "3af99702543b40a8bb7caf9ae7344a8a",
+      "external_issue_id": "162707841",
+      "last_event_id": "945eb41f1ec445f387d223221a8c9be0",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_attempts": 0,
+      "fix_status": "not_started",
+      "fix_pr_url": null,
+      "repository": "Tuinstra-DEV/gate",
+      "configuration_digest": "sha256:c45684bb4b89224259128cfd4ac41452289c8abd0cbf8b322be7ad94ff0d776d",
+      "component": "browser",
+      "environment": "verification",
+      "source_commit": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+      "artifact_digest": "sha256:350d8ba7053eeff21f6ca7e8a37af286d990ca2b7a73aebaf1a96da15d4df033",
+      "deployment_receipt_digest": "sha256:001d6b34f19116409c4204b22d7a77c8a011e897486d25ad05919b95eff96996",
+      "source_path": "frontend/app/utils/sentry-verification.ts",
+      "source_line": "3",
+      "exception_type": "TypeError"
+    },
+    {
+      "heal_case_id": "6479af4205234a3aa97a20c2b91e59b0",
+      "external_issue_id": "162707854",
+      "last_event_id": "d1c5154786184979b98a2402f7a2b7e7",
+      "status": "triaged",
+      "reason": null,
+      "occurrences": 1,
+      "triage_attempts": 1,
+      "fix_attempts": 0,
+      "fix_status": "not_started",
+      "fix_pr_url": null,
+      "repository": "Tuinstra-DEV/gate",
+      "configuration_digest": "sha256:c45684bb4b89224259128cfd4ac41452289c8abd0cbf8b322be7ad94ff0d776d",
+      "component": "nitro",
+      "environment": "verification",
+      "source_commit": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+      "artifact_digest": "sha256:350d8ba7053eeff21f6ca7e8a37af286d990ca2b7a73aebaf1a96da15d4df033",
+      "deployment_receipt_digest": "sha256:7d19d15c020625f512491d3b51611b2e8558062addaf3ac064a4bae1b80e1eab",
+      "source_path": "frontend/server/utils/sentry-verification.ts",
+      "source_line": "3",
+      "exception_type": "Error"
+    }
+  ],
+  "ledger": {
+    "added": 2,
+    "previous_rows": 80,
+    "total_rows": 82,
+    "backup_sha256": "c948369c3c232de2d58f4c906c08c59644161fefdc64dd2bc2485226cbed91bf",
+    "mounted_sha256": "1220293d23f5d9784fe569950ca0755a58836c1dcc978b173c2912a94628ecfe",
+    "inode_preserved": true
+  },
+  "backend_attribution": {
+    "historical_source": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
+    "inputs_byte_unchanged": {
+      "backend/composer.json": true,
+      "backend/composer.lock": true,
+      "backend/config/packages/sentry.yaml": true,
+      "backend/src/Service/Heal/HealRunnerFailureReporter.php": true,
+      "backend/src/MessageHandler/RunHealFixHandler.php": true,
+      "backend/src/Service/Heal/SentryEventPrivacyFilter.php": true
+    },
+    "record_reused_without_relabeling": true
+  },
+  "routing_unchanged": true,
+  "fixture_stopped_and_removed": true,
+  "production_activated": false,
+  "legacy_route_fingerprint_review": {
+    "source": "45bc74769aaa08906262f866f1eedb7fd05aab46",
+    "fingerprints": {
+      "sdk_initialization": "sha256:9920aa597ba7a7b3d1b4f3e6f4e88789080a91e9e13a65d530aa71b0f9803324",
+      "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
+      "privacy_filters": "sha256:adb607142ef9a3c25aec2faf59dec9893257cf23d702ad45a70e4d7506c24a06",
+      "deployment_symbols": "sha256:d2c3d2ad8a61127576752c7ba4a8e71a217316d1d9a207384efd08f5fb1afdd4"
+    },
+    "old_fingerprints": {
+      "sdk_initialization": "sha256:6f17730371d6ed5e0fc4892784d521b38b40aac5878aeb10352257311b1c6f4b",
+      "routing": "sha256:2d6cb782a92533070e7c36a582bd1b5171a8efc4d05ef68486cf131f9757d243",
+      "privacy_filters": "sha256:a0c63875a5808ce06b17689d208c52bc063e5d628118d056c066531957ac3853",
+      "deployment_symbols": "sha256:d2c3d2ad8a61127576752c7ba4a8e71a217316d1d9a207384efd08f5fb1afdd4"
+    },
+    "backend_historical_source": "53e8ee62b46bbc7fcd555682d73c8814fd67dad4",
+    "backend_inputs_unchanged": {
+      "backend/composer.json": true,
+      "backend/composer.lock": true,
+      "backend/config/packages/sentry.yaml": true,
+      "backend/src/Service/Heal/HealRunnerFailureReporter.php": true,
+      "backend/src/MessageHandler/RunHealFixHandler.php": true,
+      "backend/src/Service/Heal/SentryEventPrivacyFilter.php": true
+    },
+    "routing_unchanged": true
+  }
+}

@@ -37,8 +37,11 @@ php8.3 --version | grep -E '^PHP 8\.3\.' >/dev/null
 php8.4 --version | grep -E '^PHP 8\.4\.' >/dev/null
 # Fail the image build before a no-new-privileges job discovers a missing module.
 php8.3 -r '
-  foreach (["ctype", "iconv", "openssl", "pdo", "pdo_sqlite", "sqlite3", "Zend OPcache", "zip", "xdebug"] as $ext) {
+  foreach (["ctype", "iconv", "openssl", "pdo", "pdo_mysql", "pdo_sqlite", "sqlite3", "Zend OPcache", "zip", "xdebug"] as $ext) {
     if (!extension_loaded($ext)) { fwrite(STDERR, "PHP 8.3 missing $ext\n"); exit(1); }
+  }
+  if (!in_array("mysql", PDO::getAvailableDrivers(), true)) {
+    fwrite(STDERR, "PHP 8.3 PDO MySQL driver unavailable\n"); exit(1);
   }
   try {
     $pdo = new PDO("sqlite::memory:");
@@ -64,6 +67,14 @@ trivy --version
 test -x /opt/actions-runner/run.sh
 test -x /usr/local/bin/run-jit-runner
 test "$(stat -c '%U:%G:%a' /opt/actions-runner)" = "root:root:755"
+needrestart_override=/etc/needrestart/conf.d/90-ci-runner-job.conf
+expected_needrestart_override='$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;'
+test -f "$needrestart_override"
+test "$(stat -c '%U:%G:%a' "$needrestart_override")" = "root:root:644"
+test "$(cat "$needrestart_override")" = "$expected_needrestart_override"
+grep -F 'needrestart/apt-pinvoke -m u' /etc/apt/apt.conf.d/99needrestart >/dev/null
+grep -Fx 'RuntimeMaxSec=7200' /etc/systemd/system/ci-runner-job.service >/dev/null
+grep -Fx 'ExecStopPost=+/usr/bin/systemctl poweroff' /etc/systemd/system/ci-runner-job.service >/dev/null
 for runtime_file in .runner .credentials .credentials_rsaparams .runner_migrated .credentials_migrated; do
   runtime_path="/opt/actions-runner/$runtime_file"
   if [[ -e "$runtime_path" || -L "$runtime_path" ]]; then
@@ -88,6 +99,10 @@ php83_sqlite_manifest_version="$(sed -n 's/^php83_sqlite=//p' /etc/ci-runner-ima
 test -n "$php83_manifest_version"
 test "$php83_manifest_version" = "$php83_sqlite_manifest_version"
 test "$php83_sqlite_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-sqlite3)"
+php83_mysql_manifest_version="$(sed -n 's/^php83_mysql=//p' /etc/ci-runner-image-manifest)"
+test "$php83_manifest_version" = "$php83_mysql_manifest_version"
+test "$php83_mysql_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-mysql)"
+test "$php83_manifest_version" = "$(dpkg-query -W -f='${Version}' php8.3-cli)"
 
 for package in "skopeo" "gh" "php8.3-xdebug" "qemu-user-static"; do
   case "$package" in

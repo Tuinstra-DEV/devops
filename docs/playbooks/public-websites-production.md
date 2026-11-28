@@ -2,9 +2,11 @@
 
 ## Scope and source of truth
 
-The four independently pinned website stacks are `wodiq-site` (`wodiq.nl`,
-existing alias `www.wodiq.nl`), `site-openairco` (`openairco.tuinstra.dev`),
-`site-marcel` (`marcel.tuinstra.dev`) and `site-tuinstra` (`tuinstra.dev`).
+The three independently pinned website stacks are `wodiq-site` (`wodiq.nl`,
+existing alias `www.wodiq.nl`), `site-marcel` (`marcel.tuinstra.dev`) and
+`site-tuinstra` (`tuinstra.dev`). The former fourth stack, `site-openairco`
+(`openairco.tuinstra.dev`), was removed on 15 November 2026 together with its
+repository, images and DNS record.
 They run on Hetzner CX23 `tuinstra-prod-01`, provider server165555177,
 administrative DNS `vps01.tuinstra.dev`. The former source is DigitalOcean
 `tuinstra-prod-ams3-01`; provider identity/admin continuity and preservation must
@@ -15,14 +17,13 @@ DEV-24 owns analytics and its separate five-site inventory. Its approved Umami
 domain is `umami.tuinstra.dev`; the old `analytics.tuinstra.dev` proposal is not a
 missing deployment. Umami and Status are existing additional workloads on this
 host, not extra website migrations. Sanctuary is the offsite backup/CI host,
-not a required public traffic proxy. Caddy on VPS01 routes directly to the four
+not a required public traffic proxy. Caddy on VPS01 routes directly to the three
 stacks on `tuinstra-edge`; their containers expose no host ports.
 
 Canonical Git remotes: `git@github.com:Tuinstra-DEV/wodiq-site.git`,
-`git@github.com:Tuinstra-DEV/openairco-site.git`,
 `git@github.com:Tuinstra-DEV/marcel-site.git`, and
 `git@github.com:Tuinstra-DEV/tuinstra-site.git`. Registry names retain the
-`site-*` ordering for the last three. Record the actual scanned build digest
+`site-*` ordering for the last two. Record the actual scanned build digest
 and its source SHA for every release; these static images do not currently
 provide OCI source/version labels. Do not invent a label or infer activation
 from a green build alone.
@@ -35,8 +36,8 @@ existing alias continues to serve the same site. The three missing baseline
 headers are HSTS (one year, without extending policy to subdomains), nosniff
 and strict-origin-when-cross-origin. The deferred response operations use
 [Caddy's documented header semantics](https://caddyserver.com/docs/caddyfile/directives/header)
-so an upstream cannot overwrite them. OpenAirco retains its existing stronger
-CSP/HSTS/frame policy; no new CSP is imposed on Astro scripts or analytics.
+so an upstream cannot overwrite them. No new CSP is imposed on Astro scripts or
+analytics.
 
 Use the existing named administrator and strict SSH verification. The seed
 inventory still names the provisioning account, so explicitly override the
@@ -57,7 +58,7 @@ The first command installs only a private candidate/helper and validates; it
 does not activate routes. Ansible `--check` alone is not executed Caddy proof.
 The root-only helper holds the existing host operation lock and refuses restore
 maintenance. It copies all existing Caddy routes into an isolated candidate,
-validates with the active immutable Caddy image, and writes only the four named
+validates with the active immutable Caddy image, and writes only the three named
 files. The sandbox has no network or host ports, a read-only root, private tmpfs
 and only NET_BIND_SERVICE (required by the official binary's file capability).
 It preserves the global config and unrelated Umami/Status routes. Live activation
@@ -82,40 +83,12 @@ isolated containers, not a deliberate public downgrade for test evidence.
 
 ## Backup and empty-host recovery
 
-The existing encrypted Umami export now includes sixteen explicit host recovery
-inputs: Caddy global/Compose config, the two existing fixed deploy helpers, and
-each website's route, immutable Compose pin and private registry config. The
-export remains age-encrypted for the existing offsite recovery destination;
-secrets are never written into public receipts or logs. There is no new adapter,
-recipient, routine or independently restorable website database claim. Static
-website content is the immutable registry image. Caddy certificates can be
-reissued through the same confirmed DNS/TLS route after recovery.
-
-Activation merges these inputs into the **installed** producer profile rather
-than replacing it with the repository seed. Existing Status configuration,
-host locks, quotas and other fields are preserved. Missing/unsafe inputs or
-conflicting logical names stop the update; repeat application is a no-op. The
-old producer is retained privately in the same recovery directory.
-
-After activation, run the existing offsite backup and isolated restore proof:
-
-```bash
-ssh -o StrictHostKeyChecking=yes mtuinstra@sanctuary.tuinstra.dev \
-  'sudo /usr/local/sbin/tuinstra-backup-admin run umami'
-ssh -o StrictHostKeyChecking=yes mtuinstra@sanctuary.tuinstra.dev \
-  'sudo /usr/local/sbin/tuinstra-backup-admin restore-test umami latest'
-```
-
-Use the actual installed wrapper path if it differs; do not bypass its sudo
-contract. Record the fresh receipt/snapshot and complete checksum validation.
-Old DEV-30 restores prove Umami recovery but do not prove these new host inputs.
-For empty-host website recovery, provision the accepted host baseline, securely
-materialize the verified bundle using the existing restore contract, restore
-only these explicit paths with original private registry permissions, reinstall
-the operator helper from the reviewed source, and validate Caddy before starting
-the four exact pinned stacks. Do not expand backup sudo permissions or copy
-decrypted secrets into the workspace. Verify TLS, assets, navigation, CTAs,
-headers and exact runtime pins. Test each website's pinned recovery independently.
+There is currently no backup. The Sanctuary backup engine, its Umami export
+(which also carried the host recovery inputs for these websites) and the
+`backup-profile` action of `scripts/production-websites.py` were removed on
+15 November 2026. Recovering an empty host means provisioning the accepted host
+baseline, recreating the Caddy routes and Compose pins from this repository and
+pulling the pinned website images; private registry config must be re-created.
 
 ## Capacity and operating envelope
 
@@ -165,10 +138,9 @@ make test
 ```
 
 The native probe executes the exact pinned Caddy with no external network/ports,
-checks308 plus preserved path/query for all five hosts, and rejects an invalid
+checks308 plus preserved path/query for all four hosts, and rejects an invalid
 candidate. Filesystem tests cover validation failure, rejected reload recovery,
-unrelated route preservation, stale rollback and non-destructive/idempotent
-backup-profile merging. They simulate the Docker boundary; they are not fresh
+unrelated route preservation and stale rollback. They simulate the Docker boundary; they are not fresh
 production or root-ownership tests.
 
 Record separately: release/source/provider/domain matrix; actual per-site

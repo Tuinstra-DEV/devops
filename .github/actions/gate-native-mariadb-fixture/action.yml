@@ -1,0 +1,55 @@
+name: Gate native MariaDB fixture
+description: Verify Gate migrations using the caller's installed Composer dependencies
+
+runs:
+  using: composite
+  steps:
+    - name: Verify migrations and constraints in an isolated MariaDB fixture
+      working-directory: backend
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        fixture_dir=$(mktemp -d "$RUNNER_TEMP/gmd.XXXXXX")
+        container=''
+        cleanup() {
+          if [[ -n "$container" ]]; then
+            docker rm -fv "$container" >/dev/null
+          fi
+          rm -rf -- "$fixture_dir"
+        }
+        trap cleanup EXIT
+        # Only the temporary socket directory is writable by the image user.
+        mkdir -m 0777 "$fixture_dir/socket"
+        export GATE_MIGRATION_TEST_SOCKET="$fixture_dir/socket/mysql.sock"
+        export MARIADB_ROOT_PASSWORD="ci-$(openssl rand -hex 24)"
+
+        # Gate's existing production-pinned image previously passed this native proof.
+        container=$(docker run --detach --network none \
+          --tmpfs /bitnami/mariadb:rw,size=512m,uid=1001,gid=1001,mode=0700 \
+          --mount "type=bind,source=$fixture_dir/socket,target=/opt/bitnami/mariadb/tmp" \
+          --env MARIADB_ROOT_PASSWORD --env MARIADB_DATABASE=gate_migration_fixture \
+          bitnami/mariadb@sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9)
+
+        ready=false
+        for ((attempt=0; attempt<45; attempt++)); do
+          # Wait for the final daemon, rather than the entrypoint's temporary init server.
+          if [[ -S "$GATE_MIGRATION_TEST_SOCKET" ]] &&
+            docker exec "$container" sh -c 'grep -Eq "^(mariadbd|mysqld)$" /proc/1/comm' &&
+            php -r 'try { new PDO("mysql:unix_socket=".getenv("GATE_MIGRATION_TEST_SOCKET").";dbname=gate_migration_fixture", "root", getenv("MARIADB_ROOT_PASSWORD")); } catch (PDOException) { exit(1); }'; then
+            ready=true
+            break
+          fi
+          if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]]; then
+            break
+          fi
+          sleep 2
+        done
+        if [[ "$ready" != true ]]; then
+          echo '::error::The isolated MariaDB fixture did not become ready.'
+          exit 1
+        fi
+
+        APP_ENV=test vendor/bin/phpunit \
+          --no-coverage --fail-on-skipped --fail-on-empty-test-suite \
+          tests/Integration/HealQaMariaDbMigrationTest.php

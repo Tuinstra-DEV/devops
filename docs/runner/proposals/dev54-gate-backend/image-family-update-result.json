@@ -1,0 +1,94 @@
+{
+  "date_utc": "2026-11-17",
+  "status": "built_isolated_validation_passed_and_standalone_flattened",
+  "source_image": {
+    "sha256_before": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+    "sha256_after": "66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4",
+    "selector_changed": false
+  },
+  "candidate": {
+    "package_overlay_path": "/home/mtuinstra/dev54-image-candidate-20261117-family/php83-family-overlay.qcow2",
+    "package_overlay_sha256": "e61b8ab5c8ba10ce2f0fa5309f9bc19c4041fdca46ec99527f1c7bfbaf037aae",
+    "backing_copy_sha256": "bc233338d16d80ac2c4f2f163778fe2ed690d1ab1cd2fa9fb2b691d56f43919d",
+    "validated_vm_overlay_sha256": "430602d7ea6fc049c33df00f5039237f9e3b1b9fd59a7df9dced53722f4bf287",
+    "backing_copy_difference": "The first private derivative was used for the signed-index package download/install attempt and therefore includes apt indexes/package cache and temporary root GPG state. Before the approved package transaction, package inventory, image manifest, and checked runtime file hashes matched the active source; the active source itself remained unchanged.",
+    "build_route": "Minimal immutable derivative via existing libguestfs route; a full Packer rebuild was not run because its normal install path reinstalls unrelated runtime pins and the active operator var file is stale. The Packer install logic and image contract already consume/check the PHP83 family pin consistently; the example pin is updated.",
+    "standalone_image_path": "/home/mtuinstra/dev54-image-candidate-20261117-family/candidate-php83-8.3.36-standalone.qcow2",
+    "standalone_image_sha256": "5583aa0da997b0fd9001211b63b3abd24d51778645cbbccdc007444236bc7ec2",
+    "standalone_image_backing_file": null,
+    "flatten_measure_fully_allocated_bytes": 17182752768,
+    "available_space_before_bytes": 84260855808,
+    "available_space_after_bytes": 101904388096,
+    "validated_chain_comparison": "qemu-img compare reported Images are identical",
+    "qemu_img_measure_fully_allocated_bytes": 17182752768,
+    "qemu_img_check": "passed for package overlay, VM overlay, and standalone image",
+    "package_transaction": {
+      "from_version": "8.3.35-1+ubuntu24.04.1+deb.sury.org+1",
+      "to_version": "8.3.36-1+ubuntu24.04.1+deb.sury.org+1",
+      "upgraded": 9,
+      "installed": 1,
+      "removed": 0,
+      "changed_packages": [
+        "php8.3-cli",
+        "php8.3-common",
+        "php8.3-curl",
+        "php8.3-mbstring",
+        "php8.3-opcache",
+        "php8.3-readline",
+        "php8.3-sqlite3",
+        "php8.3-xml",
+        "php8.3-zip",
+        "php8.3-mysql"
+      ],
+      "signed_index_package_hashes_verified": "10/10",
+      "unrelated_runtime_pins_changed": false
+    }
+  },
+  "isolated_validation": {
+    "source_gate_commit": "188356ba01eb7796b5dc9a746eeabf34f95cf33f",
+    "vm": {
+      "vcpus": 2,
+      "memory_mib": 3072,
+      "registered_as_runner": false,
+      "host_mounts_or_docker_socket": false,
+      "host_port_forwarding": false,
+      "network": "qemu user-mode NAT",
+      "composer_auth_present": false
+    },
+    "pdo_mysql_and_sqlite_query_as_ci_runner": "passed",
+    "docker_daemon_and_cli_as_ci_runner": "passed; Docker 29.6.2 with overlay2 and containerd snapshotter disabled in VM overlay",
+    "image_contract_as_ci_runner": "passed",
+    "grumphp_quality": "passed; all 7 configured tasks",
+    "backend_phpunit": {
+      "status": "passed",
+      "tests": 1216,
+      "assertions": 7567,
+      "warnings": 1,
+      "skipped": 14,
+      "incomplete": 1,
+      "runtime_php": "8.3.36"
+    },
+    "api_schema": "passed",
+    "pinned_mariadb_fixture": {
+      "image_digest": "sha256:47bdb03b349e22c62443fa91d95b3f10366aa48ce9e4419990c99b7c23400fa9",
+      "status": "passed",
+      "tests": 12,
+      "assertions": 99,
+      "skipped": 0
+    },
+    "vm_exit_code": 0
+  },
+  "rollback": {
+    "active_image_or_selector_changes": "none",
+    "rollback_action_now": "none required; source image remained active",
+    "original_image_path": "/var/lib/ci-runner/images/ubuntu-24.04-runner-66eded13ed619c122421566de9b0a55ed49de5eb895caa40a2bf3b77d1b82bc4.qcow2",
+    "later_authorized_activation_rollback": "Restore the selector to the original image path/hash via the existing drained-runner procedure."
+  },
+  "pr_or_runner_configuration_changed": false,
+  "evidence": {
+    "filtered_validation_summary": "image-family-validation-summary.md",
+    "serial_log_sha256_uncommitted": "d672ab14338a285fcdf619ae887ed7085514604954fa4ca63654a5c42fee07a6",
+    "package_build_log_sha256_uncommitted": "931489d90810f735798dd071984ddf9941e3f653afcb65c0bd42e30058b27df1",
+    "gate_git_bundle_sha256_uncommitted": "b931f556152bbac8b5f9e1e7ee7efb37da2af54306c8a3e39cc677c385867a7b"
+  }
+}

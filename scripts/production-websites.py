@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DEV-26: validate and atomically reload only the four existing public routes.
+"""DEV-26: validate and atomically reload only the three existing public routes.
 
 Run on VPS01 as the existing administrator/root, never as a delegated endpoint.
 No image, credential, database, firewall, DNS or unrelated route is modified.
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -21,8 +22,7 @@ ROOT = Path("/var/www/_platform/caddy")
 SITES = ROOT / "sites"
 CANDIDATE = ROOT / "DEV-26-candidate"
 BACKUPS = ROOT / "DEV-26-backups"
-PRODUCER = Path("/etc/tuinstra-backup/producer.json")
-NAMES = tuple(x + ".caddy" for x in ("wodiq-site", "site-openairco", "site-marcel", "site-tuinstra"))
+NAMES = tuple(x + ".caddy" for x in ("wodiq-site", "site-marcel", "site-tuinstra"))
 
 
 def secure(path, directory=False):
@@ -121,55 +121,9 @@ def apply(folder, expected=None, check=False):
     return {"applied": True, "changed": changed, "backup": str(backup), **manifest}
 
 
-def extend_backup_profile():
-    """Preserve the installed producer, adding only explicit web recovery inputs."""
-    path = PRODUCER
-    secure(path)
-    original_info = path.stat()
-    original = path.read_bytes()
-    profile = json.loads(original)
-    if profile.get("host_slug") != "tuinstra-prod-01":
-        raise RuntimeError("backup producer host is invalid")
-    apps = [a for a in profile["applications"] if a.get("app_id") == "umami"]
-    if len(apps) != 1 or apps[0].get("adapter") != "postgres-compose-v1" or not apps[0].get("enabled"):
-        raise RuntimeError("existing enabled Umami producer is required")
-    inputs = [("host-caddyfile", ROOT / "Caddyfile"), ("host-caddy-compose", ROOT / "compose.yml"),
-              ("host-deploy-helper", Path("/usr/local/sbin/tuinstra-compose-deploy")),
-              ("host-deploy-shell", Path("/usr/local/sbin/tuinstra-deploy-shell"))]
-    for name in NAMES:
-        app = name.removesuffix(".caddy")
-        inputs.extend([(app + "-ingress", SITES / name),
-                       (app + "-compose", Path("/var/www") / app / "compose.yml"),
-                       (app + "-registry", Path("/etc/tuinstra") / app / "docker-config/config.json")])
-    existing = apps[0]["included_files"]
-    if len({item["name"] for item in existing}) != len(existing):
-        raise RuntimeError("existing producer input names conflict")
-    by_name = {item["name"]: item for item in existing}
-    added = []
-    for name, source in inputs:
-        secure(source)  # Metadata only; secrets remain inside the encrypted exporter.
-        item = {"name": name, "path": str(source)}
-        if name in by_name and by_name[name] != item:
-            raise RuntimeError("existing producer input has a conflicting path")
-        if name not in by_name:
-            added.append(item)
-    if not added:
-        return {"extended": 0, "app": "umami"}
-    existing.extend(added)
-    BACKUPS.mkdir(mode=0o700, exist_ok=True)
-    secure(BACKUPS, directory=True)
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = BACKUPS / ("producer-" + stamp + ".json")
-    atomic(backup, original, 0o600)
-    updated = (json.dumps(profile, indent=2) + "\n").encode()
-    atomic(path, updated, original_info.st_mode & 0o777, gid=original_info.st_gid)
-    return {"extended": len(added), "app": "umami", "backup": str(backup),
-            "profile_sha256": digest(updated)}
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["check", "apply", "rollback", "backup-profile"])
+    parser.add_argument("action", choices=["check", "apply", "rollback"])
     parser.add_argument("snapshot", nargs="?")
     args = parser.parse_args()
     if os.geteuid() != 0 or socket.gethostname() != "tuinstra-prod-01":
@@ -186,9 +140,6 @@ def main():
             marker = Path("/var/lib/tuinstra-production-restore/maintenance") / app
             if marker.exists() or marker.is_symlink():
                 raise RuntimeError("production restore maintenance is active")
-        if args.action == "backup-profile":
-            print(json.dumps(extend_backup_profile()))
-            return
         folder, expected = CANDIDATE, None
         if args.action == "rollback":
             if not re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", args.snapshot):
@@ -203,9 +154,40 @@ def main():
         print(json.dumps(apply(folder, expected, check=args.action == "check")))
 
 
+def release(app, source, image_digest):
+    from production_website_release import HOSTS, WebsiteRelease, deploy_website
+
+    if os.geteuid() != 0 or socket.gethostname() != "tuinstra-prod-01" or app not in HOSTS:
+        raise RuntimeError("website release is unavailable on this host")
+    lock_path = Path("/run/lock/tuinstra/operations.host.tuinstra-prod-01.lock")
+    info = lock_path.lstat()
+    if lock_path.is_symlink() or not lock_path.is_file() or info.st_uid != 0 or info.st_mode & 0o777 != 0o660:
+        raise RuntimeError("existing host operation lock is unavailable")
+    with lock_path.open("r") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name in (app, "umami", "status"):
+            marker = Path("/var/lib/tuinstra-production-restore/maintenance") / name
+            if os.path.lexists(marker):
+                raise RuntimeError("production restore maintenance is active")
+        signal.signal(signal.SIGHUP, interrupted)
+        signal.signal(signal.SIGTERM, interrupted)
+        deploy_website(WebsiteRelease(app, source, image_digest, SITES, secure, atomic))
+
+
+def interrupted(_signal, _frame):
+    raise RuntimeError("website deployment interrupted")
+
+
 if __name__ == "__main__":
+    import sys
+
     try:
-        main()
+        if sys.argv[1:2] == ["release"]:
+            if len(sys.argv) != 5:
+                raise RuntimeError("release requires an application, commit and digest")
+            release(*sys.argv[2:])
+        else:
+            main()
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"error": str(error)}))
         raise SystemExit(1)

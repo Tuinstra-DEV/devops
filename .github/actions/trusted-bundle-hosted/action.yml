@@ -19,6 +19,10 @@ inputs:
   php-extensions:
     required: false
     description: Fixed PHP extensions
+  php-ini-values:
+    required: false
+    default: ''
+    description: Reviewed PHP runtime settings for the hosted pilot
   runtime-download:
     required: false
     description: Download exact current-attempt runtime artifact
@@ -44,7 +48,7 @@ runs:
       with:
         version: ${{ inputs.pnpm-version }}
     - name: Set up Node.js for fixed npm consumers
-      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' || github.repository == 'Tuinstra-DEV/openairco-site' }}
+      if: ${{ github.repository == 'Tuinstra-DEV/wodiq-platform' || github.repository == 'Tuinstra-DEV/wodiq-app' || github.repository == 'Tuinstra-DEV/marcel-site' || github.repository == 'Tuinstra-DEV/tuinstra-site' || github.repository == 'Tuinstra-DEV/wodiq-site' }}
       uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.2.0
       with:
         node-version: ${{ inputs.node-version }}
@@ -77,6 +81,7 @@ runs:
       with:
         php-version: ${{ inputs.php-version }}
         extensions: ${{ inputs.php-extensions }}
+        ini-values: ${{ inputs.php-ini-values }}
         tools: composer:v2
         coverage: none
       env:
@@ -105,12 +110,6 @@ runs:
       with:
         path: ${{ steps.composer-cache.outputs.path }}
         key: tracker-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('code/api/composer.lock') }}
-    - name: Restore Console Composer downloads
-      if: ${{ github.repository == 'Tuinstra-DEV/console' }}
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.composer-cache.outputs.path }}
-        key: console-${{ runner.os }}-${{ runner.arch }}-php84-composer-${{ hashFiles('composer.lock') }}
     - name: Set up Docker Buildx for fixed image checks
       if: ${{ (github.repository == 'Tuinstra-DEV/tracker' && startsWith(inputs.job-key, 'tracker-container-')) || github.repository == 'Tuinstra-DEV/notify' || github.repository == 'Tuinstra-DEV/status' }}
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0

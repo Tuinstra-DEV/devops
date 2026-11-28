@@ -1,8 +1,10 @@
 import io
+import re
+import shutil
 import tarfile
 from pathlib import Path
-import shutil
 import subprocess
+import tempfile
 import unittest
 
 CONTRACT = Path(__file__).resolve().parents[2] / "infra/packer/scripts/verify-image-contract.sh"
@@ -10,6 +12,62 @@ INSTALLER = Path(__file__).resolve().parents[2] / "infra/packer/scripts/install-
 
 
 class ImageContractTests(unittest.TestCase):
+    def test_needrestart_excludes_only_the_jit_runner_unit(self):
+        installer = INSTALLER.read_text()
+        contract = CONTRACT.read_text()
+        unit = (INSTALLER.parents[3] / 'runner/systemd/ci-runner-job.service').read_text()
+        expected = r'$nrconf{override_rc}{qr(^ci-runner-job\.service$)} = 0;'
+        self.assertIn('sudo tee /etc/needrestart/conf.d/90-ci-runner-job.conf', installer)
+        self.assertIn(expected, installer)
+        self.assertIn('needrestart/conf.d/90-ci-runner-job.conf', contract)
+        self.assertIn(expected, contract)
+        self.assertIn("/etc/apt/apt.conf.d/99needrestart", contract)
+        self.assertIn("needrestart/apt-pinvoke -m u", contract)
+        self.assertIn('RuntimeMaxSec=7200', unit)
+        self.assertIn('ExecStopPost=+/usr/bin/systemctl poweroff', unit)
+
+        perl = shutil.which('perl')
+        if not perl:
+            self.skipTest('Perl is required to evaluate needrestart configuration syntax')
+        match = re.search(
+            r"sudo tee /etc/needrestart/conf\.d/90-ci-runner-job\.conf >/dev/null <<'NEEDRESTART'\n"
+            r"(.*?)\nNEEDRESTART",
+            installer,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, 'exact needrestart drop-in heredoc not found')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / '90-ci-runner-job.conf'
+            config.write_text(match.group(1) + '\n')
+            script = r'''
+use strict; use warnings;
+our %nrconf;
+my $path = shift;
+do $path;
+die $@ if $@;
+my @rules = keys %{ $nrconf{override_rc} // {} };
+die "unexpected override count\n" unless @rules == 1;
+my $rule = $rules[0];
+die "runner did not match\n" unless "ci-runner-job.service" =~ $rule;
+die "runner override is not false\n" unless $nrconf{override_rc}{$rule} == 0;
+for my $other ("ci-runner-jobXservice", "systemd-journald.service", "ci-runner-job.service.d") {
+  die "unexpected service matched: $other\n" if $other =~ $rule;
+}
+'''
+            result = subprocess.run([perl, '-e', script, str(config)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gate_php83_mysql_matches_cli_pin_and_requires_pdo_driver(self):
+        installer = INSTALLER.read_text()
+        self.assertIn('"php8.3-mysql=${PHP83_VERSION}"', installer)
+        self.assertIn('php83_mysql=${PHP83_VERSION}', installer)
+        source = CONTRACT.read_text()
+        self.assertIn('"pdo_mysql"', source)
+        self.assertIn('in_array("mysql", PDO::getAvailableDrivers(), true)', source)
+        self.assertIn('php83_mysql=', source)
+        self.assertIn("dpkg-query -W -f='${Version}' php8.3-mysql", source)
+        self.assertIn("dpkg-query -W -f='${Version}' php8.3-cli", source)
+
     def test_gate_php83_sqlite_is_installed_and_probed(self):
         installer = INSTALLER.read_text()
         self.assertIn('"php8.3-sqlite3=${PHP83_VERSION}"', installer)

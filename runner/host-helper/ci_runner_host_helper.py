@@ -40,8 +40,9 @@ MEMORY_MIB = 6144
 DISK_GIB = "120G"
 PROFILE_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 PROFILE_LIMITS = {"heavy": 2, "medium": 2}
+PARALLEL_PROFILE_LIMITS = {"heavy": 3, "medium": 2}
 PROFILE_DISK_GIB = {"heavy": 24, "medium": 4}
-EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24}),
+EXISTING_BACKING_GIB = {"heavy": frozenset({12, 24, 40}),
                         "medium": frozenset({4})}
 MIN_FREE_DISK_GIB = 60
 # Included within the prelaunch budget for filesystem metadata/host-writer races.
@@ -184,11 +185,11 @@ def policy_mode_from_mapping(cfg: dict[str, Any]) -> str:
                      "medium_disk_reservation_gib"}
         if forbidden.intersection(cfg):
             raise ProtocolError("legacy policy has four-pool keys")
-    elif mode == "four":
+    elif mode in {"four", "parallel"}:
         expected.update({
-            "max_concurrency": 4, "medium_runner_label": "trusted-medium",
+            "max_concurrency": 5 if mode == "parallel" else 4, "medium_runner_label": "trusted-medium",
             "medium_runner_vcpus": 2, "medium_runner_memory_mib": 3072,
-            "max_heavy": 2, "max_medium": 2,
+            "max_heavy": 3 if mode == "parallel" else 2, "max_medium": 2,
             "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4, "storage_mode": "bounded-loop",
         })
@@ -213,37 +214,47 @@ def active_pool_mode() -> str:
 
 def enforce_launch_mode(profile: str | None) -> None:
     mode = active_pool_mode()
-    if mode == "four" and (not isinstance(profile, str)
+    if mode in {"four", "parallel"} and (not isinstance(profile, str)
                            or profile not in PROFILE_RESOURCES):
         raise ProtocolError("four-pool launch requires a bounded profile")
     if mode == "legacy" and profile is not None:
         raise ProtocolError("legacy launch rejects bounded profiles")
 
 
-def profile_has_slot(counts: dict[str, int], profile: str) -> bool:
-    if profile not in PROFILE_LIMITS or set(counts) - set(PROFILE_LIMITS):
+def profile_has_slot(counts: dict[str, int], profile: str, mode: str = "four") -> bool:
+    if mode not in {"four", "parallel"}:
+        return False
+    limits = PARALLEL_PROFILE_LIMITS if mode == "parallel" else PROFILE_LIMITS
+    if profile not in limits or set(counts) - set(limits):
         return False
     if any(not isinstance(count, int) or count < 0 for count in counts.values()):
         return False
     projected = dict(counts)
     projected[profile] = projected.get(profile, 0) + 1
     return all(projected.get(kind, 0) <= maximum
-               for kind, maximum in PROFILE_LIMITS.items()) and sum(
+               for kind, maximum in limits.items()) and sum(
                    projected.get(kind, 0) * PROFILE_RESOURCES[kind][0]
-                   for kind in PROFILE_LIMITS
-               ) <= 12 and sum(projected.values()) <= MAX_CONCURRENCY
+                   for kind in limits
+               ) <= (14 if mode == "parallel" else 12) and sum(projected.values()) <= (5 if mode == "parallel" else MAX_CONCURRENCY)
 
 
-def reservation_fits(free_bytes: int, profile: str) -> bool:
+def reservation_fits(free_bytes: int, profile: str, storage_gib: int | None = None) -> bool:
     if profile not in PROFILE_DISK_GIB:
         return False
+    if storage_gib is not None:
+        return profile == "heavy" and type(storage_gib) is int and storage_gib == 40 and \
+            free_bytes >= (MIN_FREE_DISK_GIB + DISK_MARGIN_GIB + storage_gib) * 1024**3
     return free_bytes >= MIN_FREE_DISK_GIB * 1024**3
 
 
-def post_reservation_floor_gib(profile: str) -> int:
+def post_reservation_floor_gib(profile: str, storage_gib: int | None = None) -> int:
     # Nominal remainder is 36/56 GiB. Keep a 2-GiB metadata/race allowance
     # inside that budget, rather than adding it to the 60-GiB launch threshold.
     # Refuse larger host-writer races before creating any VM.
+    if storage_gib is not None:
+        if profile != "heavy" or type(storage_gib) is not int or storage_gib != 40:
+            raise ProtocolError("invalid expanded storage reservation")
+        return MIN_FREE_DISK_GIB + DISK_MARGIN_GIB
     return MIN_FREE_DISK_GIB - PROFILE_DISK_GIB[profile] - DISK_MARGIN_GIB
 
 
@@ -442,11 +453,11 @@ def verify_bounded_mount(backing: Path, mountpoint: Path) -> bool:
     return True
 
 
-def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
+def create_bounded_storage(lease: str, profile: str, qemu_gid: int, storage_gib: int | None = None) -> Path:
     directory, backing, mountpoint = bounded_paths(lease)
-    if not reservation_fits(shutil.disk_usage(OVERLAY_ROOT).free, profile):
+    if not reservation_fits(shutil.disk_usage(OVERLAY_ROOT).free, profile, storage_gib):
         raise RuntimeError("bounded runner reservation would breach NVMe floor")
-    bytes_reserved = PROFILE_DISK_GIB[profile] * 1024**3
+    bytes_reserved = (storage_gib if storage_gib is not None else PROFILE_DISK_GIB[profile]) * 1024**3
     marker = directory / "profile"
     with marker.open("x", encoding="ascii") as handle:
         handle.write(profile + "\n")
@@ -458,7 +469,7 @@ def create_bounded_storage(lease: str, profile: str, qemu_gid: int) -> Path:
     if stat.st_size != bytes_reserved or stat.st_blocks * 512 < bytes_reserved:
         raise RuntimeError("runner backing file is not fully allocated")
     if shutil.disk_usage(OVERLAY_ROOT).free < \
-            post_reservation_floor_gib(profile) * 1024**3:
+            post_reservation_floor_gib(profile, storage_gib) * 1024**3:
         raise RuntimeError("NVMe floor was breached during reservation")
     run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", "nodiscard", str(backing)])
     if backing.stat().st_blocks * 512 < bytes_reserved:
@@ -569,7 +580,7 @@ ethernets:
 
 def launch(lease: str, encoded_jit: bytes | None = None, *,
            vcpus: int = VCPUS, memory_mib: int = MEMORY_MIB,
-           profile: str | None = None) -> None:
+           profile: str | None = None, storage_gib: int | None = None) -> None:
     if os.geteuid() != 0:
         raise PermissionError("helper must run as root")
     enforce_launch_mode(profile)
@@ -594,7 +605,7 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
             if not (existing_directory / "profile").is_file():
                 raise RuntimeError("bounded pool requires all legacy domains to drain")
             counts[recorded_profile(existing_lease)] += 1
-        if not profile_has_slot(counts, profile):
+        if not profile_has_slot(counts, profile, active_pool_mode()):
             raise RuntimeError("all sanctuary CI profile slots are occupied")
     if name(lease) in runner_domains:
         raise RuntimeError("sanctuary CI domain already exists")
@@ -605,7 +616,7 @@ def launch(lease: str, encoded_jit: bytes | None = None, *,
     qemu_uid, qemu_gid = qemu_identity()
     set_qemu_access(directory, 0, qemu_gid, 0o710)
     try:
-        work = create_bounded_storage(lease, profile, qemu_gid) \
+        work = create_bounded_storage(lease, profile, qemu_gid, storage_gib) \
             if profile is not None else directory
         overlay = work / "root.qcow2"
         seed = work / "seed.iso"
@@ -750,6 +761,8 @@ def parse_request(packet: bytes) -> dict[str, Any]:
             expected.update({"vcpus", "memory_mib"})
             if "profile" in request:
                 expected.add("profile")
+            if "storage_gib" in request:
+                expected.add("storage_gib")
         if set(request) != expected:
             raise ProtocolError("invalid mutation request schema")
         lease = request.get("lease")
@@ -760,6 +773,9 @@ def parse_request(packet: bytes) -> dict[str, Any]:
         except ValueError as exc:
             raise ProtocolError("invalid lease") from exc
         if operation == "launch":
+            if "storage_gib" in request and (request.get("profile") != "heavy" or
+                    type(request["storage_gib"]) is not int or request["storage_gib"] != 40):
+                raise ProtocolError("invalid expanded storage reservation")
             if "profile" in request and (not isinstance(request["profile"], str)
                                          or request["profile"] not in PROFILE_RESOURCES):
                 raise ProtocolError("invalid runner profile")
@@ -845,6 +861,8 @@ def serve_connection(connection: socket.socket, *, expected_uid: int | None = No
                 }
                 if "profile" in request:
                     launch_kwargs["profile"] = request["profile"]
+                if "storage_gib" in request:
+                    launch_kwargs["storage_gib"] = request["storage_gib"]
                 launch(
                     request["lease"], jit_payload, **launch_kwargs,
                 )

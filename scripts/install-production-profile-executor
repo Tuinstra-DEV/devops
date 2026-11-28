@@ -19,9 +19,9 @@ readonly host="$1" source_sha="$2" profile_version="$3" profile_hash="$4" proced
 [[ "$profile_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]] || die "profile version is invalid"
 [[ "$profile_hash" =~ ^[a-f0-9]{64}$ ]] || die "profile hash is invalid"
 case "$host:$procedure" in
-  tuinstra-prod-01:baseline_umami_restore) inventory=infra/ansible/production/local-prod01.yml; limit=prod01 ;;
+  tuinstra-prod-01:baseline) inventory=infra/ansible/production/local-prod01.yml; limit=prod01 ;;
   tuinstra-prod-02:baseline) inventory=infra/ansible/production/local-prod02.yml; limit=prod02 ;;
-  tuinstra-rehearsal-01:baseline_umami_restore) inventory=infra/ansible/rehearsal/local-inventory.yml; limit=rehearsal01 ;;
+  tuinstra-rehearsal-01:baseline) inventory=infra/ansible/rehearsal/local-inventory.yml; limit=rehearsal01 ;;
   *) die "procedure is outside the fixed executor registry" ;;
 esac
 readonly inventory limit

@@ -11,20 +11,20 @@
 - name: Assert runner capacity contract
   ansible.builtin.assert:
     that:
-      - runner_pool_mode in ['legacy', 'four']
-      - (runner_pool_mode == 'legacy' and runner_max_concurrency | int == 1) or (runner_pool_mode == 'four' and runner_max_concurrency | int == 4)
+      - runner_pool_mode in ['legacy', 'four', 'parallel']
+      - (runner_pool_mode == 'legacy' and runner_max_concurrency | int == 1) or (runner_pool_mode == 'four' and runner_max_concurrency | int == 4) or (runner_pool_mode == 'parallel' and runner_max_concurrency | int == 5)
       - runner_vcpus | int == 4
       - runner_memory_mib | int == 6144
       - runner_medium_vcpus | int == 2
       - runner_medium_memory_mib | int == 3072
-      - runner_max_heavy | int == 2
+      - runner_max_heavy | int == (3 if runner_pool_mode == 'parallel' else 2)
       - runner_max_medium | int == 2
       - runner_heavy_disk_reservation_gib | int == 24
       - runner_medium_disk_reservation_gib | int == 4
       - runner_host_memory_reserve_mib | int == 4096
       - runner_min_free_disk_gib | int == 60
-      - ansible_processor_vcpus | int >= (12 if runner_pool_mode == 'four' else 4)
-      - ansible_memtotal_mb | int >= (18432 if runner_pool_mode == 'four' else 6144) + (runner_host_memory_reserve_mib | int)
+      - ansible_processor_vcpus | int >= (16 if runner_pool_mode == 'parallel' else 12 if runner_pool_mode == 'four' else 4)
+      - ansible_memtotal_mb | int >= (24576 if runner_pool_mode == 'parallel' else 18432 if runner_pool_mode == 'four' else 6144) + (runner_host_memory_reserve_mib | int)
     fail_msg: Host capacity or immutable runner pool policy does not fit the selected mode.
 
 - name: Require explicit restricted organization routing policy
@@ -33,7 +33,7 @@
       - runner_org_routing_enabled is boolean
       - >-
         not (runner_org_routing_enabled | bool) or
-        (runner_pool_mode == 'four' and
+        (runner_pool_mode in ['four', 'parallel'] and
          runner_org_runner_group_id is integer and
          runner_org_runner_group_id is not boolean and
          runner_org_runner_group_id | int > 1 and

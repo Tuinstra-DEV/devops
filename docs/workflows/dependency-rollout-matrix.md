@@ -4,11 +4,9 @@
 | --- | --- | --- | ---: | --- |
 | Tuinstra-DEV/devops | GitHub Actions | main | 1 | Revert config and policy commit |
 | Tuinstra-DEV/marcel-site | GitHub Actions, npm | develop | 2, hosted-only canary | Restore removed Renovate config and remove Dependabot config |
-| Tuinstra-DEV/openairco-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | Tuinstra-DEV/tuinstra-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | Tuinstra-DEV/wodiq-site | GitHub Actions, npm | develop | 3 | Restore removed Renovate config and remove Dependabot config |
 | marcel-tuinstra/sudoku-spark-web | GitHub Actions, npm | develop | 3 | Remove Dependabot config |
-| Tuinstra-DEV/console | GitHub Actions, Composer, npm | develop | 4 | Restore removed Renovate config and remove Dependabot config |
 | Tuinstra-DEV/notify | GitHub Actions, Composer, npm | main | 4 | Remove Dependabot config |
 | Tuinstra-DEV/WODIQ | GitHub Actions, npm | develop | 4 | Remove Dependabot config |
 | Tuinstra-DEV/gate | GitHub Actions, Docker (3 directories), Composer, npm | develop | 5 | Revert Dependabot config |

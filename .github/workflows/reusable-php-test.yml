@@ -43,6 +43,11 @@ on:
         required: false
         default: true
         type: boolean
+      strict-migrations:
+        description: "For PostgreSQL, verify Doctrine migrations on a separate fresh database and let PHPUnit prepare its own schema"
+        required: false
+        default: false
+        type: boolean
       workdir:
         description: "Working directory"
         required: false
@@ -116,10 +121,24 @@ jobs:
         run: mkdir -p var/cache/test var/coverage
 
       - name: Run migrations
-        if: ${{ inputs.run-migrations }}
+        if: ${{ inputs.run-migrations && !inputs.strict-migrations }}
         run: |
           php bin/console doctrine:database:create --env=test --if-not-exists || true
           php bin/console doctrine:migrations:migrate --env=test --no-interaction || true
+
+      - name: Verify migrations on a fresh PostgreSQL database
+        if: ${{ inputs.strict-migrations }}
+        env:
+          DATABASE_URL: postgresql://test:test@127.0.0.1:5432/test_db_migrations?serverVersion=${{ inputs.postgres-version }}
+        run: |
+          set -euo pipefail
+          php bin/console doctrine:database:create --env=test --no-interaction
+          php bin/console doctrine:migrations:migrate --env=test --no-interaction
+          php bin/console doctrine:migrations:up-to-date --env=test --fail-on-unregistered --no-interaction
+
+      - name: Prepare the PostgreSQL fixture database
+        if: ${{ inputs.strict-migrations }}
+        run: php bin/console doctrine:database:create --env=test --if-not-exists --no-interaction
 
       - name: Run PHPUnit (without coverage)
         if: ${{ !inputs.coverage }}

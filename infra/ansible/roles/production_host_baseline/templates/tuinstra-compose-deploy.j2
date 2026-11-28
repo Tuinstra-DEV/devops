@@ -6,7 +6,7 @@ readonly allowed_apps=({% for app in production_app_names %}{{ app | quote }} {%
 readonly production_host={{ ansible_hostname | quote }}
 {% raw %}
 
-if [[ $# -ne 2 && $# -ne 5 ]]; then
+if [[ $# -ne 2 && $# -ne 4 && $# -ne 5 ]]; then
   echo "usage: tuinstra-compose-deploy status|deploy <application> or deploy tracker SOURCE_SHA PHP_DIGEST NGINX_DIGEST" >&2
   exit 64
 fi
@@ -28,6 +28,18 @@ done
 if [[ "$allowed" != true ]]; then
   echo "application is not allowlisted" >&2
   exit 64
+fi
+
+if [[ $# -eq 4 ]]; then
+  case "$action:$app:$production_host" in
+    deploy:site-marcel:tuinstra-prod-01|deploy:site-tuinstra:tuinstra-prod-01|deploy:wodiq-site:tuinstra-prod-01) ;;
+    *) echo "website release is unavailable for this application" >&2; exit 64 ;;
+  esac
+  if [[ ! "$3" =~ ^[0-9a-f]{40}$ || ! "$4" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "invalid website release identity" >&2
+    exit 64
+  fi
+  exec /usr/bin/python3 -B -E -s -S /usr/local/libexec/tuinstra-websites/production-websites.py release "$app" "$3" "$4"
 fi
 
 if [[ $# -eq 5 ]]; then

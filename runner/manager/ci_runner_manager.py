@@ -46,6 +46,8 @@ MAX_CONCURRENCY = 1
 RUNNER_VCPUS = 4
 RUNNER_MEMORY_MIB = 6144
 FOUR_POOL_CONCURRENCY = 4
+PARALLEL_POOL_CONCURRENCY = 5
+PARALLEL_POOL_LIMITS = {"heavy": 3, "medium": 2}
 POOL_RESOURCES = {"heavy": (4, 6144), "medium": (2, 3072)}
 POOL_LIMITS = {"heavy": 2, "medium": 2}
 POOL_DISK_GIB = {"heavy": 24, "medium": 4}
@@ -87,8 +89,34 @@ EXECUTION_ROLES = {
         "events": {"pull_request_target"},
         "actors": {(ORG_ACTOR, "User")},
     },
+    "gate-backend-pilot": {
+        "profile": "medium", "label": "ci-gate-backend-pilot",
+        "workflow": f"{ORG_NAME}/devops/.github/workflows/reusable-product-ci.yml",
+        "events": {"pull_request"},
+        "actors": {(ORG_ACTOR, "User")},
+    },
 }
 ROLE_REPOSITORIES = {f"{ORG_NAME}/gate", f"{ORG_NAME}/tracker"}
+GATE_ROLES = {"gate-backend", "gate-release-build", "gate-release-verify"}
+GATE_CORE_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-ci.yml"
+GATE_RELEASE_WORKFLOW = "Tuinstra-DEV/devops/.github/workflows/reusable-gate-release-ci.yml"
+for _role, _profile, _workflow, _job in (
+        ("gate-backend", "medium", GATE_CORE_WORKFLOW, "ci / Backend CI"),
+        ("gate-release-build", "heavy", GATE_RELEASE_WORKFLOW, "release / Build kandidaat"),
+        ("gate-release-verify", "heavy", GATE_RELEASE_WORKFLOW, "release / Verifieer kandidaat")):
+    EXECUTION_ROLES[_role] = {
+        "profile": _profile, "label": "ci-" + _role, "workflow": _workflow,
+        "events": {"pull_request"}, "actors": {("marcel-tuinstra", "User")},
+        "job_name": _job,
+    }
+
+
+def gate_role_references(refs, pin, release):
+    """One reviewed immutable entrypoint; no nested generic bundle admission."""
+    path = (GATE_RELEASE_WORKFLOW if release else GATE_CORE_WORKFLOW) + "@" + pin
+    return isinstance(refs, list) and len(refs) == 1 and isinstance(refs[0], dict) and refs[0].get("path") == path and refs[0].get("sha") == pin
+
+
 ROLE_PIN_FIELDS = ("execution_role", "workflow_ref", "run_id", "job_id",
                    "run_attempt", "source_sha", "pr_head_sha", "base_sha", "base_ref",
                    "default_branch", "default_sha", "pr_number", "event", "head_branch", "execution_sha")
@@ -168,18 +196,18 @@ def load_config(path: Path) -> dict[str, Any]:
     if missing:
         raise RunnerError(f"missing configuration keys: {', '.join(sorted(missing))}")
     mode = cfg.get("pool_mode", "legacy")
-    if mode not in {"legacy", "four"}:
-        raise RunnerError("pool_mode must be legacy or four")
+    if mode not in {"legacy", "four", "parallel"}:
+        raise RunnerError("pool_mode must be legacy, four or parallel")
     exact_resources = {
-        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else FOUR_POOL_CONCURRENCY,
+        "max_concurrency": MAX_CONCURRENCY if mode == "legacy" else pool_concurrency(cfg),
         "runner_vcpus": RUNNER_VCPUS,
         "runner_memory_mib": RUNNER_MEMORY_MIB,
     }
-    if mode == "four":
+    if mode in {"four", "parallel"}:
         exact_resources.update({
             "medium_runner_vcpus": 2,
             "medium_runner_memory_mib": 3072,
-            "max_heavy": 2,
+            "max_heavy": 3 if mode == "parallel" else 2,
             "max_medium": 2,
             "heavy_disk_reservation_gib": 24,
             "medium_disk_reservation_gib": 4,
@@ -213,7 +241,19 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def four_pool(cfg: dict[str, Any]) -> bool:
-    return cfg.get("pool_mode", "legacy") == "four"
+    return cfg.get("pool_mode", "legacy") in {"four", "parallel"}
+
+
+def pool_limits(cfg: dict[str, Any]) -> dict[str, int]:
+    return PARALLEL_POOL_LIMITS if cfg.get("pool_mode") == "parallel" else POOL_LIMITS
+
+
+def pool_concurrency(cfg: dict[str, Any]) -> int:
+    return PARALLEL_POOL_CONCURRENCY if cfg.get("pool_mode") == "parallel" else FOUR_POOL_CONCURRENCY
+
+
+def pool_cpu_limit(cfg: dict[str, Any]) -> int:
+    return 14 if cfg.get("pool_mode") == "parallel" else 12
 
 
 def org_routing_enabled(cfg: dict[str, Any]) -> bool:
@@ -229,12 +269,12 @@ def configured_trusted_workflow_refs(cfg: dict[str, Any]) -> tuple[str, ...]:
     if single == multiple:
         raise RunnerError("organization workflow requires exactly one reference policy")
     refs = [cfg["org_workflow_ref"]] if single else cfg["org_workflow_refs"]
-    if not isinstance(refs, list) or not 1 <= len(refs) <= 5 or \
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 6 or \
             any(not isinstance(ref, str) or not ref.startswith(ORG_WORKFLOW_PREFIX) or
                 re.fullmatch(r"[a-f0-9]{40}", ref[len(ORG_WORKFLOW_PREFIX):]) is None
                 for ref in refs) or len(set(refs)) != len(refs):
         raise RunnerError("organization workflows must be distinct exact commit references")
-    if len(refs) in (4, 5):
+    if len(refs) in (4, 5, 6):
         metadata = configured_org_execution_roles(cfg).get("metadata-preflight")
         if metadata is None or refs[-1] != metadata["workflow_ref"]:
             raise RunnerError("last trusted workflow must explicitly share the enabled metadata role pin")
@@ -266,6 +306,8 @@ def configured_org_execution_roles(cfg: dict[str, Any]) -> dict[str, Any]:
                 raise RunnerError("execution role repository or event policy is invalid")
         if not set(policy["repositories"]).issubset(cfg.get("org_repository_ids", {})):
             raise RunnerError("execution role repository is not in the selected group")
+        if (role == "gate-backend-pilot" or role in GATE_ROLES) and policy["repositories"] != [f"{ORG_NAME}/gate"]:
+            raise RunnerError("Gate backend pilot must select only Gate")
         actors = policy["actors"]
         if not isinstance(actors, list) or not actors or len(actors) > len(spec["actors"]):
             raise RunnerError("execution role actors must be explicitly selected")
@@ -334,10 +376,12 @@ def role_labels_match(labels: Any, repo: str, role: str, run_id: int,
         if not isinstance(pr_head_sha, str) or re.fullmatch(r"[a-f0-9]{40}", pr_head_sha) is None:
             return False
         required.add("ci-pr-head-" + pr_head_sha)
-    if role == "pr-security-producer":
+    if role in {"pr-security-producer", "gate-backend-pilot"} | GATE_ROLES:
         if not pr_head_sha or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
             return False
         required.add("ci-execution-sha-" + execution_sha)
+        if (role == "gate-backend-pilot" or role in GATE_ROLES) and repo != f"{ORG_NAME}/gate":
+            return False
     elif execution_sha:
         # Target metadata is deliberately unsupported; ordinary PR/push role
         # jobs cannot smuggle an execution-controller assertion into labels.
@@ -442,9 +486,18 @@ def configured_resource(cfg: dict[str, Any], key: str, expected: int) -> int:
     return value
 
 
+def storage_gib_for_dispatch(repo: str, scope: str, profile: str,
+                             execution_role: str | None) -> int | None:
+    if (repo, scope, profile, execution_role) == (
+            "Tuinstra-DEV/sudoku-tessera", "organization", "heavy", None):
+        return 40
+    return None
+
+
 def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
                     profile: str = "heavy", active: list[dict[str, Any]] | None = None,
-                    available_override_mib: int | None = None) -> list[str]:
+                    available_override_mib: int | None = None,
+                    storage_gib: int | None = None) -> list[str]:
     errors: list[str] = []
     if four_pool(cfg):
         requested_vcpus, requested_memory = pool_resources(profile)
@@ -468,13 +521,13 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
             active_vcpus += cpu
             active_memory += memory
             unresident_mib += max(0, memory - rss)
-        if any(counts[kind] > POOL_LIMITS[kind] for kind in POOL_LIMITS) or \
-                len(active) > FOUR_POOL_CONCURRENCY or active_vcpus > 12:
+        if any(counts[kind] > pool_limits(cfg)[kind] for kind in POOL_LIMITS) or \
+                len(active) > pool_concurrency(cfg) or active_vcpus > pool_cpu_limit(cfg):
             return ["active runner resources exceed pool policy"]
-        if len(active) >= FOUR_POOL_CONCURRENCY or counts[profile] >= POOL_LIMITS[profile]:
+        if len(active) >= pool_concurrency(cfg) or counts[profile] >= pool_limits(cfg)[profile]:
             errors.append(f"{profile} runner slots are occupied")
-        if active_vcpus + requested_vcpus > 12 or (os.cpu_count() or 0) < 12:
-            errors.append("host cannot fit 12 configured runner vCPUs")
+        if active_vcpus + requested_vcpus > pool_cpu_limit(cfg) or (os.cpu_count() or 0) < (16 if cfg.get("pool_mode") == "parallel" else 12):
+            errors.append(f"host cannot fit {pool_cpu_limit(cfg)} configured runner vCPUs")
         reserve_mib = int(cfg["host_memory_reserve_mib"])
         if memory_total_mib() < active_memory + requested_memory + reserve_mib:
             errors.append("host memory cannot fit projected runners and reserve")
@@ -486,7 +539,12 @@ def capacity_errors(cfg: dict[str, Any], projected_runner_count: int = 1, *,
         # The configured threshold is free space BEFORE allocating a pool's
         # fully reserved backing file. The root helper repeats this check and
         # verifies the corresponding remaining floor after fallocate.
-        if disk.free < int(cfg["min_free_disk_gib"]) * 1024**3:
+        if storage_gib is not None and (profile != "heavy" or type(storage_gib) is not int or storage_gib != 40):
+            raise RunnerError("invalid expanded storage reservation")
+        threshold = int(cfg["min_free_disk_gib"])
+        if storage_gib is not None:
+            threshold += storage_gib + 2
+        if disk.free < threshold * 1024**3:
             errors.append("bounded overlay reservation would breach NVMe floor")
         return errors
     concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
@@ -1099,6 +1157,14 @@ class GitHubClient:
         if len(matching) != 1 or matching[0].get("path") != ref or \
                 matching[0].get("sha") != ref.rsplit("@", 1)[1]:
             return None
+        if role == "gate-backend-pilot" and (repo != f"{ORG_NAME}/gate" or
+                run.get("event") != "pull_request" or
+                run.get("head_branch") != "chore/DEV-54-compact-ci-pilot" or
+                len(refs) != 1):
+            return None
+        if role in GATE_ROLES and not gate_role_references(
+                refs, ref.rsplit("@", 1)[1], role != "gate-backend"):
+            return None
         branch = run.get("head_branch")
         if not isinstance(branch, str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", branch) or \
@@ -1166,6 +1232,9 @@ class GitHubClient:
         if event == "pull_request_target":
             if role != "pr-security-producer" or execution_sha != default_sha:
                 return None
+        elif role == "gate-backend-pilot" or role in GATE_ROLES:
+            if not isinstance(execution_sha, str) or re.fullmatch(r"[a-f0-9]{40}", execution_sha) is None:
+                return None
         elif execution_sha != "":
             return None
         pr_sha = ""
@@ -1190,6 +1259,13 @@ class GitHubClient:
                         part["repo"].get("private") is not True or part["repo"].get("fork") is not False:
                     return None
             base_ref = pr["base"].get("ref")
+            if role == "gate-backend-pilot" and base_ref != "develop":
+                return None
+            if role in GATE_ROLES:
+                release = base_ref == "main" and run.get("head_branch") == "develop"
+                if (role == "gate-backend" and base_ref != "develop") or (role != "gate-backend" and not release) or not gate_role_references(
+                        run.get("referenced_workflows"), policy["workflow_ref"].rsplit("@", 1)[1], release):
+                    return None
             base_sha = default_sha if base_ref == default else self._protected_branch_sha(repo, base_ref)
             if base_sha is None or pr["base"].get("sha") != base_sha:
                 return None
@@ -1204,6 +1280,27 @@ class GitHubClient:
                         return None
             if sha != pr_sha or run.get("head_branch") != pr["head"].get("ref"):
                 return None
+            if role in GATE_ROLES:
+                if not self._trusted_pull_request(pr, repo, sha, run["head_branch"], number) or pr.get("merge_commit_sha") != execution_sha:
+                    return None
+                tip = self.request("GET", f"{self.repo_path(repo)}/git/ref/heads/" + urllib.parse.quote(run["head_branch"], safe="/"))
+                if not isinstance(tip, dict) or tip.get("ref") != "refs/heads/" + run["head_branch"] or (tip.get("object") or {}).get("type") != "commit" or (tip.get("object") or {}).get("sha") != pr_sha:
+                    return None
+                merge = self.request("GET", f"{self.repo_path(repo)}/git/commits/{execution_sha}")
+                parents = merge.get("parents") if isinstance(merge, dict) else None
+                if not isinstance(merge, dict) or merge.get("sha") != execution_sha or not isinstance(parents, list) or len(parents) != 2 or any(not isinstance(p, dict) for p in parents) or {p.get("sha") for p in parents} != {pr_sha, base_sha}:
+                    return None
+            if role == "gate-backend-pilot":
+                if number != 444 or base_ref != "develop" or not self._trusted_pull_request(
+                        pr, repo, sha, "chore/DEV-54-compact-ci-pilot", number) or \
+                        pr.get("merge_commit_sha") != execution_sha:
+                    return None
+                merge = self.request("GET", f"{self.repo_path(repo)}/git/commits/{execution_sha}")
+                parents = merge.get("parents") if isinstance(merge, dict) else None
+                if not isinstance(merge, dict) or merge.get("sha") != execution_sha or not isinstance(parents, list) or \
+                        len(parents) != 2 or any(not isinstance(p, dict) for p in parents) or \
+                        {p.get("sha") for p in parents} != {pr_sha, base_sha}:
+                    return None
         elif source_head:
             return None
         if event not in {"pull_request", "pull_request_target"} and (sha != default_sha or run.get("head_branch") != default):
@@ -1228,6 +1325,10 @@ class GitHubClient:
                     if not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] < 1 or \
                             type(job.get("run_id")) is not int or job["run_id"] != run["id"] or \
                             type(job.get("run_attempt")) is not int or job.get("status") != "queued":
+                        continue
+                    if role in GATE_ROLES and job.get("name") != EXECUTION_ROLES[role]["job_name"]:
+                        continue
+                    if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
                         continue
                     head = role_source_head(job.get("labels"))
                     execution = role_execution_sha(job.get("labels"))
@@ -1261,6 +1362,10 @@ class GitHubClient:
                 not role_labels_match(job.get("labels"), repo, role, candidate["run_id"],
                                       candidate["run_attempt"], candidate["pr_head_sha"], candidate["execution_sha"]):
             raise error("execution role job identity changed")
+        if role in GATE_ROLES and job.get("name") != EXECUTION_ROLES[role]["job_name"]:
+            raise error("Gate execution role job name changed")
+        if role == "gate-backend-pilot" and job.get("name") != "ci / Backend CI":
+            raise error("Gate backend pilot job name changed")
         path = f"{self.repo_path(repo)}/actions/runs/{candidate['run_id']}"
         if not current:
             path += f"/attempts/{candidate['run_attempt']}"
@@ -1627,10 +1732,13 @@ def read_token(path: Path) -> str:
 
 
 def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
-           check: bool = True, profile: str | None = None) -> subprocess.CompletedProcess[bytes]:
+           check: bool = True, profile: str | None = None,
+           storage_gib: int | None = None) -> subprocess.CompletedProcess[bytes]:
     if not args or args[0] not in {"list", "resources", "launch", "destroy"} or len(args) > 2:
         raise RunnerError("invalid host helper operation")
     operation = args[0]
+    if operation != "launch" and storage_gib is not None:
+        raise RunnerError("expanded storage is only valid for launch")
     request_id = secrets.token_hex(16)
     request: dict[str, Any] = {"v": 1, "id": request_id, "op": operation}
     if operation in {"launch", "destroy"}:
@@ -1640,6 +1748,10 @@ def helper(cfg: dict[str, Any], *args: str, stdin: bytes | None = None,
     elif len(args) != 1:
         raise RunnerError("list operation does not accept a lease")
     if operation == "launch":
+        if storage_gib is not None:
+            if not four_pool(cfg) or profile != "heavy" or type(storage_gib) is not int or storage_gib != 40:
+                raise RunnerError("invalid expanded storage reservation")
+            request["storage_gib"] = storage_gib
         if stdin is None:
             raise RunnerError("launch requires JIT configuration")
         if four_pool(cfg):
@@ -1740,7 +1852,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
             for state_lease, item in state_by_lease.items()
         ):
             raise RunnerError("runner lifecycle state requires reconciliation")
-        concurrency = FOUR_POOL_CONCURRENCY if four_pool(cfg) else \
+        concurrency = pool_concurrency(cfg) if four_pool(cfg) else \
             configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         if len(state_by_lease) >= concurrency:
             LOG.info("admission denied reason=runner_slot_exhausted active=%s", len(state_by_lease))
@@ -1750,6 +1862,9 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         if lease in state_by_lease or lease in inventory:
             raise RunnerError("lease already exists")
         active = None
+        storage_gib = storage_gib_for_dispatch(
+            (metadata or {}).get("repo"), (metadata or {}).get("scope"), profile,
+            (metadata or {}).get("execution_role"))
         if four_pool(cfg):
             active = json.loads(helper(cfg, "resources").stdout.decode("utf-8"))
             if not isinstance(active, list) or \
@@ -1761,7 +1876,7 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
                         for item in active if isinstance(item, dict)):
                 raise RunnerError("runner resource inventory requires reconciliation")
         failures = capacity_errors(cfg, len(state_by_lease) + 1,
-                                   profile=profile, active=active) if four_pool(cfg) \
+                                   profile=profile, active=active, storage_gib=storage_gib) if four_pool(cfg) \
             else capacity_errors(cfg, len(state_by_lease) + 1)
         if failures:
             LOG.info("admission denied active=%s reasons=%s", len(state_by_lease),
@@ -1790,7 +1905,10 @@ def launch(cfg: dict[str, Any], lease: str, jit_source: Path | bytes, *,
         LOG.info("launch requested lease=%s", lease)
         try:
             if four_pool(cfg):
-                helper(cfg, "launch", lease, stdin=jit, profile=profile)
+                if storage_gib is not None:
+                    helper(cfg, "launch", lease, stdin=jit, profile=profile, storage_gib=storage_gib)
+                else:
+                    helper(cfg, "launch", lease, stdin=jit, profile=profile)
             else:
                 helper(cfg, "launch", lease, stdin=jit)
         except Exception:
@@ -2210,7 +2328,7 @@ def reconcile(cfg: dict[str, Any], client: GitHubClient | None = None,
 
 
 def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
-                            profile: str) -> list[str]:
+                            profile: str, storage_gib: int | None = None) -> list[str]:
     """Read current four-pool capacity without creating a GitHub runner."""
     states = store.leases()
     state_by_lease: dict[str, dict[str, Any]] = {}
@@ -2235,7 +2353,7 @@ def pre_jit_capacity_errors(cfg: dict[str, Any], store: StateStore,
                 for item in active) or \
             {item["lease"] for item in active} != set(inventory):
         raise RunnerError("runner resource inventory requires reconciliation")
-    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active)
+    errors = capacity_errors(cfg, len(states) + 1, profile=profile, active=active, storage_gib=storage_gib)
     if any(error.startswith("active runner") for error in errors):
         raise RunnerError("runner resource inventory requires reconciliation")
     return errors
@@ -2260,8 +2378,8 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
         if any(state.get("profile", "heavy") not in POOL_LIMITS for state in states):
             raise RunnerError("runner lifecycle state has an unknown profile")
         active_profile = sum(state.get("profile", "heavy") == profile for state in states)
-        available_slots = min(FOUR_POOL_CONCURRENCY - len(states),
-                              POOL_LIMITS[profile] - active_profile)
+        available_slots = min(pool_concurrency(cfg) - len(states),
+                              pool_limits(cfg)[profile] - active_profile)
     else:
         concurrency = configured_resource(cfg, "max_concurrency", MAX_CONCURRENCY)
         available_slots = concurrency - len(states)
@@ -2302,7 +2420,9 @@ def dispatch_once(cfg: dict[str, Any], client: GitHubClient, *,
                 if key in store.pending_dispatch_keys() or history.contains(key, now):
                     continue
                 if four_pool(cfg):
-                    failures = pre_jit_capacity_errors(cfg, store, profile)
+                    storage_gib = storage_gib_for_dispatch(repo, scope, profile, execution_role)
+                    failures = pre_jit_capacity_errors(cfg, store, profile, storage_gib) if storage_gib is not None \
+                        else pre_jit_capacity_errors(cfg, store, profile)
                     if failures:
                         LOG.info("pre-JIT capacity unavailable profile=%s reasons=%s",
                                  profile, "; ".join(failures))
@@ -2606,6 +2726,26 @@ class SelectedCandidateClient:
         self.client.delete_runner(repo, runner_id)
 
 
+def fair_candidate_queue(queue: list[tuple], active: list[dict[str, Any]]) -> list[tuple]:
+    """Order only: distribute available slots across runs, without granting admission."""
+    counts: dict[tuple, int] = {}
+    for state in active:
+        identity = (state.get("repo"), state.get("actual_run_id", state.get("trigger_run_id", state.get("run_id"))))
+        counts[identity] = counts.get(identity, 0) + 1
+    pending, ordered = list(queue), []
+    while pending:
+        def priority(row):
+            candidate = row[-1].candidate
+            return (counts.get((candidate["repo"], candidate["run_id"]), 0), row[0])
+        row = min(pending, key=priority)
+        pending.remove(row)
+        candidate = row[-1].candidate
+        identity = (candidate["repo"], candidate["run_id"])
+        counts[identity] = counts.get(identity, 0) + 1
+        ordered.append(row)
+    return ordered
+
+
 def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
                        org_client: GitHubClient | None) -> bool:
     """Merge eligible queues before allocating slots, instead of preferring a repo.
@@ -2653,7 +2793,9 @@ def dispatch_fair_once(cfg: dict[str, Any], client: GitHubClient,
                 queue.append((order, scope, profile, role,
                               SelectedCandidateClient(source, candidate, label)))
     launched = False
-    for _, scope, profile, role, selected in sorted(queue, key=lambda entry: entry[0]):
+    ordered = fair_candidate_queue(queue, StateStore(Path(cfg["state_dir"])).leases()) \
+        if cfg.get("pool_mode") == "parallel" else sorted(queue, key=lambda entry: entry[0])
+    for _, scope, profile, role, selected in ordered:
         options = {"execution_role": role} if role is not None else {}
         try:
             launched = dispatch_once(cfg, selected, profile=profile, scope=scope, **options) or launched

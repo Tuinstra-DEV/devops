@@ -1,7 +1,0 @@
----
-- name: Install Sanctuary backup pull worker
-  hosts: sanctuary_backup
-  become: true
-  gather_facts: true
-  roles:
-    - sanctuary_backup

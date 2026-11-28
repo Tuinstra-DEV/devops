@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from runner.tests.legacy_sources import legacy_source
 import subprocess
 import sys
 import tempfile
@@ -89,7 +90,7 @@ class TransitionTests(unittest.TestCase):
         self.config.write_bytes(config())
         self.config.chmod(0o640)
         self.helper = root / "helper"
-        self.helper.write_bytes((ROOT / "runner/host-helper/ci_runner_host_helper.py").read_bytes())
+        self.helper.write_bytes(legacy_source("helper"))
         self.helper.chmod(0o755)
         self.unit = root / "unit"
         self.unit.write_bytes((ROOT / "runner/systemd/ci-runner-manager.service").read_bytes())
@@ -108,8 +109,8 @@ class TransitionTests(unittest.TestCase):
             state=self.state, overlay=self.overlay, backup_root=root / "backups",
             lock=root / "activation.lock", helper_lock=root / "helper.lock")
 
-    def test_reviewed_sources_match_repository(self):
-        self.assertEqual(base.sha((ROOT / "runner/manager/ci_runner_manager.py").read_bytes()),
+    def test_reviewed_sources_match_immutable_legacy_bundle(self):
+        self.assertEqual(base.sha(legacy_source("manager")),
                          upgrade.NEW_MANAGER_SHA)
         self.assertEqual(base.sha((ROOT / "scripts/activate-org-runner-routing.py").read_bytes()),
                          upgrade.ACTIVATION_SHA)
@@ -233,7 +234,7 @@ class TransitionTests(unittest.TestCase):
         request.assert_called_once_with(client.url, "PATCH", {"selected_workflows": list(after)})
 
     def test_source_preflight_rejects_hash_owner_and_symlink(self):
-        source = (ROOT / "runner/manager/ci_runner_manager.py").read_bytes()
+        source = legacy_source("manager")
         activation = (ROOT / "scripts/activate-org-runner-routing.py").read_bytes()
         (self.stage / "ci_runner_manager.py").write_bytes(source)
         (self.stage / "activate-org-runner-routing.py").write_bytes(activation)

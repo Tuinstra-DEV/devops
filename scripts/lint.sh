@@ -68,29 +68,18 @@ ruby -c scripts/dependency-update-fleet-test.rb
 ruby -c scripts/collect-dependabot-actions-baseline.rb
 bash -n scripts/heavy-ci-rollout-docs-test.sh
 bash -n scripts/heavy-ci-baseline-test.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-candidate-preflight.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-transaction.sh
+bash -n docs/runner/proposals/dev54-gate-backend/run-gate-pilot-rollback.sh
 python3 -c 'compile(open(".github/actions/classify-ci-changes/classify_ci_changes.py", encoding="utf-8").read(), ".github/actions/classify-ci-changes/classify_ci_changes.py", "exec")'
+python3 -c 'compile(open(".github/actions/tessera-selective-ci/tessera_scope.py", encoding="utf-8").read(), ".github/actions/tessera-selective-ci/tessera_scope.py", "exec")'
+ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/tessera-selective-ci/action.yml"), aliases: true)'
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 python3 -c 'compile(open("scripts/production-profile-executor", encoding="utf-8").read(), "scripts/production-profile-executor", "exec")'
 bash -n scripts/install-production-profile-executor scripts/production-profile-bridge scripts/production-profile-executor-contract-test.sh
 bash -n scripts/production-host-rehearsal-test.sh
-python3 -c 'compile(open("backup/tuinstra_backup.py", encoding="utf-8").read(), "backup/tuinstra_backup.py", "exec")'
-python3 -c 'compile(open("backup/production_restore.py", encoding="utf-8").read(), "backup/production_restore.py", "exec")'
-python3 -c 'compile(open("backup/production_restore_target.py", encoding="utf-8").read(), "backup/production_restore_target.py", "exec")'
-python3 -c 'compile(open("scripts/bootstrap_backup_credentials.py", encoding="utf-8").read(), "scripts/bootstrap_backup_credentials.py", "exec")'
-python3 -c 'compile(open("scripts/stage_backup_escrow.py", encoding="utf-8").read(), "scripts/stage_backup_escrow.py", "exec")'
 python3 -c 'compile(open("scripts/verify-install-inputs.py", encoding="utf-8").read(), "scripts/verify-install-inputs.py", "exec")'
 python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("scripts/production-websites.py", "scripts/verify-public-websites.py", "scripts/test-production-websites-native.py", "scripts/test_production_websites.py")]'
-python3 -c 'compile(open("scripts/test_sanctuary_installer_contract.py", encoding="utf-8").read(), "scripts/test_sanctuary_installer_contract.py", "exec")'
-python3 -c 'compile(open("backup/onepassword-escrow.py", encoding="utf-8").read(), "backup/onepassword-escrow.py", "exec")'
-python3 -c 'compile(open("scripts/test_isolated_restore_native.py", encoding="utf-8").read(), "scripts/test_isolated_restore_native.py", "exec")'
-bash -n backup/restore-umami
-bash -n backup/restore-tracker
-bash -n scripts/test_tracker_restore_native.sh
-bash -n backup/tuinstra-backup-admin
-bash -n scripts/install-sanctuary-backups
-bash -n scripts/restic-retention-integration-test.sh
-bash -n scripts/restore-network-isolation-integration-test.sh
-bash -n scripts/production-backup-contract-test.sh
 python3 -c 'compile(open("scripts/umami-onepassword-handoff.py", encoding="utf-8").read(), "scripts/umami-onepassword-handoff.py", "exec")'
 ruby scripts/dependency-update-policy-test.rb
 
@@ -105,6 +94,8 @@ python3 -c 'compile(open("scripts/test-signing-key-check.py", encoding="utf-8").
 node --check scripts/verify-gate-release-assurance.mjs
 node --check scripts/gate-observability-fingerprint.mjs
 node --check scripts/collect-gate-symbols.mjs
+node --check scripts/gate-verification-forwarder.mjs
+python3 -B -c 'from pathlib import Path; p=Path("scripts/gate-verification-ledger.py"); compile(p.read_text(),str(p),"exec")'
 node --check .github/actions/gate-observability/run.mjs
 ruby -e 'require "yaml"; YAML.safe_load(File.read(".github/actions/gate-observability/action.yml"), aliases: true)'
 
@@ -116,3 +107,11 @@ python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-activate.s
 python3 -c 'from pathlib import Path; p=Path("runner/activation/dev54-diagnose-v2.py"); compile(p.read_text(),str(p),"exec")'
 
 python3 -c 'from pathlib import Path; p=Path("scripts/repair-runner-image-2338.py"); compile(p.read_text(),str(p),"exec")'
+
+
+
+python3 -c 'from pathlib import Path; p=Path("scripts/activate-wodiq-ci-parallel.py"); compile(p.read_text(),str(p),"exec")'
+
+# Permanent Gate operator entrypoints are parsed only, never executed by CI.
+bash -n docs/runner/proposals/dev54-gate-permanent/run-integration-preflight.sh docs/runner/proposals/dev54-gate-permanent/run-permanent-activation.sh
+python3 -B -c 'from pathlib import Path; [compile(p.read_text(), str(p), "exec") for p in Path("docs/runner/proposals/dev54-gate-permanent").glob("*.py")]'

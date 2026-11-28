@@ -1,0 +1,154 @@
+{
+  "policyId": "gate-observability-release-ci-1",
+  "repository": "Tuinstra-DEV/gate",
+  "projectId": "4511659790630992",
+  "installationUuid": "73812b1c-1666-407e-8234-d6ace9b95765",
+  "requiredComponents": {
+    "backend": {
+      "runtime": "php",
+      "release_unit": "php",
+      "symbols": "source",
+      "source_roots": [
+        "backend/src/"
+      ]
+    },
+    "browser": {
+      "runtime": "browser-js",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps",
+      "source_roots": [
+        "frontend/app/"
+      ]
+    },
+    "nitro": {
+      "runtime": "node",
+      "release_unit": "frontend",
+      "symbols": "sourcemaps",
+      "source_roots": [
+        "frontend/server/",
+        "frontend/app/"
+      ]
+    }
+  },
+  "requiredArtifacts": [
+    "php",
+    "web",
+    "frontend",
+    "heal-runner"
+  ],
+  "processBindings": {
+    "php": "backend",
+    "messenger-worker": "backend",
+    "heal-supervisor": "backend",
+    "frontend-browser": "browser",
+    "frontend-server": "nitro"
+  },
+  "fingerprint": {
+    "Tuinstra-DEV/gate": {
+      "sdk_initialization": {
+        "files": [
+          "backend/config/packages/sentry.yaml",
+          "backend/src/Service/Heal/HealRunnerFailureReporter.php",
+          "backend/src/MessageHandler/RunHealFixHandler.php",
+          "frontend/sentry.client.config.ts",
+          "frontend/sentry.server.config.ts"
+        ],
+        "dependencies": {
+          "composer": [
+            {
+              "manifest": "backend/composer.json",
+              "lock": "backend/composer.lock",
+              "roots": [
+                "sentry/sentry-symfony"
+              ]
+            }
+          ],
+          "pnpm": [
+            {
+              "manifest": "frontend/package.json",
+              "lock": "frontend/pnpm-lock.yaml",
+              "importer": ".",
+              "roots": [
+                "@sentry/nuxt"
+              ]
+            }
+          ]
+        }
+      },
+      "routing": {
+        "registry": {
+          "source": "gate",
+          "path": "backend/config/heal/sentry-routing.json",
+          "schema": "gate.sentry-routing.v1"
+        },
+        "gate_files": [
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryRoutingRegistry.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryFailureExtractor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryDeploymentEvidence.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryAlertIntake.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryWebhookVerifier.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEventClient.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/SentryEvidenceRedactor.php"
+          },
+          {
+            "source": "gate",
+            "path": "backend/src/Service/Heal/RoutedSentryEvidenceRedactor.php"
+          }
+        ]
+      },
+      "privacy_filters": {
+        "files": [
+          "backend/src/Service/Heal/SentryEventPrivacyFilter.php",
+          "frontend/shared/sentry-evidence.ts"
+        ]
+      },
+      "deployment_symbols": {
+        "files": [
+          "frontend/docker/Dockerfile",
+          "backend/docker/php/Dockerfile",
+          "frontend/nuxt.config.ts",
+          "frontend/shared/sentry-sourcemap-sources.ts",
+          "frontend/scripts/verify-sentry-sourcemaps.mjs",
+          "deploy/docker-compose.production.yml",
+          ".github/workflows/release-ci.yml",
+          "scripts/ci/release-candidate.mjs",
+          "scripts/ci/release-artifacts.mjs",
+          "backend/docker/release-ci/Dockerfile",
+          "scripts/ci/release-image-artifact.mjs",
+          "scripts/ci/prepare-oci-scan-layout.mjs",
+          "scripts/ci/extract-release-artifact.py",
+          "scripts/ci/release-observability.mjs",
+          "scripts/ci/release-promotion-dry-run.mjs",
+          "scripts/ci/measure-release-resources.py",
+          "scripts/ci/promote-release-images.mjs",
+          ".github/actions/gate-release-check/action.yml",
+          "frontend/scripts/visual-preview.mjs",
+          "frontend/scripts/visual-smoke.mjs",
+          "frontend/scripts/visual-authenticated.mjs"
+        ],
+        "workflows": []
+      }
+    }
+  },
+  "approvedProofSha256": "sha256:2eb0f8d315ae29ace9e01c3f4ea59477b5f94253978052cb9d0d91cb41f401dc"
+}

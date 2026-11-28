@@ -21,7 +21,6 @@ class WebsiteOperationsTests(unittest.TestCase):
         self.patches = [patch.object(web, "ROOT", self.root),
                         patch.object(web, "SITES", self.root / "sites"),
                         patch.object(web, "BACKUPS", self.root / "backups"),
-                        patch.object(web, "PRODUCER", self.root / "producer.json"),
                         patch.object(web, "secure", side_effect=lambda path, **kwargs: path)]
         for p in self.patches:
             p.start()
@@ -100,49 +99,6 @@ class WebsiteOperationsTests(unittest.TestCase):
         docker.assert_not_called()
         self.assert_original()
 
-    def test_backup_extension_preserves_live_status_and_host_policy_and_is_idempotent(self):
-        profile = {"host_slug": "tuinstra-prod-01", "spool_quota_bytes": 123456,
-                   "custom_host_policy": {"fixture": "preserve"}, "applications": [
-                       {"app_id": "umami", "enabled": True, "adapter": "postgres-compose-v1",
-                        "included_files": [{"name": "original", "path": "/fixture/secret"}]},
-                       {"app_id": "status", "source_uid": 82, "fixture": "preserve"}]}
-        web.PRODUCER.write_text(json.dumps(profile))
-        web.PRODUCER.chmod(0o600)
-        result = web.extend_backup_profile()
-        changed = json.loads(web.PRODUCER.read_text())
-        self.assertEqual(changed["applications"][1], profile["applications"][1])
-        self.assertEqual(changed["custom_host_policy"], profile["custom_host_policy"])
-        self.assertEqual(changed["spool_quota_bytes"], profile["spool_quota_bytes"])
-        self.assertEqual(changed["applications"][0]["included_files"][0], profile["applications"][0]["included_files"][0])
-        self.assertEqual(len(changed["applications"][0]["included_files"]), 17)
-        self.assertEqual(json.loads(Path(result["backup"]).read_text()), profile)
-        original_snapshot_count = len(list(web.BACKUPS.iterdir()))
-        self.assertEqual(web.extend_backup_profile()["extended"], 0)
-        self.assertEqual(len(list(web.BACKUPS.iterdir())), original_snapshot_count)
-        self.assertEqual(os.stat(web.PRODUCER).st_mode & 0o777, 0o600)
-
-    def test_conflicting_backup_input_does_not_replace_installed_profile(self):
-        original = json.dumps({"host_slug": "tuinstra-prod-01", "applications": [
-            {"app_id": "umami", "enabled": True, "adapter": "postgres-compose-v1",
-             "included_files": [{"name": "host-caddyfile", "path": "/fixture/conflict"}]}]})
-        web.PRODUCER.write_text(original)
-        with self.assertRaisesRegex(RuntimeError, "conflicting path"):
-            web.extend_backup_profile()
-        self.assertEqual(web.PRODUCER.read_text(), original)
-        self.assertFalse(web.BACKUPS.exists())
-
-    def test_backup_profile_preserves_installed_group_and_mode(self):
-        groups = [gid for gid in os.getgroups() if gid != os.getgid()]
-        if not groups:
-            self.skipTest("an alternate supplementary group is needed for this ownership fixture")
-        web.PRODUCER.write_text(json.dumps({"host_slug": "tuinstra-prod-01", "applications": [
-            {"app_id": "umami", "enabled": True, "adapter": "postgres-compose-v1", "included_files": []}]}))
-        os.chown(web.PRODUCER, -1, groups[0])
-        web.PRODUCER.chmod(0o640)
-        group_before = web.PRODUCER.stat().st_gid
-        web.extend_backup_profile()
-        self.assertEqual(web.PRODUCER.stat().st_gid, group_before)
-        self.assertEqual(web.PRODUCER.stat().st_mode & 0o777, 0o640)
 
 
 if __name__ == "__main__":

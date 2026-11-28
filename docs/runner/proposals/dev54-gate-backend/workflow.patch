@@ -1,0 +1,53 @@
+diff --git a/.github/workflows/reusable-product-ci.yml b/.github/workflows/reusable-product-ci.yml
+index c8d9506..8d85cce 100644
+--- a/.github/workflows/reusable-product-ci.yml
++++ b/.github/workflows/reusable-product-ci.yml
+@@ -17,0 +18,4 @@ jobs:
++    permissions:
++      contents: read
++      actions: read
++      pull-requests: read
+@@ -21,0 +26 @@ jobs:
++      backend-trusted: ${{ steps.trust.outputs.trusted }}
+@@ -37,0 +43,4 @@ jobs:
++      - name: Verify the compact backend trust boundary
++        id: trust
++        uses: Tuinstra-DEV/devops/.github/actions/gate-compact-trust@ac5ef4542cc6f8505f894a3db27f59f38fd1648e
++
+@@ -86,0 +96 @@ jobs:
++          BACKEND_RUNNER: ${{ steps.trust.outputs.backend-runner }}
+@@ -94,2 +104,2 @@ jobs:
+-              "gate-frontend-static": {"name": "Frontend CI", "node": "24", "pnpm": "10.28.2", "php": "", "extensions": ""},
+-              "gate-php": {"name": "Backend CI", "node": "", "pnpm": "", "php": "8.3", "extensions": "ctype, iconv, pdo_sqlite, sqlite3"},
++              "gate-frontend-static": {"name": "Frontend CI", "runner": "ubuntu-24.04", "node": "24", "pnpm": "10.28.2", "php": "", "extensions": ""},
++              "gate-php": {"name": "Backend CI", "runner": json.loads(os.environ["BACKEND_RUNNER"]), "node": "", "pnpm": "", "php": "8.3", "extensions": "ctype, iconv, pdo_sqlite, sqlite3"},
+@@ -153 +163 @@ jobs:
+-    runs-on: ubuntu-24.04
++    runs-on: ${{ matrix.runner }}
+@@ -157,0 +168,6 @@ jobs:
++    env:
++      CI_PLAN: ${{ toJSON(matrix.plan) }}
++      CI_SOURCE_SHA: ${{ github.sha }}
++      CI_RUN_ID: ${{ github.run_id }}
++      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
++      SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
+@@ -159,0 +176 @@ jobs:
++        if: matrix.key != 'gate-php' || needs.source.outputs.backend-trusted != 'true'
+@@ -161,6 +177,0 @@ jobs:
+-        env:
+-          CI_PLAN: ${{ toJSON(matrix.plan) }}
+-          CI_SOURCE_SHA: ${{ github.sha }}
+-          CI_RUN_ID: ${{ github.run_id }}
+-          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+-          SHELL_VERBOSITY: ${{ matrix.key == 'gate-php' && '3' || '0' }}
+@@ -175,0 +187,10 @@ jobs:
++      - name: Run the admitted Gate backend on baked PHP
++        if: matrix.key == 'gate-php' && needs.source.outputs.backend-trusted == 'true'
++        uses: Tuinstra-DEV/devops/.github/actions/trusted-bundle-trusted@ac5ef4542cc6f8505f894a3db27f59f38fd1648e
++        with:
++          job-key: gate-php
++          source-sha: ${{ github.sha }}
++          php-version: '8.3'
++          php-extensions: ${{ matrix.extensions }}
++          gate-native-mariadb: ${{ matrix.native }}
++

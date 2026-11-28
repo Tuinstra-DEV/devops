@@ -1,6 +1,6 @@
 [Unit]
 Description=Enforce Umami active analytics retention
-After=docker.service tuinstra-backup-export.service
+After=docker.service
 Requires=docker.service
 ConditionPathExists={{ production_umami_root }}/compose.yml
 
